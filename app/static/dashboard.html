@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#DCE0DA">
+<title>Photo relay</title>
+<style>
+  :root{
+    --paper:#DCE0DA;      /* cool grey-green stock, not cream */
+    --panel:#E6E9E3;
+    --ink:#111E1A;        /* bottle-green black */
+    --rule:#A6AFA6;
+    --dim:#5C6660;
+    --transit:#1B4FD8;    /* cobalt: moving */
+    --done:#5E7C00;       /* olive-chartreuse: landed */
+    --alarm:#A82118;      /* burnt red: stuck */
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --paper:#0E1614; --panel:#152220; --ink:#DDE4DE; --rule:#33413C;
+           --dim:#8A968F; --transit:#6E97FF; --done:#A8C44A; --alarm:#E4695C; }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--mono); font-size:14px; line-height:1.45;
+    padding:20px; max-width:960px; margin-inline:auto;
+  }
+  .eyebrow{
+    font-size:10px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--dim); margin:0 0 6px;
+  }
+  header{border-bottom:2px solid var(--ink); padding-bottom:14px; margin-bottom:22px}
+  h1{
+    font-size:clamp(20px,5vw,30px); font-weight:700; margin:0;
+    letter-spacing:-.02em; display:flex; flex-wrap:wrap; gap:.5em; align-items:baseline;
+  }
+  h1 .arrow{color:var(--transit)}
+  .live{
+    margin-left:auto; font-size:10px; letter-spacing:.18em; text-transform:uppercase;
+    display:flex; align-items:center; gap:7px; color:var(--dim); white-space:nowrap;
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--alarm)}
+  .dot.on{background:var(--done)}
+  @media (prefers-reduced-motion:no-preference){
+    .dot.on{animation:beat 2.4s ease-in-out infinite}
+  }
+  @keyframes beat{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* ---- the belt: the one thing this page is remembered by ---- */
+  .belt{display:flex; height:56px; border:2px solid var(--ink); overflow:hidden}
+  .seg{position:relative; min-width:3px; transition:flex-grow .6s cubic-bezier(.2,.7,.2,1)}
+  .seg.queued{background:transparent;
+    background-image:repeating-linear-gradient(90deg,var(--rule) 0 1px,transparent 1px 7px)}
+  .seg.onphone{background:var(--transit)}
+  .seg.done{background:var(--done)}
+  @media (prefers-reduced-motion:no-preference){
+    .seg.onphone::after{
+      content:""; position:absolute; inset:0;
+      background:repeating-linear-gradient(115deg,rgba(255,255,255,.30) 0 8px,transparent 8px 20px);
+      animation:crawl 1.4s linear infinite;
+    }
+  }
+  @keyframes crawl{to{transform:translateX(20px)}}
+
+  .legend{display:flex; gap:24px; flex-wrap:wrap; margin-top:10px}
+  .legend div{display:flex; flex-direction:column}
+  .legend .n{font-size:22px; font-weight:700; letter-spacing:-.02em}
+  .legend .k{font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim)}
+  .swatch{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:baseline}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; margin-top:26px}
+  .card{background:var(--panel); border:1px solid var(--rule); padding:14px 16px}
+  .card h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px;font-weight:600}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px dotted var(--rule)}
+  .row:last-child{border-bottom:0}
+  .row span:last-child{font-variant-numeric:tabular-nums}
+
+  .gauge{height:12px;border:1px solid var(--ink);margin:10px 0 6px;position:relative;background:transparent}
+  .gauge i{display:block;height:100%;background:var(--transit)}
+  .gauge b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--alarm)}
+
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .mirror{margin-top:26px}
+  .mirror-body{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .screen{
+    flex:0 0 auto;width:180px;border:2px solid var(--ink);background:var(--panel);
+    display:flex;align-items:center;justify-content:center;min-height:120px;
+  }
+  .screen img{display:block;width:100%;height:auto}
+  .screen .placeholder{font-size:11px;color:var(--dim);padding:24px 12px;text-align:center}
+  .mirror-side{flex:1 1 240px;min-width:240px}
+  .trace{
+    font-size:12px;color:var(--dim);margin-top:10px;white-space:pre-wrap;
+    border-left:2px solid var(--rule);padding-left:10px;max-height:180px;overflow:auto;
+  }
+
+  .attention{margin-top:26px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .window{margin-top:26px;border:2px solid var(--ink);padding:16px}
+  .window h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 4px;font-weight:600}
+  .window .range{font-size:22px;font-weight:700;letter-spacing:-.02em;margin:0 0 10px}
+  .bar{height:10px;border:1px solid var(--ink);margin-bottom:8px}
+  .bar i{display:block;height:100%;background:var(--done)}
+  .window .note{font-size:12px;color:var(--dim);margin:0 0 12px}
+  .window .note.done{color:var(--done)}
+  form.settings{margin-top:26px;background:var(--panel);border:1px solid var(--rule);padding:16px}
+  form.settings h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 14px;font-weight:600}
+  fieldset{border:0;border-top:1px solid var(--rule);margin:0 0 16px;padding:14px 0 0}
+  legend{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:0 8px 0 0}
+  .field{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:5px 0}
+  .field label{font-size:13px}
+  .field .hint{display:block;font-size:11px;color:var(--dim);max-width:44ch}
+  .field input[type=text],.field input[type=number],.field input[type=date],.field input[type=password]{
+    font:inherit;font-size:13px;background:var(--paper);color:var(--ink);
+    border:1px solid var(--rule);padding:5px 7px;min-width:150px}
+  .field input:focus-visible{outline:2px solid var(--transit);outline-offset:1px}
+  .saved{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--done);margin-left:10px}
+  .attention h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 10px}
+  .item{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--rule);font-size:13px}
+  .item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .why{color:var(--alarm);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+  button{
+    font:inherit;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    background:transparent;border:1px solid var(--ink);color:var(--ink);
+    padding:4px 10px;cursor:pointer;
+  }
+  button:hover{background:var(--ink);color:var(--paper)}
+  button:focus-visible{outline:2px solid var(--transit);outline-offset:2px}
+
+  .empty{color:var(--dim);font-size:13px;padding:8px 0}
+  .log{margin-top:26px;border-top:1px solid var(--rule);padding-top:12px}
+  .log ol{list-style:none;margin:0;padding:0;font-size:12px}
+  .log li{display:flex;gap:12px;padding:3px 0;color:var(--dim)}
+  .log time{flex:0 0 60px;font-variant-numeric:tabular-nums}
+  .log .msg{color:var(--ink)}
+  .log li[data-kind="error"] .msg{color:var(--alarm)}
+</style>
+</head>
+<body>
+
+<header>
+  <p class="eyebrow">Original-quality relay</p>
+  <h1>Immich <span class="arrow">→</span> Pixel <span class="arrow">→</span> Google Photos
+    <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span></span>
+  </h1>
+</header>
+
+<section aria-label="Pipeline">
+  <div class="belt" id="belt">
+    <div class="seg queued"  id="segQueued"  style="flex-grow:1"></div>
+    <div class="seg onphone" id="segPhone"   style="flex-grow:0"></div>
+    <div class="seg done"    id="segDone"    style="flex-grow:0"></div>
+  </div>
+  <div class="legend">
+    <div><span class="n" id="nQueued">—</span><span class="k"><span class="swatch" style="background:var(--rule)"></span>Waiting</span></div>
+    <div><span class="n" id="nPhone">—</span><span class="k"><span class="swatch" style="background:var(--transit)"></span>In the outbox</span></div>
+    <div><span class="n" id="nDone">—</span><span class="k"><span class="swatch" style="background:var(--done)"></span>Backed up</span></div>
+  </div>
+</section>
+
+<div class="grid">
+  <div class="card">
+    <h2>Outbox</h2>
+    <div class="gauge"><i id="gaugeFill" style="width:0%"></i></div>
+    <div class="row"><span>Holding</span><span id="oFiles">—</span></div>
+    <div class="row"><span>Used of cap</span><span id="oUsed">—</span></div>
+    <div class="row"><span>Last cycle</span><span id="oCycle">—</span></div>
+    <div class="row"><span>Folder</span><span id="oPath">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Immich</h2>
+    <div class="row"><span>Server</span><span id="iUrl">—</span></div>
+    <div class="row"><span>Quick scan</span><span id="iInc">—</span></div>
+    <div class="row"><span>Full scan</span><span id="iFull">—</span></div>
+    <div class="row"><span>Still to send</span><span id="iBytes">—</span></div>
+  </div>
+</div>
+
+<section class="attention">
+  <h2>Needs attention</h2>
+  <div class="controls"><button id="btnRefresh">Check the outbox now</button></div>
+  <div id="attention"></div>
+</section>
+
+<section class="window">
+  <h2>Backfill window</h2>
+  <p class="range" id="wRange">—</p>
+  <div class="bar"><i id="wBar" style="width:0%"></i></div>
+  <p class="note" id="wNote">—</p>
+  <div class="controls">
+    <button id="btnPrev">Previous month</button>
+    <button id="btnNext">Next month</button>
+  </div>
+</section>
+
+<form class="settings" id="settings" onsubmit="return false">
+  <h2>Settings</h2>
+
+  <fieldset>
+    <legend>Immich</legend>
+    <div class="field">
+      <label for="s_immich_url">Server address</label>
+      <input type="text" id="s_immich_url" placeholder="http://192.168.1.10:2283">
+    </div>
+    <div class="field">
+      <label for="s_immich_api_key">API key
+        <span class="hint">Leave blank to keep the current key.</span></label>
+      <input type="password" id="s_immich_api_key" placeholder="unchanged">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>New photos</legend>
+    <div class="field">
+      <label for="s_ongoing_enabled">Send new photos
+        <span class="hint">Everything taken on or after the cut-off, continuously.</span></label>
+      <input type="checkbox" id="s_ongoing_enabled">
+    </div>
+    <div class="field">
+      <label for="s_ongoing_from">Cut-off date</label>
+      <input type="date" id="s_ongoing_from">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>History</legend>
+    <div class="field">
+      <label for="s_backfill_enabled">Send the backfill window
+        <span class="hint">Turn on once you have cleared that month from Google Photos.</span></label>
+      <input type="checkbox" id="s_backfill_enabled">
+    </div>
+    <div class="field">
+      <label for="s_backfill_start">Window starts</label>
+      <input type="date" id="s_backfill_start">
+    </div>
+    <div class="field">
+      <label for="s_backfill_end">Window ends</label>
+      <input type="date" id="s_backfill_end">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Limits</legend>
+    <div class="field">
+      <label for="s_outbox_max_gb">Outbox cap, GB
+        <span class="hint">Caps the phone, and sets roughly how much moves per month.</span></label>
+      <input type="number" id="s_outbox_max_gb" min="1" max="18">
+    </div>
+    <div class="field">
+      <label for="s_max_asset_mb">Skip files larger than, MB</label>
+      <input type="number" id="s_max_asset_mb" min="1">
+    </div>
+    <div class="field">
+      <label for="s_max_batch_files">Files per cycle</label>
+      <input type="number" id="s_max_batch_files" min="1" max="200">
+    </div>
+    <div class="field">
+      <label for="s_include_video">Include videos</label>
+      <input type="checkbox" id="s_include_video">
+    </div>
+    <div class="field">
+      <label for="s_paused">Pause sending
+        <span class="hint">Stops new files leaving. Deletions still register.</span></label>
+      <input type="checkbox" id="s_paused">
+    </div>
+  </fieldset>
+
+  <div class="controls">
+    <button id="btnSave">Save settings</button><span class="saved" id="savedMsg" hidden>Saved</span>
+  </div>
+</form>
+
+<section class="log">
+  <h2 class="eyebrow">Activity</h2>
+  <ol id="log"></ol>
+</section>
+
+<script>
+const fmtBytes = b => {
+  if (!b) return "0 B";
+  const u = ["B","KB","MB","GB","TB"];
+  const i = Math.min(Math.floor(Math.log(b)/Math.log(1024)), u.length-1);
+  return (b/Math.pow(1024,i)).toFixed(i ? 1 : 0) + " " + u[i];
+};
+const fmtNum = n => (n ?? 0).toLocaleString();
+const ago = iso => {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime())/1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s/60) + " min ago";
+  if (s < 86400) return Math.floor(s/3600) + " h ago";
+  return Math.floor(s/86400) + " d ago";
+};
+const clock = iso => iso ? new Date(iso).toTimeString().slice(0,5) : "--:--";
+
+async function tick(){
+  let d;
+  try { d = await (await fetch("/api/status")).json(); }
+  catch { setStatus(false, "server unreachable"); return; }
+
+  const c = d.counts;
+  const fresh = d.outbox.last_cycle &&
+    (Date.now() - new Date(d.outbox.last_cycle).getTime()) < 45*60*1000;
+  setStatus(fresh, fresh ? "feeding" : "idle");
+
+  nQueued.textContent = fmtNum(c.pending + c.failed);
+  nPhone.textContent  = fmtNum(c.queued);
+  nDone.textContent   = fmtNum(c.confirmed);
+
+  const grow = v => Math.max(v, d.total ? d.total*0.004 : 1);
+  segQueued.style.flexGrow = grow(c.pending + c.failed);
+  segPhone.style.flexGrow  = grow(c.queued);
+  segDone.style.flexGrow   = grow(c.confirmed);
+
+  const pct = d.outbox.cap_bytes
+    ? Math.min(100, (d.outbox.used_bytes / d.outbox.cap_bytes) * 100) : 0;
+  gaugeFill.style.width = pct + "%";
+
+  oFiles.textContent = fmtNum(d.outbox.files) + " files";
+  oUsed.textContent  = fmtBytes(d.outbox.used_bytes) + " / " + fmtBytes(d.outbox.cap_bytes);
+  oCycle.textContent = ago(d.outbox.last_cycle);
+  oPath.textContent  = d.outbox.path;
+
+  iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
+  iInc.textContent   = ago(d.immich.last_incremental_scan);
+  iFull.textContent  = ago(d.immich.last_full_scan);
+  iBytes.textContent = fmtBytes(c.pending_bytes);
+
+  renderWindow(d);
+  if (!dirty) fillSettings(d.settings);
+  renderAttention(d);
+  renderLog(d.events);
+}
+
+// Stop the 5s poll from wiping what you are halfway through typing.
+let dirty = false;
+document.addEventListener("input", e => {
+  if (e.target.closest("#settings")) dirty = true;
+});
+
+const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled"];
+
+function fillSettings(cfg){
+  for (const [k, v] of Object.entries(cfg)){
+    const el = document.getElementById("s_" + k);
+    if (!el) continue;
+    if (BOOLS.includes(k)) el.checked = !!v;
+    else if (k === "immich_api_key") el.placeholder = v ? "unchanged" : "required";
+    else el.value = v;
+  }
+}
+
+function readSettings(){
+  const out = {};
+  document.querySelectorAll("#settings input").forEach(el => {
+    const k = el.id.replace(/^s_/, "");
+    out[k] = BOOLS.includes(k) ? el.checked
+           : el.type === "number" ? Number(el.value) : el.value;
+  });
+  return out;
+}
+
+function renderWindow(d){
+  const cfg = d.settings, w = d.window;
+  wRange.textContent = cfg.backfill_start + "  →  " + cfg.backfill_end;
+  const pct = w.total ? (w.confirmed / w.total) * 100 : 0;
+  wBar.style.width = pct + "%";
+
+  if (!w.total) {
+    wNote.textContent = "No photos in Immich for this month.";
+    wNote.className = "note";
+  } else if (w.done) {
+    wNote.textContent = w.total + " of " + w.total +
+      " backed up. This month is finished — safe to step forward.";
+    wNote.className = "note done";
+  } else {
+    wNote.textContent = w.confirmed + " of " + w.total + " backed up · " +
+      w.queued + " on the phone · " + w.remaining + " still to send" +
+      (cfg.backfill_enabled ? "" : " · window is switched off");
+    wNote.className = "note";
+  }
+}
+
+function setStatus(ok, text){
+  dot.className = "dot" + (ok ? " on" : "");
+  livetext.textContent = text;
+}
+
+function renderAttention(d){
+  const rows = [
+    ...d.stuck.map(a => ({...a, why: "not cleared"})),
+    ...d.problems.map(a => ({...a, why: "download failed"})),
+  ];
+  if (!rows.length){
+    attention.innerHTML = '<p class="empty">Nothing stuck. Every file sent has been backed up and cleared.</p>';
+    return;
+  }
+  attention.innerHTML = "";
+  const hdr = document.createElement("p");
+  hdr.className = "empty";
+  hdr.textContent = "Sitting in the outbox longer than " + d.stuck_after_days +
+    " days. Usually Smart Storage is off, or Photos backup is paused.";
+  attention.appendChild(hdr);
+  rows.slice(0, 20).forEach(a => {
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `<span class="name"></span><span class="why"></span>`;
+    el.querySelector(".name").textContent = a.filename;
+    el.querySelector(".why").textContent = a.why;
+    const btn = document.createElement("button");
+    btn.textContent = "Send again";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetch("/api/requeue/" + a.id, {method:"POST"});
+      tick();
+    };
+    el.appendChild(btn);
+    attention.appendChild(el);
+  });
+}
+
+function renderLog(events){
+  log.innerHTML = "";
+  events.forEach(e => {
+    const li = document.createElement("li");
+    li.dataset.kind = e.kind;
+    const t = document.createElement("time");
+    t.textContent = clock(e.ts);
+    const m = document.createElement("span");
+    m.className = "msg";
+    m.textContent = e.msg;
+    li.append(t, m);
+    log.appendChild(li);
+  });
+}
+
+btnSave.onclick = async () => {
+  btnSave.disabled = true;
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(readSettings())
+    });
+    dirty = false;
+    document.getElementById("s_immich_api_key").value = "";
+    savedMsg.hidden = false;
+    setTimeout(() => { savedMsg.hidden = true; }, 2500);
+    await tick();
+  } finally { btnSave.disabled = false; }
+};
+
+async function stepWindow(step){
+  await fetch("/api/window/advance", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({step})
+  });
+  dirty = false;
+  await tick();
+}
+btnNext.onclick = () => stepWindow(1);
+btnPrev.onclick = () => stepWindow(-1);
+
+btnRefresh.onclick = async () => {
+  btnRefresh.disabled = true;
+  btnRefresh.textContent = "Checking";
+  try { await fetch("/api/refresh", {method:"POST"}); await tick(); }
+  finally { btnRefresh.disabled = false; btnRefresh.textContent = "Check the outbox now"; }
+};
+
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

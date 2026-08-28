@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+_data/
+_outbox/
+_spool/
+.env

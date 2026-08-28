@@ -1,0 +1,17 @@
+# Builds from source instead of pulling. For hacking on it locally.
+services:
+  immich-outbox:
+    build: .
+    image: immich-outbox:dev
+    container_name: immich-outbox-dev
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./_data:/data
+      - ./_outbox:/outbox
+      - ./_spool:/spool
+    environment:
+      IMMICH_URL: "http://192.168.1.10:2283"
+      IMMICH_API_KEY: "CHANGE-ME"
+      OUTBOX_MAX_GB: "2"
