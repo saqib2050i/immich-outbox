@@ -60,7 +60,39 @@ docker compose up -d
 To build from source instead:
 `docker compose -f docker-compose.dev.yml up -d --build`
 
-Immich API key: Account Settings → API Keys. Dashboard on `:8099`.
+### The API key
+
+Immich → Account Settings → API Keys. Tick exactly three permissions:
+
+| Permission | Used for |
+|---|---|
+| `asset.read` | `POST /search/metadata` — finding what is in your library |
+| `asset.download` | `GET /assets/{id}/original` — fetching the originals |
+| `server.about` | reading the server version, so the right request format is used |
+
+Nothing that writes: no `asset.update`, `asset.delete`, `asset.upload`, no
+album or job permissions. The relay only ever reads, which is why Immich
+stays a safe source of truth. Don't reach for `all` when debugging — a
+read-only key means a bug here cannot damage your library.
+
+Make it on your own user account, not an admin one.
+
+### Checking it works
+
+The dashboard tests the connection every cycle and on demand, and shows a
+banner across the top when something is wrong. It runs the same four calls
+the relay does and tells you which one failed:
+
+- **Reachable** — wrong address, wrong port, or no route from the container
+- **Version** — falls back to assuming v3 if it cannot read it
+- **Read library** — `asset.read`
+- **Download originals** — `asset.download`, checked with a one-byte range
+  request rather than pulling a whole photo
+
+A rejected key (401) and a missing permission (403) are reported
+differently, because the fixes are different.
+
+Dashboard on `:8099`.
 
 Keep the spool on the same filesystem as the outbox. Downloads land there
 first and are moved in atomically — a half-written file inside the outbox
@@ -160,8 +192,13 @@ none of the rest matters.
   Syncthing and the internet.
 - **A 2016 battery on permanent charge swells.** Put the charger on a smart
   plug and cycle it rather than leaving it pinned at 100% in a drawer.
-- **Immich API drift.** Both endpoints live in `app/immich.py`. If scans go
-  empty after a server upgrade, compare with `<IMMICH_URL>/api/docs`.
+- **Immich version.** Tested against v3.1. The client detects the server
+  version at startup (shown on the dashboard) and adapts: on v3 it filters
+  by `visibility`, on v1/v2 by the old `isArchived` flag. This matters —
+  in v3, omitting visibility means *any* visibility, so a v1-era client
+  would quietly start relaying your archived and hidden photos. All the
+  API surface lives in `app/immich.py`; if scans go empty after an upgrade,
+  compare with `<IMMICH_URL>/api/docs`.
 - **"Needs attention"** lists files sitting in the outbox longer than 45
   days. That means Smart Storage is off, backup is paused, or Photos is
   refusing that file type.

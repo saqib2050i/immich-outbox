@@ -99,6 +99,20 @@
 
   .attention{margin-top:26px}
   .controls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .banner{border:2px solid var(--alarm);padding:12px 14px;margin-bottom:20px;display:none}
+  .banner.show{display:block}
+  .banner.good{border-color:var(--done)}
+  .banner .what{font-size:14px;font-weight:700;margin:0 0 4px}
+  .banner .fix{font-size:12px;color:var(--dim);margin:0}
+  .checks{margin-top:12px;font-size:12px}
+  .checks div{display:flex;gap:10px;padding:4px 0;border-bottom:1px dotted var(--rule)}
+  .checks div:last-child{border-bottom:0}
+  .checks .mark{flex:0 0 14px;font-weight:700}
+  .checks .pass .mark{color:var(--done)}
+  .checks .fail .mark{color:var(--alarm)}
+  .checks .who{flex:0 0 130px}
+  .checks .det{flex:1;color:var(--dim);word-break:break-word}
+  .checks .perm{flex:0 0 auto;color:var(--dim);font-size:11px}
   .window{margin-top:26px;border:2px solid var(--ink);padding:16px}
   .window h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 4px;font-weight:600}
   .window .range{font-size:22px;font-weight:700;letter-spacing:-.02em;margin:0 0 10px}
@@ -148,6 +162,11 @@
   </h1>
 </header>
 
+<div class="banner" id="banner" role="status">
+  <p class="what" id="bannerWhat"></p>
+  <p class="fix" id="bannerFix"></p>
+</div>
+
 <section aria-label="Pipeline">
   <div class="belt" id="belt">
     <div class="seg queued"  id="segQueued"  style="flex-grow:1"></div>
@@ -174,9 +193,13 @@
   <div class="card">
     <h2>Immich</h2>
     <div class="row"><span>Server</span><span id="iUrl">—</span></div>
+    <div class="row"><span>Version</span><span id="iVer">—</span></div>
     <div class="row"><span>Quick scan</span><span id="iInc">—</span></div>
     <div class="row"><span>Full scan</span><span id="iFull">—</span></div>
     <div class="row"><span>Still to send</span><span id="iBytes">—</span></div>
+    <div class="row" id="rowConn"><span>Connection</span><span id="iConn">—</span></div>
+    <div class="controls" style="margin:12px 0 0"><button id="btnTest">Test connection</button></div>
+    <div class="checks" id="checks"></div>
   </div>
 </div>
 
@@ -326,10 +349,12 @@ async function tick(){
   oPath.textContent  = d.outbox.path;
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
+  iVer.textContent   = d.immich.version;
   iInc.textContent   = ago(d.immich.last_incremental_scan);
   iFull.textContent  = ago(d.immich.last_full_scan);
   iBytes.textContent = fmtBytes(c.pending_bytes);
 
+  renderConnection(d);
   renderWindow(d);
   if (!dirty) fillSettings(d.settings);
   renderAttention(d);
@@ -362,6 +387,46 @@ function readSettings(){
            : el.type === "number" ? Number(el.value) : el.value;
   });
   return out;
+}
+
+function renderConnection(d){
+  const c = d.immich.connection || {state:"checking", ok:false, summary:"Checking…", checks:[]};
+  iConn.textContent = c.summary || c.state;
+  rowConn.classList.toggle("bad", !c.ok);
+
+  const FIXES = {
+    unconfigured: "Add the Immich address and API key in Settings below.",
+    unreachable:  "Check the address and port, and that this container can reach Immich on your network.",
+    forbidden:    "Fix the key in Immich, then paste it into Settings below and save.",
+    error:        "See the failing step below.",
+    checking:     ""
+  };
+  if (c.ok){
+    banner.className = "banner";
+  } else {
+    banner.className = "banner show";
+    bannerWhat.textContent = c.summary || "Not connected to Immich";
+    bannerFix.textContent = FIXES[c.state] || "";
+  }
+
+  checks.innerHTML = "";
+  (c.checks || []).forEach(k => {
+    const row = document.createElement("div");
+    row.className = k.ok ? "pass" : "fail";
+    const mark = document.createElement("span");
+    mark.className = "mark"; mark.textContent = k.ok ? "\u2713" : "\u2717";
+    const who = document.createElement("span");
+    who.className = "who"; who.textContent = k.name;
+    const det = document.createElement("span");
+    det.className = "det"; det.textContent = k.detail;
+    row.append(mark, who, det);
+    if (!k.ok && k.needs){
+      const perm = document.createElement("span");
+      perm.className = "perm"; perm.textContent = "needs " + k.needs;
+      row.appendChild(perm);
+    }
+    checks.appendChild(row);
+  });
 }
 
 function renderWindow(d){
@@ -438,6 +503,13 @@ function renderLog(events){
   });
 }
 
+btnTest.onclick = async () => {
+  btnTest.disabled = true;
+  btnTest.textContent = "Testing";
+  try { await fetch("/api/immich/test", {method:"POST"}); await tick(); }
+  finally { btnTest.disabled = false; btnTest.textContent = "Test connection"; }
+};
+
 btnSave.onclick = async () => {
   btnSave.disabled = true;
   try {
@@ -450,6 +522,7 @@ btnSave.onclick = async () => {
     document.getElementById("s_immich_api_key").value = "";
     savedMsg.hidden = false;
     setTimeout(() => { savedMsg.hidden = true; }, 2500);
+    await fetch("/api/immich/test", {method:"POST"});
     await tick();
   } finally { btnSave.disabled = false; }
 };

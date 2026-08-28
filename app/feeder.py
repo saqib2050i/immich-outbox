@@ -133,9 +133,32 @@ async def top_up(used: int) -> int:
     return len(written)
 
 
+async def refresh_connection() -> dict:
+    """Check Immich and store the result for the dashboard."""
+    import json as _json
+    try:
+        result = await immich.check_connection()
+    except Exception as exc:  # noqa: BLE001
+        result = {"ok": False, "state": "error",
+                  "summary": f"Connection check failed: {exc}", "checks": []}
+    db.set_meta("immich_conn", _json.dumps(result))
+    db.set_meta("immich_conn_at", db.now())
+    return result
+
+
 async def run() -> None:
+    was_ok = None
     while True:
         try:
+            conn = await refresh_connection()
+            if conn["ok"] != was_ok:
+                # Only log on change, so a long outage does not flood the log.
+                db.log("info" if conn["ok"] else "error", conn["summary"])
+                was_ok = conn["ok"]
+            if not conn["ok"]:
+                await asyncio.sleep(config.FEED_INTERVAL_MIN * 60)
+                continue
+
             _, used = reconcile()
             await top_up(used)
         except Exception as exc:  # noqa: BLE001

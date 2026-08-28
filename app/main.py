@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -42,6 +43,9 @@ async def status():
             "url": cfg.immich_url,
             "last_full_scan": db.get_meta("last_full_scan"),
             "last_incremental_scan": db.get_meta("last_incremental_scan"),
+            "version": db.get_meta("immich_version", "not checked yet"),
+            "connection": json.loads(db.get_meta("immich_conn") or '{"state":"checking","ok":false,"summary":"Checking connection…","checks":[]}'),
+            "checked_at": db.get_meta("immich_conn_at"),
         },
         "window": db.window_progress(cfg.backfill_start, cfg.backfill_end),
         "settings": cfg.as_dict(),
@@ -71,6 +75,11 @@ async def window_advance(payload: dict | None = None):
         "end": cfg.backfill_end,
         "window": db.window_progress(cfg.backfill_start, cfg.backfill_end),
     }
+
+
+@app.post("/api/immich/test")
+async def immich_test():
+    return await feeder.refresh_connection()
 
 
 @app.post("/api/requeue/{asset_id}")
