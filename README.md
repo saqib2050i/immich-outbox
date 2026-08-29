@@ -200,6 +200,60 @@ Set `MIN_TAKEN_AT` to last week, let twenty photos through, then check
 Google One storage. If usage climbed, the Pixel exemption isn't applying and
 none of the rest matters.
 
+## Statistics
+
+The dashboard breaks the library down by what Storage Saver would have cost
+you, since that is the only thing that decides whether relaying an item is
+worth anything:
+
+| Bucket | Gains from this? |
+|---|---|
+| 4K video | Yes — Storage Saver caps video at 1080p |
+| 1440p video | Yes |
+| 1080p video | No, already at the ceiling |
+| 720p and below | No |
+| Photos over 16 MP | Yes — Storage Saver resizes these to 16 MP |
+| Photos 16 MP or less | No |
+
+Each row shows file count, size, total duration for video, and a bar for how
+much of that bucket is confirmed. Rows that gain quality are marked.
+
+Video is bucketed by its **short side**, so portrait 4K clips are counted as
+4K rather than falling into a lower bucket.
+
+Underneath, the totals give the measured throughput and a completion
+estimate built from what has actually been confirmed, not from the outbox
+cap. Until the first backups come back — about 30 days after upload, when
+Smart Storage clears them — there is no estimate, and it says so rather than
+inventing one.
+
+Dimensions come from Immich's EXIF data. An existing database is migrated
+automatically and fills in on the next full scan; nothing needs resetting.
+
+## Testing tools
+
+The dashboard has a collapsed **Testing tools** section with everything
+needed to re-run a test cleanly. The two safe actions act on one click; the
+three destructive ones need a second click to confirm and disarm themselves
+after five seconds.
+
+| Action | What it does | Keeps |
+|---|---|---|
+| Retry failed | Clears the attempt counter | Everything |
+| Rescan now | Walks the whole library immediately | Everything |
+| Empty the outbox | Deletes what is waiting, re-queues it | Backed-up history, settings |
+| Send everything again | Starts the whole library over | Settings, motion-clip knowledge |
+| Start fresh | Clears the ledger and rescans | Settings, including the API key |
+
+Settings live in the same database as the ledger but are never wiped, so a
+reset cannot silently drop you back to `MIN_TAKEN_AT: 1970` and start
+queuing your entire history.
+
+None of this touches Immich, and nothing can remove photos already uploaded
+to Google Photos — clear those at photos.google.com. For a genuinely clean
+test also empty `DCIM/ImmichQueue` on the Pixel, or Syncthing pushes the old
+files straight back.
+
 ## Watch out for
 
 - **Pixel 1 is EOL** (last patch 2019). Isolated VLAN, reachable only by

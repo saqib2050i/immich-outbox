@@ -24,6 +24,10 @@ from . import config, db, immich, settings
 
 SEP = "__"
 
+# Held while a cycle runs, so a reset from the dashboard cannot land halfway
+# through a download and leave the ledger disagreeing with the outbox.
+CYCLE_LOCK = asyncio.Lock()
+
 
 def _safe_name(asset_id: str, filename: str) -> str:
     clean = "".join(ch for ch in filename if ch.isalnum() or ch in "._-")
@@ -71,6 +75,34 @@ def sweep_partials(max_age_hours: int = 6) -> int:
     except OSError:
         pass
     return removed
+
+
+def clear_outbox() -> tuple[int, list[str]]:
+    """Empty the outbox and report which assets were in it.
+
+    The caller must requeue those ids. Files vanishing from the outbox
+    normally means Google Photos backed them up, so clearing without
+    requeueing would silently mark the whole batch as done.
+    """
+    removed, ids = 0, []
+    try:
+        names = os.listdir(config.OUTBOX_DIR)
+    except OSError:
+        return 0, []
+    for name in names:
+        if name in config.IGNORED:
+            continue
+        path = os.path.join(config.OUTBOX_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if SEP in name and not name.startswith("."):
+            ids.append(name.split(SEP, 1)[0])
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            continue
+    return removed, ids
 
 
 def purge_motion_parts() -> int:
@@ -202,11 +234,43 @@ async def refresh_connection() -> dict:
     return result
 
 
+def empty_outbox() -> tuple[int, list[str]]:
+    """Delete every relayed file from the outbox.
+
+    Syncthing propagates these deletions to the phone, which is what makes
+    the next run a genuinely clean test. Returns the count and the asset ids
+    that were removed, so the caller can put them back to pending.
+    """
+    removed, ids = 0, []
+    try:
+        names = os.listdir(config.OUTBOX_DIR)
+    except OSError:
+        return 0, []
+    for name in names:
+        if name in config.IGNORED:
+            continue
+        path = os.path.join(config.OUTBOX_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        # Leave Syncthing's own bookkeeping alone.
+        if name.startswith(".st"):
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+            if SEP in name:
+                ids.append(name.split(SEP, 1)[0])
+        except OSError:
+            continue
+    return removed, ids
+
+
 async def run() -> None:
     was_ok = None
     while True:
         try:
-            conn = await refresh_connection()
+            async with CYCLE_LOCK:
+                conn = await refresh_connection()
             if conn["ok"] != was_ok:
                 # Only log on change, so a long outage does not flood the log.
                 db.log("info" if conn["ok"] else "error", conn["summary"])
@@ -215,8 +279,9 @@ async def run() -> None:
                 await asyncio.sleep(config.FEED_INTERVAL_MIN * 60)
                 continue
 
-            _, used = reconcile()
-            await top_up(used)
+            async with CYCLE_LOCK:
+                _, used = reconcile()
+                await top_up(used)
         except Exception as exc:  # noqa: BLE001
             db.log("error", f"feeder error: {exc}")
         await asyncio.sleep(config.FEED_INTERVAL_MIN * 60)

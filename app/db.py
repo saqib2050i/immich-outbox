@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS assets (
     sent_at       TEXT,
     confirmed_at  TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
-    last_error    TEXT
+    last_error    TEXT,
+    width         INTEGER,
+    height        INTEGER,
+    duration      REAL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken ON assets(taken_at);
@@ -75,6 +78,13 @@ def connect() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.executescript(SCHEMA)
+        # Existing databases predate the media columns. CREATE TABLE IF NOT
+        # EXISTS will not add them, so patch them in.
+        have = {r["name"] for r in _conn.execute("PRAGMA table_info(assets)")}
+        for col, decl in (("width", "INTEGER"), ("height", "INTEGER"),
+                          ("duration", "REAL")):
+            if col not in have:
+                _conn.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
         _conn.commit()
     return _conn
 
@@ -134,8 +144,18 @@ def upsert_assets(rows: list[dict]) -> int:
         before = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
         c.executemany(
             """INSERT OR IGNORE INTO assets
-               (id, filename, size, checksum, taken_at, kind, state, queued_at)
-               VALUES (:id, :filename, :size, :checksum, :taken_at, :kind, :state, :queued_at)""",
+               (id, filename, size, checksum, taken_at, kind, state, queued_at,
+                width, height, duration)
+               VALUES (:id, :filename, :size, :checksum, :taken_at, :kind, :state,
+                       :queued_at, :width, :height, :duration)""",
+            rows,
+        )
+        # Rows written by an older version carry no dimensions. Backfill them
+        # without touching state, so statistics complete after one scan
+        # instead of needing a reset.
+        c.executemany(
+            """UPDATE assets SET width=:width, height=:height, duration=:duration
+               WHERE id=:id AND width IS NULL AND :width IS NOT NULL""",
             rows,
         )
         c.execute("""UPDATE assets SET state='skipped'
@@ -291,6 +311,173 @@ def requeue(asset_id: str) -> None:
             (asset_id,),
         )
         c.commit()
+
+
+def retry_failed() -> int:
+    """Put every failed asset back in the queue with a fresh attempt count."""
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            "UPDATE assets SET state='pending', attempts=0, last_error=NULL "
+            "WHERE state='failed'")
+        c.commit()
+    return cur.rowcount
+
+
+def requeue_many(ids: list[str]) -> int:
+    """Send these again. Used when outbox files are cleared deliberately, so
+    their disappearance is not mistaken for a Google Photos confirmation."""
+    if not ids:
+        return 0
+    c = connect()
+    with _lock:
+        cur = c.executemany(
+            "UPDATE assets SET state='pending', seen_on_phone=0, attempts=0, "
+            "sent_at=NULL, confirmed_at=NULL, last_error=NULL WHERE id=? "
+            "AND id NOT IN (SELECT id FROM motion_parts)",
+            [(i,) for i in ids])
+        c.commit()
+    return cur.rowcount if cur else 0
+
+
+def reset(ledger: bool = False, motion: bool = False,
+          events: bool = False, settings_too: bool = False) -> dict:
+    """Wipe selected state. Settings live in the same database as the ledger,
+    so they are cleared separately and only when explicitly asked for."""
+    done = {}
+    c = connect()
+    with _lock:
+        if ledger:
+            done["assets"] = c.execute("DELETE FROM assets").rowcount
+        if motion:
+            done["motion_parts"] = c.execute("DELETE FROM motion_parts").rowcount
+        if events:
+            done["events"] = c.execute("DELETE FROM events").rowcount
+        if settings_too:
+            done["settings"] = c.execute(
+                "DELETE FROM meta WHERE k LIKE 'cfg_%'").rowcount
+        # Scan cursors must go with the ledger or nothing is re-discovered
+        # until the next full scan comes round.
+        if ledger:
+            c.execute("DELETE FROM meta WHERE k IN "
+                      "('last_full_scan','last_incremental_scan')")
+        c.commit()
+    return done
+
+
+def reset_states() -> int:
+    """Put every asset back to pending so the whole library is sent again.
+
+    Motion components stay skipped -- that they are components is a fact
+    about the library, not test state, so re-discovering it every time would
+    just re-send stray clips.
+    """
+    c = connect()
+    with _lock:
+        cur = c.execute("""UPDATE assets
+                           SET state='pending', seen_on_phone=0, attempts=0,
+                               sent_at=NULL, confirmed_at=NULL, last_error=NULL
+                           WHERE id NOT IN (SELECT id FROM motion_parts)""")
+        c.commit()
+    return cur.rowcount
+
+
+def reset_ids(ids: list[str]) -> int:
+    """Put specific assets back to pending."""
+    if not ids:
+        return 0
+    c = connect()
+    with _lock:
+        c.executemany(
+            """UPDATE assets SET state='pending', seen_on_phone=0, attempts=0,
+               sent_at=NULL, confirmed_at=NULL, last_error=NULL
+               WHERE id=? AND id NOT IN (SELECT id FROM motion_parts)""",
+            [(i,) for i in ids],
+        )
+        c.commit()
+    return len(ids)
+
+
+def wipe_ledger(forget_motion_parts: bool = False) -> int:
+    """Delete the ledger entirely. Settings in `meta` are untouched."""
+    c = connect()
+    with _lock:
+        n = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
+        c.execute("DELETE FROM assets")
+        c.execute("DELETE FROM events")
+        if forget_motion_parts:
+            c.execute("DELETE FROM motion_parts")
+        # Scan timestamps must go too, or the next cycle thinks it is current.
+        c.execute("DELETE FROM meta WHERE k IN "
+                  "('last_full_scan','last_incremental_scan','outbox_files','outbox_used')")
+        c.commit()
+    return n
+
+
+def media_breakdown() -> list[dict]:
+    """Assets grouped by what they are and how much resolution they carry.
+
+    The buckets are chosen around what Storage Saver would have cost you:
+    it caps photos at 16 MP and video at 1080p, so anything above those
+    lines is what this whole relay actually buys.
+
+    Short side decides the video bucket, so portrait clips land correctly.
+    """
+    rows = connect().execute("""
+        SELECT
+          CASE
+            WHEN width IS NULL OR width = 0 OR height IS NULL OR height = 0
+                 THEN 'unknown'
+            WHEN kind = 'VIDEO' AND MIN(width, height) >= 2160 THEN 'video_4k'
+            WHEN kind = 'VIDEO' AND MIN(width, height) >= 1440 THEN 'video_1440'
+            WHEN kind = 'VIDEO' AND MIN(width, height) >= 1080 THEN 'video_1080'
+            WHEN kind = 'VIDEO'                                THEN 'video_sd'
+            WHEN (width * height) / 1000000.0 > 16.0           THEN 'photo_big'
+            ELSE 'photo_small'
+          END AS bucket,
+          kind,
+          COUNT(*)                                                   AS total,
+          COALESCE(SUM(size), 0)                                     AS bytes,
+          SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)       AS confirmed,
+          COALESCE(SUM(CASE WHEN state = 'confirmed' THEN size ELSE 0 END), 0)
+                                                                     AS confirmed_bytes,
+          COALESCE(SUM(duration), 0)                                 AS seconds
+        FROM assets
+        WHERE state != 'skipped'
+        GROUP BY bucket, kind
+        ORDER BY bytes DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def throughput(days: int = 30) -> dict:
+    """What has actually been confirmed lately, for a real completion estimate."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    row = connect().execute(
+        """SELECT COUNT(*) n, COALESCE(SUM(size),0) b
+           FROM assets WHERE state='confirmed' AND confirmed_at >= ?""",
+        (cutoff,),
+    ).fetchone()
+    first = connect().execute(
+        "SELECT MIN(confirmed_at) t FROM assets WHERE state='confirmed'"
+    ).fetchone()["t"]
+
+    # Measure over the time actually elapsed, so a young install does not
+    # look thirty times slower than it is.
+    span = float(days)
+    if first:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(first)).total_seconds() / 86400
+        span = max(0.5, min(float(days), age))
+
+    return {
+        "days": days,
+        "files": row["n"],
+        "bytes": row["b"],
+        "bytes_per_day": row["b"] / span if span else 0,
+        "files_per_day": row["n"] / span if span else 0,
+        "measured_over_days": round(span, 1),
+        "since": first,
+    }
 
 
 def counts() -> dict:

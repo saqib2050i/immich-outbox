@@ -56,6 +56,15 @@ async def status():
     }
 
 
+@app.get("/api/stats")
+async def stats():
+    return {
+        "breakdown": db.media_breakdown(),
+        "throughput": db.throughput(30),
+        "counts": db.counts(),
+    }
+
+
 @app.get("/api/settings")
 async def get_settings():
     return settings.load().as_dict()
@@ -80,6 +89,57 @@ async def window_advance(payload: dict | None = None):
 @app.post("/api/immich/test")
 async def immich_test():
     return await feeder.refresh_connection()
+
+
+@app.post("/api/rescan")
+async def rescan():
+    db.log("scan", "full rescan requested")
+    asyncio.create_task(worker.full_scan())
+    return {"ok": True, "scanning": True}
+
+
+@app.post("/api/retry-failed")
+async def retry_failed():
+    n = db.retry_failed()
+    if n:
+        db.log("requeue", f"{n} failed asset(s) put back in the queue")
+    return {"ok": True, "requeued": n}
+
+
+@app.post("/api/reset")
+async def reset(payload: dict):
+    """Testing tools. Never touches Google Photos or Immich -- only this
+    service's own ledger and the outbox folder."""
+    scope = str(payload.get("scope", ""))
+
+    if scope == "outbox":
+        removed, ids = feeder.empty_outbox()
+        db.reset_ids(ids)
+        db.log("reset", f"emptied the outbox ({removed} file(s)) and re-queued them")
+        result = {"removed": removed, "requeued": len(ids)}
+
+    elif scope == "resend":
+        removed, _ = feeder.empty_outbox()
+        n = db.reset_states()
+        db.log("reset", f"re-queued {n} asset(s) and emptied the outbox ({removed} file(s))")
+        result = {"removed": removed, "requeued": n}
+
+    elif scope == "fresh":
+        removed, _ = feeder.empty_outbox()
+        n = db.wipe_ledger(forget_motion_parts=bool(payload.get("forget_motion_parts")))
+        db.log("reset", f"cleared the ledger ({n} asset(s)) and emptied the outbox "
+                        f"({removed} file(s)) — rescanning Immich")
+        # Without this the dashboard sits empty until the next scheduled scan.
+        asyncio.create_task(worker.full_scan())
+        result = {"removed": removed, "cleared": n, "rescanning": True}
+
+    else:
+        return {"ok": False, "error": f"unknown scope {scope!r}"}
+
+    _, used = feeder.reconcile()
+    result["ok"] = True
+    result["outbox_used"] = used
+    return result
 
 
 @app.post("/api/requeue/{asset_id}")

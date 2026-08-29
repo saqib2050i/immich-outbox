@@ -99,6 +99,44 @@
 
   .attention{margin-top:26px}
   .controls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+
+  section.stats{margin-top:26px}
+  section.stats h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px;font-weight:600}
+  .st-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center;
+          padding:9px 0;border-bottom:1px solid var(--rule)}
+  .st-row:last-of-type{border-bottom:0}
+  .st-name{font-size:13px;font-weight:700}
+  .st-name small{display:block;font-weight:400;font-size:11px;color:var(--dim);letter-spacing:0}
+  .st-fig{font-size:13px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  .st-fig small{display:block;font-size:11px;color:var(--dim)}
+  .st-bar{grid-column:1/-1;height:6px;border:1px solid var(--rule);margin-top:2px}
+  .st-bar i{display:block;height:100%;background:var(--done)}
+  .st-gain{border-left:3px solid var(--transit);padding-left:9px}
+  .st-total{display:flex;gap:26px;flex-wrap:wrap;margin:14px 0 4px;
+            border-top:2px solid var(--ink);padding-top:12px}
+  .st-total div{display:flex;flex-direction:column}
+  .st-total .n{font-size:20px;font-weight:700;letter-spacing:-.02em}
+  .st-total .k{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+
+  details.tools{margin-top:26px;border-top:1px solid var(--rule);padding-top:14px}
+  details.tools > summary{
+    font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);
+    cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;
+  }
+  details.tools > summary::-webkit-details-marker{display:none}
+  details.tools > summary::before{content:"▸";font-size:11px}
+  details.tools[open] > summary::before{content:"▾"}
+  .tool{border:1px solid var(--rule);padding:14px 16px;margin-top:12px;background:var(--panel)}
+  .tool h3{font-size:14px;margin:0 0 4px;font-weight:700}
+  .tool p{font-size:12px;color:var(--dim);margin:0 0 4px}
+  .tool p.keeps{color:var(--done)}
+  .tool .act{margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tool button.danger{border-color:var(--alarm);color:var(--alarm)}
+  .tool button.danger:hover{background:var(--alarm);color:var(--paper)}
+  .tool .confirm{font-size:12px;color:var(--alarm)}
+  .tool .done{font-size:12px;color:var(--done)}
+  .warnbox{border:1px solid var(--alarm);padding:10px 12px;margin-top:12px;font-size:12px;color:var(--dim)}
+  .warnbox b{color:var(--ink)}
   .banner{border:2px solid var(--alarm);padding:12px 14px;margin-bottom:20px;display:none}
   .banner.show{display:block}
   .banner.good{border-color:var(--done)}
@@ -297,6 +335,88 @@
   </div>
 </form>
 
+<section class="stats">
+  <h2>What is in the library</h2>
+  <div id="stBody"><p class="empty">Working it out…</p></div>
+  <div class="st-total" id="stTotals"></div>
+  <p class="empty" id="stNote"></p>
+</section>
+
+<details class="tools">
+  <summary>Testing tools</summary>
+
+  <div class="warnbox">
+    <b>These only affect this service.</b> Nothing here deletes anything from
+    Immich, and nothing can remove photos already uploaded to Google Photos —
+    clear those yourself at photos.google.com. Files removed from the outbox
+    are deleted on the Pixel too, once Syncthing catches up.
+  </div>
+
+  <div class="tool">
+    <h3>Retry the failed ones</h3>
+    <p>Clears the attempt counter on anything that gave up after five tries.
+       Use it after fixing a permission or connection problem.</p>
+    <p class="keeps">Keeps: everything. Nothing is deleted.</p>
+    <div class="act">
+      <button data-plain="/api/retry-failed">Retry failed</button>
+      <span class="confirm" hidden></span>
+    </div>
+  </div>
+
+  <div class="tool">
+    <h3>Rescan Immich now</h3>
+    <p>Walks the whole library immediately instead of waiting for the next
+       scheduled scan. Use it after adding photos to Immich.</p>
+    <p class="keeps">Keeps: everything. Nothing is deleted.</p>
+    <div class="act">
+      <button data-plain="/api/rescan">Rescan now</button>
+      <span class="confirm" hidden></span>
+    </div>
+  </div>
+
+  <div class="tool">
+    <h3>Empty the outbox</h3>
+    <p>Deletes everything currently waiting, and puts those photos back in the
+       queue to be sent again. Use it when the outbox holds something wrong.</p>
+    <p class="keeps">Keeps: what has already been backed up, and your settings.</p>
+    <div class="act">
+      <button class="danger" data-scope="outbox">Empty the outbox</button>
+      <span class="confirm" hidden></span>
+    </div>
+  </div>
+
+  <div class="tool">
+    <h3>Send everything again</h3>
+    <p>Forgets what has been sent and starts the whole library over. The usual
+       one while testing.</p>
+    <p class="keeps">Keeps: your settings, and which files are motion-photo clips.</p>
+    <div class="act">
+      <button class="danger" data-scope="resend">Send everything again</button>
+      <span class="confirm" hidden></span>
+    </div>
+  </div>
+
+  <div class="tool">
+    <h3>Start fresh</h3>
+    <p>Clears the ledger and activity log completely, empties the outbox, and
+       rescans Immich from scratch.</p>
+    <p class="keeps">Keeps: your settings, including the API key.</p>
+    <div class="act">
+      <button class="danger" data-scope="fresh">Start fresh</button>
+      <label style="font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:center">
+        <input type="checkbox" id="forgetMotion"> also forget motion-photo clips
+      </label>
+      <span class="confirm" hidden></span>
+    </div>
+  </div>
+
+  <div class="warnbox">
+    For a clean test, also delete the contents of <b>DCIM/ImmichQueue</b> on the
+    Pixel and remove the test uploads from Google Photos. Otherwise Syncthing
+    pushes the old files back, and re-sending gives you duplicates.
+  </div>
+</details>
+
 <section class="log">
   <h2 class="eyebrow">Activity</h2>
   <ol id="log"></ol>
@@ -355,6 +475,7 @@ async function tick(){
   iBytes.textContent = fmtBytes(c.pending_bytes);
 
   renderConnection(d);
+  renderStats(d);
   renderWindow(d);
   if (!dirty) fillSettings(d.settings);
   renderAttention(d);
@@ -427,6 +548,92 @@ function renderConnection(d){
     }
     checks.appendChild(row);
   });
+}
+
+const BUCKETS = {
+  video_4k:    ["4K video",        "gains the most — Storage Saver caps video at 1080p", true],
+  video_1440:  ["1440p video",     "above the Storage Saver ceiling", true],
+  video_1080:  ["1080p video",     "at the Storage Saver ceiling", false],
+  video_sd:    ["720p and below",  "below the ceiling — no quality gained", false],
+  photo_big:   ["Photos over 16 MP", "gains — Storage Saver resizes these to 16 MP", true],
+  photo_small: ["Photos 16 MP or less", "at or below the ceiling", false],
+  unknown:     ["Not yet measured", "dimensions fill in on the next full scan", false]
+};
+
+const fmtDur = s => {
+  if (!s) return "";
+  const h = Math.floor(s/3600), m = Math.round((s%3600)/60);
+  return h ? h + " h " + m + " m" : m + " min";
+};
+
+async function renderStats(d){
+  let st;
+  try { st = await (await fetch("/api/stats")).json(); } catch { return; }
+
+  const rows = st.breakdown.filter(r => r.total > 0);
+  if (!rows.length){
+    stBody.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
+    return;
+  }
+
+  stBody.innerHTML = "";
+  let gainFiles = 0, gainBytes = 0;
+
+  rows.forEach(r => {
+    const [name, why, gains] = BUCKETS[r.bucket] || [r.bucket, "", false];
+    if (gains){ gainFiles += r.total; gainBytes += r.bytes; }
+
+    const el = document.createElement("div");
+    el.className = "st-row" + (gains ? " st-gain" : "");
+
+    const nm = document.createElement("span");
+    nm.className = "st-name";
+    nm.textContent = name;
+    const sub = document.createElement("small");
+    sub.textContent = why + (r.seconds ? " · " + fmtDur(r.seconds) : "");
+    nm.appendChild(sub);
+
+    const fig = document.createElement("span");
+    fig.className = "st-fig";
+    fig.textContent = fmtNum(r.total) + (r.total === 1 ? " file" : " files");
+    const sub2 = document.createElement("small");
+    sub2.textContent = fmtBytes(r.bytes) + " · " + fmtNum(r.confirmed) + " backed up";
+    fig.appendChild(sub2);
+
+    const bar = document.createElement("span");
+    bar.className = "st-bar";
+    const fill = document.createElement("i");
+    fill.style.width = (r.total ? (r.confirmed / r.total) * 100 : 0) + "%";
+    bar.appendChild(fill);
+
+    el.append(nm, fig, bar);
+    stBody.appendChild(el);
+  });
+
+  const c = st.counts, tp = st.throughput;
+  const remaining = c.pending_bytes + c.outbox_bytes;
+  const perDay = tp.bytes_per_day;
+  const daysLeft = perDay > 0 ? Math.ceil(remaining / perDay) : null;
+
+  stTotals.innerHTML = "";
+  const totals = [
+    [fmtNum(gainFiles), "files gain quality"],
+    [fmtBytes(gainBytes), "of that is the gain"],
+    [perDay > 0 ? fmtBytes(perDay) + "/day" : "—", "measured rate"],
+    [daysLeft ? (daysLeft > 60 ? Math.round(daysLeft/30) + " months" : daysLeft + " days") : "—",
+     "left at that rate"]
+  ];
+  totals.forEach(([n, k]) => {
+    const div = document.createElement("div");
+    const a = document.createElement("span"); a.className = "n"; a.textContent = n;
+    const b = document.createElement("span"); b.className = "k"; b.textContent = k;
+    div.append(a, b); stTotals.appendChild(div);
+  });
+
+  stNote.textContent = tp.files > 0
+    ? "Rate measured over the last " + tp.measured_over_days + " days of actual backups."
+    : "No completion estimate until the first photos come back confirmed — "
+      + "Smart Storage clears them about 30 days after upload.";
 }
 
 function renderWindow(d){
@@ -557,6 +764,84 @@ btnRefresh.onclick = async () => {
   try { await fetch("/api/refresh", {method:"POST"}); await tick(); }
   finally { btnRefresh.disabled = false; btnRefresh.textContent = "Check the outbox now"; }
 };
+
+// Two-step confirm: the first click arms the button, the second acts.
+// A five-second timeout disarms, so a stray click cannot linger.
+document.querySelectorAll(".tool button[data-scope]").forEach(btn => {
+  const scope = btn.dataset.scope;
+  const note = btn.parentElement.querySelector(".confirm");
+  let armed = false, timer = null;
+  const label = btn.textContent;
+
+  const disarm = () => {
+    armed = false; clearTimeout(timer);
+    btn.textContent = label; note.hidden = true; note.className = "confirm";
+  };
+
+  btn.onclick = async () => {
+    if (!armed){
+      armed = true;
+      btn.textContent = "Yes, do it";
+      note.hidden = false;
+      note.textContent = "Click again to confirm";
+      timer = setTimeout(disarm, 5000);
+      return;
+    }
+    clearTimeout(timer);
+    btn.disabled = true;
+    btn.textContent = "Working";
+    note.textContent = "";
+    try {
+      const body = {scope};
+      if (scope === "fresh") body.forget_motion_parts = forgetMotion.checked;
+      const r = await fetch("/api/reset", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      });
+      const d = await r.json();
+      note.hidden = false;
+      note.className = "done";
+      note.textContent = d.ok
+        ? [d.removed != null ? d.removed + " removed from the outbox" : null,
+           d.requeued != null ? d.requeued + " re-queued" : null,
+           d.cleared != null ? d.cleared + " cleared, rescanning Immich" : null
+          ].filter(Boolean).join(" · ")
+        : ("Failed: " + (d.error || "unknown"));
+      await tick();
+    } catch (e) {
+      note.hidden = false; note.className = "confirm";
+      note.textContent = "Failed: " + e.message;
+    } finally {
+      armed = false;
+      btn.disabled = false;
+      btn.textContent = label;
+      setTimeout(() => { note.hidden = true; }, 8000);
+    }
+  };
+});
+
+// Safe actions: no confirmation needed, nothing is destroyed.
+document.querySelectorAll(".tool button[data-plain]").forEach(btn => {
+  const url = btn.dataset.plain, note = btn.parentElement.querySelector(".confirm");
+  const label = btn.textContent;
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "Working";
+    try {
+      const d = await (await fetch(url, {method:"POST"})).json();
+      note.hidden = false; note.className = "done";
+      note.textContent = d.requeued != null ? d.requeued + " put back in the queue"
+                       : d.scanning ? "scanning Immich…" : "done";
+      await tick();
+    } catch (e) {
+      note.hidden = false; note.className = "confirm";
+      note.textContent = "Failed: " + e.message;
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+      setTimeout(() => { note.hidden = true; }, 8000);
+    }
+  };
+});
 
 tick();
 setInterval(tick, 5000);

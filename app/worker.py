@@ -31,6 +31,12 @@ async def _scan(taken_after: str | None, label: str) -> None:
         db.log("scan", f"{label} scan queued {added} new asset(s)")
 
 
+async def full_scan() -> None:
+    """Scan the whole library now, rather than waiting for the next cycle."""
+    await _scan("1970-01-01T00:00:00.000Z", "full")
+    db.set_meta("force_full_scan", "0")
+
+
 async def run() -> None:
     from . import settings
 
@@ -42,7 +48,10 @@ async def run() -> None:
             await asyncio.sleep(60)
             continue
         try:
-            if loop_now - last_full > config.FULL_SCAN_INTERVAL_HOURS * 3600:
+            forced = db.get_meta("force_full_scan") == "1"
+            if forced:
+                db.set_meta("force_full_scan", "0")
+            if forced or loop_now - last_full > config.FULL_SCAN_INTERVAL_HOURS * 3600:
                 floor = "1970-01-01"  # ledger holds everything; windows filter
                 await _scan(f"{floor}T00:00:00.000Z" if len(floor) == 10 else floor, "full")
                 last_full = loop_now
@@ -54,4 +63,9 @@ async def run() -> None:
         except Exception as exc:  # noqa: BLE001
             db.log("error", f"scanner loop error: {exc}")
 
-        await asyncio.sleep(config.SCAN_INTERVAL_MIN * 60)
+        # Wake often enough that a "Rescan now" from the dashboard is acted
+        # on promptly instead of waiting out the whole interval.
+        for _ in range(max(1, config.SCAN_INTERVAL_MIN * 4)):
+            if db.get_meta("force_full_scan") == "1":
+                break
+            await asyncio.sleep(15)

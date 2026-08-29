@@ -133,6 +133,24 @@ def _normalise(item: dict) -> dict | None:
         return None
 
     exif = item.get("exifInfo") or {}
+
+    # Immich reports duration as "00:01:23.456"; store it as seconds.
+    duration = None
+    raw = item.get("duration")
+    if isinstance(raw, str) and ":" in raw:
+        try:
+            h, m, sec = raw.split(":")
+            duration = int(h) * 3600 + int(m) * 60 + float(sec)
+        except (ValueError, TypeError):
+            duration = None
+
+    def _dim(*keys):
+        for k in keys:
+            v = exif.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+        return None
+
     return {
         "id": item["id"],
         "filename": item.get("originalFileName") or f"{item['id']}.bin",
@@ -142,6 +160,9 @@ def _normalise(item: dict) -> dict | None:
         "kind": kind,
         "state": "pending",
         "queued_at": None,
+        "width": _dim("exifImageWidth", "imageWidth", "width"),
+        "height": _dim("exifImageHeight", "imageHeight", "height"),
+        "duration": duration,
     }
 
 
