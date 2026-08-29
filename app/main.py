@@ -4,10 +4,10 @@ from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 
-from . import config, db, feeder, immich, settings, worker
+from . import alerts, backup, config, db, feeder, immich, settings, syncthing, worker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -54,6 +54,9 @@ async def status():
         "problems": [dict(r) for r in db.problems()],
         "events": [dict(r) for r in db.recent_events()],
         "stuck_after_days": config.STUCK_AFTER_DAYS,
+        "alerts": json.loads(db.get_meta("alerts") or "[]"),
+        "last_backup": db.get_meta("last_backup"),
+        "revision": db.revision(),
     }
 
 
@@ -89,6 +92,106 @@ async def send(payload: dict):
         _, used = feeder.reconcile()
         await feeder.top_up(used)
     return {"ok": True, "queued": n}
+
+
+@app.get("/api/events")
+async def events():
+    """Server-sent events.
+
+    The dashboard used to poll every five seconds, so an action could sit
+    invisible for most of that. The ledger bumps a revision on every write;
+    this watches it and pushes as soon as it moves, which in practice is
+    within a fraction of a second of anything happening.
+    """
+    async def stream():
+        last = -1
+        idle = 0
+        while True:
+            rev = db.revision()
+            if rev != last:
+                last = rev
+                idle = 0
+                yield f"event: changed\ndata: {rev}\n\n"
+            else:
+                idle += 1
+                if idle >= 40:      # ~20s keepalive through proxies
+                    idle = 0
+                    yield ": keepalive\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@app.get("/api/month/{month}")
+async def month_detail(month: str):
+    return db.month_detail(month)
+
+
+@app.post("/api/month/send")
+async def month_send(payload: dict):
+    month = str(payload.get("month", ""))
+    group = payload.get("group")
+    n = db.force_send_month(month, group)
+    if n:
+        db.log("send", f"{n} file(s) from {month}"
+                       + (f" ({group})" if group else "") + " moved to the front")
+        _, used = feeder.reconcile()
+        await feeder.top_up(used)
+    return {"ok": True, "queued": n}
+
+
+@app.get("/api/reconciliation")
+async def reconciliation():
+    return {"groups": db.reconciliation(), "counts": db.counts()}
+
+
+@app.get("/api/syncthing")
+async def syncthing_status():
+    return await syncthing.status()
+
+
+@app.get("/api/alerts")
+async def get_alerts():
+    return await alerts.check_and_notify()
+
+
+@app.post("/api/alerts/test")
+async def test_alert():
+    ok = await alerts.send_test()
+    return {"ok": ok, "error": None if ok else "No webhook set, or it rejected the request"}
+
+
+@app.get("/api/backups")
+async def get_backups():
+    return {"backups": backup.list_backups(), "last": db.get_meta("last_backup")}
+
+
+@app.post("/api/backups")
+async def make_backup():
+    return backup.create()
+
+
+@app.post("/api/backups/restore")
+async def restore_backup(payload: dict):
+    try:
+        return backup.restore(str(payload.get("name", "")))
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/backups/{name}")
+async def download_backup(name: str):
+    try:
+        path = backup.path_for(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="no such backup")
+    return FileResponse(path, filename=name, media_type="application/octet-stream")
 
 
 @app.get("/api/settings")

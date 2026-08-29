@@ -20,7 +20,7 @@ import asyncio
 import os
 import tempfile
 
-from . import config, db, immich, settings
+from . import alerts, backup, config, db, immich, settings
 
 SEP = "__"
 

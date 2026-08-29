@@ -24,6 +24,19 @@ from . import config
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
+# Incremented by every write. The event stream watches this, so the browser
+# sees a change within a fraction of a second instead of on a poll timer.
+_revision = 0
+
+
+def revision() -> int:
+    return _revision
+
+
+def _bump() -> None:
+    global _revision
+    _revision += 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
     id            TEXT PRIMARY KEY,
@@ -99,6 +112,7 @@ def log(kind: str, msg: str) -> None:
             "DELETE FROM events WHERE id < (SELECT MAX(id) - 500 FROM events)"
         )
         c.commit()
+        _bump()
 
 
 def mark_motion_parts(ids: list[str]) -> int:
@@ -121,6 +135,7 @@ def mark_motion_parts(ids: list[str]) -> int:
             [(i,) for i in ids],
         )
         c.commit()
+        _bump()
     return cur.rowcount if cur else 0
 
 
@@ -134,6 +149,7 @@ def set_meta(k: str, v: str) -> None:
     with _lock:
         c.execute("INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=?", (k, v, v))
         c.commit()
+        _bump()
 
 
 def upsert_assets(rows: list[dict]) -> int:
@@ -164,6 +180,7 @@ def upsert_assets(rows: list[dict]) -> int:
                      WHERE state='pending'
                        AND id IN (SELECT id FROM motion_parts)""")
         c.commit()
+        _bump()
         after = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
     return after - before
 
@@ -247,6 +264,7 @@ def mark_queued(ids: list[str]) -> None:
             [(now(), i) for i in ids],
         )
         c.commit()
+        _bump()
 
 
 def mark_present(ids: list[str]) -> None:
@@ -267,6 +285,7 @@ def mark_present(ids: list[str]) -> None:
             [(now(), i) for i in ids],
         )
         c.commit()
+        _bump()
 
 
 def confirm_absent(present_ids: list[str]) -> int:
@@ -281,10 +300,15 @@ def confirm_absent(present_ids: list[str]) -> int:
         gone = [r["id"] for r in cur.fetchall() if r["id"] not in set(present_ids)]
         if gone:
             c.executemany(
-                "UPDATE assets SET state='confirmed', confirmed_at=? WHERE id=?",
+                "UPDATE assets SET state='confirmed', confirmed_at=?, forced=0 WHERE id=?",
                 [(now(), i) for i in gone],
             )
+            # The stall alert keys off this: "queued things exist but nothing
+            # has come back" is the signature of a silent failure.
+            c.execute("INSERT OR REPLACE INTO meta (k,v) VALUES ('last_confirm_at', ?)",
+                      (now(),))
             c.commit()
+            _bump()
     return len(gone)
 
 
@@ -302,6 +326,7 @@ def mark_failed(asset_id: str, error: str) -> None:
             (error[:300], asset_id),
         )
         c.commit()
+        _bump()
 
 
 def requeue(asset_id: str) -> None:
@@ -313,6 +338,7 @@ def requeue(asset_id: str) -> None:
             (asset_id,),
         )
         c.commit()
+        _bump()
 
 
 def retry_failed() -> int:
@@ -323,6 +349,7 @@ def retry_failed() -> int:
             "UPDATE assets SET state='pending', attempts=0, last_error=NULL "
             "WHERE state='failed'")
         c.commit()
+        _bump()
     return cur.rowcount
 
 
@@ -339,6 +366,7 @@ def requeue_many(ids: list[str]) -> int:
             "AND id NOT IN (SELECT id FROM motion_parts)",
             [(i,) for i in ids])
         c.commit()
+        _bump()
     return cur.rowcount if cur else 0
 
 
@@ -364,6 +392,7 @@ def reset(ledger: bool = False, motion: bool = False,
             c.execute("DELETE FROM meta WHERE k IN "
                       "('last_full_scan','last_incremental_scan')")
         c.commit()
+        _bump()
     return done
 
 
@@ -381,6 +410,7 @@ def reset_states() -> int:
                                sent_at=NULL, confirmed_at=NULL, last_error=NULL
                            WHERE id NOT IN (SELECT id FROM motion_parts)""")
         c.commit()
+        _bump()
     return cur.rowcount
 
 
@@ -397,6 +427,7 @@ def reset_ids(ids: list[str]) -> int:
             [(i,) for i in ids],
         )
         c.commit()
+        _bump()
     return len(ids)
 
 
@@ -413,6 +444,7 @@ def wipe_ledger(forget_motion_parts: bool = False) -> int:
         c.execute("DELETE FROM meta WHERE k IN "
                   "('last_full_scan','last_incremental_scan','outbox_files','outbox_used')")
         c.commit()
+        _bump()
     return n
 
 
@@ -487,6 +519,7 @@ def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
         else:
             return 0
         c.commit()
+        _bump()
     return cur.rowcount
 
 
@@ -515,6 +548,125 @@ def media_breakdown() -> list[dict]:
         GROUP BY bucket, kind
         ORDER BY bytes DESC
     """).fetchall()
+    return [dict(r) for r in rows]
+
+
+# Whether an item beats what Storage Saver would have done to it. Photos are
+# capped at 16 MP and video at 1080p, so anything above those lines is what
+# this relay actually buys you.
+GAIN_SQL = """
+    CASE
+      WHEN width IS NULL OR width = 0 OR height IS NULL OR height = 0 THEN 0
+      WHEN kind = 'VIDEO' THEN CASE WHEN MIN(width, height) > 1080 THEN 1 ELSE 0 END
+      ELSE CASE WHEN (width * height) / 1000000.0 > 16.0 THEN 1 ELSE 0 END
+    END
+"""
+
+
+def month_detail(month: str) -> dict:
+    """One month split into photos and videos, each by whether original
+    quality actually gains anything over what Google already holds."""
+    rows = connect().execute(f"""
+        SELECT kind,
+               {GAIN_SQL}                                            AS gains,
+               COUNT(*)                                              AS total,
+               COALESCE(SUM(size), 0)                                AS bytes,
+               SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)  AS confirmed,
+               SUM(CASE WHEN state = 'queued'    THEN 1 ELSE 0 END)  AS queued,
+               SUM(CASE WHEN state IN ('pending','failed') THEN 1 ELSE 0 END)
+                                                                     AS remaining,
+               MIN(CASE WHEN width>0 AND height>0 THEN MIN(width,height) END) AS min_side,
+               MAX(CASE WHEN width>0 AND height>0 THEN MAX(width,height) END) AS max_side
+        FROM assets
+        WHERE state != 'skipped' AND substr(taken_at, 1, 7) = ?
+        GROUP BY kind, gains
+    """, (month,)).fetchall()
+
+    groups = []
+    for r in rows:
+        d = dict(r)
+        video = d["kind"] == "VIDEO"
+        if not d["min_side"]:
+            label, why = ("Videos" if video else "Photos") + " — not yet measured", \
+                         "dimensions arrive on the next full scan"
+        elif video:
+            label = "Video above 1080p" if d["gains"] else "Video at 1080p or below"
+            why = ("original quality is kept — Storage Saver would cap these at 1080p"
+                   if d["gains"] else "no gain — already at or under the cap")
+        else:
+            label = "Photos over 16 MP" if d["gains"] else "Photos 16 MP or less"
+            why = ("original quality is kept — Storage Saver would resize these"
+                   if d["gains"] else "no gain — already at or under the cap")
+        d["label"], d["why"] = label, why
+        d["group"] = ("video" if video else "photo") + ("_gain" if d["gains"] else "_nogain")
+        groups.append(d)
+
+    groups.sort(key=lambda g: (g["kind"] != "IMAGE", -g["gains"]))
+    return {"month": month, "groups": groups}
+
+
+def force_send_month(month: str, group: str | None = None) -> int:
+    """Queue a month, or one of its four categories, ahead of everything else."""
+    where = ["substr(taken_at,1,7) = ?", "state IN ('pending','failed')",
+             "id NOT IN (SELECT id FROM motion_parts)"]
+    params: list = [month]
+    if group:
+        kind = "IMAGE" if group.startswith("photo") else "VIDEO"
+        where.append("kind = ?")
+        params.append(kind)
+        where.append(f"{GAIN_SQL} = ?")
+        params.append(1 if group.endswith("_gain") else 0)
+
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"""UPDATE assets SET forced=1, state='pending', attempts=0,
+                                  last_error=NULL
+                WHERE {' AND '.join(where)}""",
+            params,
+        )
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
+def reconciliation() -> list[dict]:
+    """Everything not yet in Google Photos, grouped by why.
+
+    With a curated library this should trend to empty; anything lingering is
+    a real gap in the backup rather than something you chose to leave out.
+    """
+    from . import config, settings
+    cfg = settings.load()
+    rows = connect().execute(f"""
+        SELECT
+          CASE
+            WHEN state = 'failed'  THEN 'failed'
+            WHEN state = 'skipped' THEN 'skipped'
+            WHEN state = 'queued'  THEN 'in_outbox'
+            WHEN kind = 'VIDEO' AND :include_video = 0 THEN 'video_off'
+            WHEN size > :max_bytes THEN 'too_big'
+            WHEN (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
+              OR (:backfill = 1 AND substr(taken_at,1,10)
+                    BETWEEN :bstart AND :bend)
+              OR forced = 1                             THEN 'queued_soon'
+            ELSE 'outside_window'
+          END AS reason,
+          COUNT(*) AS total,
+          COALESCE(SUM(size), 0) AS bytes
+        FROM assets
+        WHERE state != 'confirmed'
+        GROUP BY reason
+        ORDER BY total DESC
+    """, {
+        "include_video": 1 if cfg.include_video else 0,
+        "max_bytes": cfg.max_asset_bytes,
+        "ongoing": 1 if cfg.ongoing_enabled else 0,
+        "ongoing_from": cfg.ongoing_from,
+        "backfill": 1 if cfg.backfill_enabled else 0,
+        "bstart": cfg.backfill_start,
+        "bend": cfg.backfill_end,
+    }).fetchall()
     return [dict(r) for r in rows]
 
 

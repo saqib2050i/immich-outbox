@@ -121,6 +121,16 @@
   .mo button{font-size:10px;padding:2px 7px}
   .mo.done .mname{color:var(--done)}
   .mo.current{background:var(--panel);outline:1px solid var(--transit)}
+  .mdetail{padding:8px 0 12px 20px;background:var(--panel);border-bottom:1px solid var(--rule)}
+  .cat{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+       padding:7px 10px;font-size:12px;border-left:3px solid var(--rule);margin:6px 0}
+  .cat.gain{border-left-color:var(--transit)}
+  .cat .cname{font-weight:700;font-size:13px}
+  .cat .cwhy{display:block;font-weight:400;color:var(--dim);font-size:11px}
+  .cat .cfig{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+  .cat button{font-size:10px;padding:3px 9px}
+  .mdetail .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .mdetail .hint{font-size:11px;color:var(--dim);margin:2px 0 8px}
   section.stats h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px;font-weight:600}
   .st-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center;
           padding:9px 0;border-bottom:1px solid var(--rule)}
@@ -171,6 +181,18 @@
   .tool .done{font-size:12px;color:var(--done)}
   .warnbox{border:1px solid var(--alarm);padding:10px 12px;margin-top:12px;font-size:12px;color:var(--dim)}
   .warnbox b{color:var(--ink)}
+  .alertbox{border:2px solid var(--alarm);padding:12px 14px;margin-bottom:16px}
+  .alertbox h3{font-size:13px;margin:0 0 3px}
+  .alertbox p{font-size:12px;color:var(--dim);margin:0 0 8px}
+  .alertbox div:last-child p{margin-bottom:0}
+  .recon{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:13px}
+  .recon .rname small{display:block;font-size:11px;color:var(--dim)}
+  .recon .rfig{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim);font-size:12px}
+  .recon > div{padding:7px 0;border-bottom:1px dotted var(--rule)}
+  .bk{display:flex;justify-content:space-between;gap:12px;align-items:center;
+      padding:5px 0;font-size:12px;border-bottom:1px dotted var(--rule)}
+  .bk .bkn{font-variant-numeric:tabular-nums}
+  .bk button{font-size:10px;padding:2px 7px}
   .banner{border:2px solid var(--alarm);padding:12px 14px;margin-bottom:20px;display:none}
   .banner.show{display:block}
   .banner.good{border-color:var(--done)}
@@ -230,7 +252,8 @@
 <header>
   <p class="eyebrow">Original-quality relay</p>
   <h1>Immich <span class="arrow">→</span> Pixel <span class="arrow">→</span> Google Photos
-    <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span></span>
+    <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span>
+      <span id="liveBadge" style="opacity:.55">polling</span></span>
   </h1>
 </header>
 
@@ -238,6 +261,8 @@
   <p class="what" id="bannerWhat"></p>
   <p class="fix" id="bannerFix"></p>
 </div>
+
+<div class="alertbox" id="alertBox" hidden></div>
 
 <section aria-label="Pipeline">
   <div class="belt" id="belt">
@@ -260,6 +285,7 @@
     <div class="row"><span>Used of cap</span><span id="oUsed">—</span></div>
     <div class="row"><span>Last cycle</span><span id="oCycle">—</span></div>
     <div class="row"><span>Folder</span><span id="oPath">—</span></div>
+    <div class="row" id="rowSync" hidden><span>Synced to phone</span><span id="oSync">—</span></div>
   </div>
 
   <div class="card">
@@ -364,10 +390,72 @@
     </div>
   </fieldset>
 
+  <fieldset>
+    <legend>Alerts</legend>
+    <div class="field">
+      <label for="s_alert_webhook_url">Webhook URL
+        <span class="hint">ntfy, Gotify, Apprise or Home Assistant. Blank turns alerts off.</span></label>
+      <input type="text" id="s_alert_webhook_url" placeholder="https://ntfy.sh/my-topic">
+    </div>
+    <div class="field">
+      <label for="s_alert_format">Format
+        <span class="hint">"ntfy" sends plain text; "json" sends title and message.</span></label>
+      <input type="text" id="s_alert_format" placeholder="json">
+    </div>
+    <div class="field">
+      <label for="s_alert_stall_days">Warn if nothing is backed up for, days
+        <span class="hint">Smart Storage clears at 30, so keep this above that.</span></label>
+      <input type="number" id="s_alert_stall_days" min="31" max="180">
+    </div>
+    <div class="field">
+      <label for="s_alert_immich_hours">Warn if Immich is unreachable for, hours</label>
+      <input type="number" id="s_alert_immich_hours" min="1" max="168">
+    </div>
+    <div class="field">
+      <label for="s_alert_failed_count">Warn at this many failures</label>
+      <input type="number" id="s_alert_failed_count" min="1">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Syncthing (optional)</legend>
+    <div class="field">
+      <label for="s_syncthing_url">Address
+        <span class="hint">Shows whether files have actually reached the phone.</span></label>
+      <input type="text" id="s_syncthing_url" placeholder="http://192.168.1.2:8384">
+    </div>
+    <div class="field">
+      <label for="s_syncthing_api_key">API key
+        <span class="hint">Syncthing → Actions → Settings → API Key. Blank keeps the current one.</span></label>
+      <input type="password" id="s_syncthing_api_key" placeholder="unchanged">
+    </div>
+    <div class="field">
+      <label for="s_syncthing_folder">Folder ID
+        <span class="hint">The shared folder's ID, e.g. lio5x-89g66.</span></label>
+      <input type="text" id="s_syncthing_folder" placeholder="lio5x-89g66">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Housekeeping</legend>
+    <div class="field">
+      <label for="s_backup_enabled">Back up the ledger daily</label>
+      <input type="checkbox" id="s_backup_enabled">
+    </div>
+  </fieldset>
+
   <div class="controls">
-    <button id="btnSave">Save settings</button><span class="saved" id="savedMsg" hidden>Saved</span>
+    <button id="btnSave">Save settings</button>
+    <button id="btnTestAlert">Send a test alert</button><span class="saved" id="savedMsg" hidden>Saved</span>
   </div>
 </form>
+
+<section class="tools">
+  <h2 class="eyebrow">What has not made it yet</h2>
+  <p class="empty">Everything in Immich that is not yet in Google Photos, and why.
+     With a curated library this should trend to empty.</p>
+  <div class="recon" id="recon"></div>
+</section>
 
 <section class="stats">
   <h2>What is in the library</h2>
@@ -450,6 +538,18 @@
     </div>
   </div>
 
+  <div class="tool">
+    <h3>Ledger backups</h3>
+    <p>The ledger is the only record of what has already been sent. Lose it and
+       everything is re-sent, which means a duplicate of your whole library in
+       Google Photos. Backed up daily, last 14 kept.</p>
+    <div class="act">
+      <button data-plain="/api/backups">Back up now</button>
+      <span class="confirm" hidden></span>
+    </div>
+    <div id="backupList" style="margin-top:10px"></div>
+  </div>
+
   <div class="warnbox">
     For a clean test, also delete the contents of <b>DCIM/ImmichQueue</b> on the
     Pixel and remove the test uploads from Google Photos. Otherwise Syncthing
@@ -480,7 +580,7 @@ const ago = iso => {
 };
 const clock = iso => iso ? new Date(iso).toTimeString().slice(0,5) : "--:--";
 
-async function tick(){
+async function render(){
   let d;
   try { d = await (await fetch("/api/status")).json(); }
   catch { setStatus(false, "server unreachable"); return; }
@@ -507,6 +607,7 @@ async function tick(){
   oUsed.textContent  = fmtBytes(d.outbox.used_bytes) + " / " + fmtBytes(d.outbox.cap_bytes);
   oCycle.textContent = ago(d.outbox.last_cycle);
   oPath.textContent  = d.outbox.path;
+  renderSyncthing();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
@@ -515,7 +616,10 @@ async function tick(){
   iBytes.textContent = fmtBytes(c.pending_bytes);
 
   renderConnection(d);
+  renderAlerts(d);
+  renderRecon();
   renderStats(d);
+  renderBackups();
   renderWindow(d);
   if (!dirty) fillSettings(d.settings);
   renderAttention(d);
@@ -528,14 +632,16 @@ document.addEventListener("input", e => {
   if (e.target.closest("#settings")) dirty = true;
 });
 
-const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled"];
+const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
+               "backup_enabled"];
+const SECRETS = ["immich_api_key","syncthing_api_key"];
 
 function fillSettings(cfg){
   for (const [k, v] of Object.entries(cfg)){
     const el = document.getElementById("s_" + k);
     if (!el) continue;
     if (BOOLS.includes(k)) el.checked = !!v;
-    else if (k === "immich_api_key") el.placeholder = v ? "unchanged" : "required";
+    else if (SECRETS.includes(k)) el.placeholder = v ? "unchanged" : "not set";
     else el.value = v;
   }
 }
@@ -864,25 +970,219 @@ function renderMonths(months){
         + (m.confirmed ? " · " + m.confirmed + " done" : "");
 
       const btn = document.createElement("button");
-      btn.textContent = m.month === current ? "Selected" : "Send this";
-      btn.disabled = m.month === current;
-      btn.onclick = async () => {
-        btn.disabled = true; btn.textContent = "Setting";
-        await fetch("/api/window/set", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({month: m.month, enable: true})
-        });
-        dirty = false;
-        await tick();
-      };
+      btn.textContent = "Open";
+      const detail = document.createElement("div");
+      detail.className = "mdetail";
+      detail.hidden = true;
+      btn.onclick = () => toggleMonth(m.month, detail, btn);
 
       rowEl.append(nm, mbar, mfig, btn);
       det.appendChild(rowEl);
+      det.appendChild(detail);
     });
 
     stMonths.appendChild(det);
   });
+}
+
+async function toggleMonth(month, host, btn){
+  if (!host.hidden){ host.hidden = true; btn.textContent = "Open"; return; }
+  btn.disabled = true;
+  try {
+    const d = await (await fetch("/api/month/" + month)).json();
+    host.innerHTML = "";
+    host.hidden = false;
+    btn.textContent = "Close";
+
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Clear this month from Google Photos first, then send. "
+      + "Categories marked in blue are the ones original quality actually improves.";
+    host.appendChild(hint);
+
+    if (!d.groups.length){
+      host.appendChild(Object.assign(document.createElement("p"),
+        {className:"hint", textContent:"Nothing in this month."}));
+      return;
+    }
+
+    d.groups.forEach(g => {
+      const el = document.createElement("div");
+      el.className = "cat" + (g.gains ? " gain" : "");
+
+      const nm = document.createElement("span");
+      nm.className = "cname";
+      nm.textContent = g.label;
+      const why = document.createElement("small");
+      why.className = "cwhy";
+      why.textContent = g.why;
+      nm.appendChild(why);
+
+      const fig = document.createElement("span");
+      fig.className = "cfig";
+      fig.textContent = fmtNum(g.total) + " · " + fmtBytes(g.bytes)
+        + " · " + fmtNum(g.confirmed) + " done"
+        + (g.queued ? " · " + g.queued + " in outbox" : "");
+
+      el.append(nm, fig);
+
+      if (g.remaining > 0){
+        const b = document.createElement("button");
+        b.textContent = "Send " + fmtNum(g.remaining);
+        b.onclick = () => sendMonth(month, g.group, b, host, btn);
+        el.appendChild(b);
+      } else {
+        el.appendChild(Object.assign(document.createElement("span"),
+          {className:"cfig", textContent:"all sent"}));
+      }
+      host.appendChild(el);
+    });
+
+    const foot = document.createElement("div");
+    foot.className = "foot";
+    const remaining = d.groups.reduce((a, g) => a + g.remaining, 0);
+    if (remaining > 0){
+      const all = document.createElement("button");
+      all.textContent = "Send the whole month (" + fmtNum(remaining) + ")";
+      all.onclick = () => sendMonth(month, null, all, host, btn);
+      foot.appendChild(all);
+    }
+    const win = document.createElement("button");
+    win.textContent = "Point the backfill window here";
+    win.onclick = async () => {
+      win.disabled = true;
+      await fetch("/api/window/set", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month, enable: true})
+      });
+      dirty = false;
+      await tick();
+    };
+    foot.appendChild(win);
+    host.appendChild(foot);
+  } finally { btn.disabled = false; }
+}
+
+async function sendMonth(month, group, btn, host, opener){
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Queuing";
+  try {
+    await fetch("/api/month/send", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({month, group})
+    });
+    host.hidden = true;
+    await toggleMonth(month, host, opener);   // reopen with fresh numbers
+  } catch {
+    btn.textContent = label;
+  } finally { btn.disabled = false; }
+}
+
+let syncAt = 0;
+async function renderSyncthing(){
+  // Slower than everything else: it is an extra network hop for a nice-to-have.
+  if (Date.now() - syncAt < 20000) return;
+  syncAt = Date.now();
+  let d;
+  try { d = await (await fetch("/api/syncthing")).json(); } catch { return; }
+  if (!d.configured){ rowSync.hidden = true; return; }
+  rowSync.hidden = false;
+  oSync.textContent = d.error ? d.error
+    : (d.in_sync_pct != null
+        ? d.in_sync_pct + "% · " + (d.state || "") +
+          (d.need_bytes ? " · " + fmtBytes(d.need_bytes) + " to go" : "")
+        : (d.devices_connected || 0) + " device(s) connected");
+  rowSync.classList.toggle("bad", !!d.error);
+}
+
+function renderAlerts(d){
+  const list = d.alerts || [];
+  if (!list.length){ alertBox.hidden = true; return; }
+  alertBox.hidden = false;
+  alertBox.innerHTML = "";
+  list.forEach(a => {
+    const wrap = document.createElement("div");
+    const h = document.createElement("h3"); h.textContent = a.title;
+    const p = document.createElement("p"); p.textContent = a.message;
+    wrap.append(h, p);
+    alertBox.appendChild(wrap);
+  });
+}
+
+const RECON = {
+  queued_soon:    ["Waiting its turn", "inside a window, will go out as space frees up"],
+  in_outbox:      ["On the way", "in the outbox or on the phone, not yet cleared"],
+  outside_window: ["Outside both windows", "no date window covers it — send it by month or category"],
+  failed:         ["Failed to download", "retry it from Needs attention"],
+  too_big:        ["Over the size limit", "raise the limit, or send it by hand"],
+  video_off:      ["Videos are switched off", "turn videos on in Settings"],
+  skipped:        ["Motion-photo clips", "carried inside the still image, never sent alone"],
+};
+
+async function renderRecon(){
+  let d;
+  try { d = await (await fetch("/api/reconciliation")).json(); } catch { return; }
+  const groups = d.groups || [];
+  if (!groups.length){
+    recon.innerHTML = '<p class="empty">Everything in Immich is backed up at original quality.</p>';
+    return;
+  }
+  recon.innerHTML = "";
+  groups.forEach(g => {
+    const [name, why] = RECON[g.reason] || [g.reason, ""];
+    const nm = document.createElement("div");
+    nm.className = "rname";
+    nm.textContent = name;
+    const sm = document.createElement("small"); sm.textContent = why;
+    nm.appendChild(sm);
+    const fig = document.createElement("div");
+    fig.className = "rfig";
+    fig.textContent = fmtNum(g.total) + " files · " + fmtBytes(g.bytes);
+    recon.append(nm, fig);
+  });
+}
+
+async function renderBackups(){
+  const host = document.getElementById("backupList");
+  if (!host) return;
+  let d;
+  try { d = await (await fetch("/api/backups")).json(); } catch { return; }
+  host.innerHTML = "";
+  (d.backups || []).slice(0, 5).forEach(b => {
+    const el = document.createElement("div");
+    el.className = "bk";
+    const nm = document.createElement("span");
+    nm.className = "bkn";
+    nm.textContent = b.at.replace("T", " ").slice(0, 16) + " · " + fmtBytes(b.bytes);
+    const dl = document.createElement("button");
+    dl.textContent = "Download";
+    dl.onclick = () => { window.location = "/api/backups/" + b.name; };
+    const rs = document.createElement("button");
+    rs.textContent = "Restore";
+    let armed = false, timer = null;
+    rs.onclick = async () => {
+      if (!armed){
+        armed = true; rs.textContent = "Sure?";
+        timer = setTimeout(() => { armed = false; rs.textContent = "Restore"; }, 5000);
+        return;
+      }
+      clearTimeout(timer); armed = false;
+      rs.disabled = true; rs.textContent = "Restoring";
+      await fetch("/api/backups/restore", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({name: b.name})
+      });
+      await tick();
+      rs.disabled = false; rs.textContent = "Restore";
+    };
+    const grp = document.createElement("span");
+    grp.append(dl, rs);
+    el.append(nm, grp);
+    host.appendChild(el);
+  });
+  if (!(d.backups || []).length){
+    host.innerHTML = '<p class="empty">No backups yet — one is taken daily.</p>';
+  }
 }
 
 function renderWindow(d){
@@ -979,6 +1279,20 @@ btnTest.onclick = async () => {
   finally { btnTest.disabled = false; btnTest.textContent = "Test connection"; }
 };
 
+btnTestAlert.onclick = async () => {
+  btnTestAlert.disabled = true;
+  const was = btnTestAlert.textContent;
+  btnTestAlert.textContent = "Sending";
+  try {
+    const d = await (await fetch("/api/alerts/test", {method:"POST"})).json();
+    savedMsg.hidden = false;
+    savedMsg.textContent = d.ok ? "Test alert sent" : (d.error || "Failed");
+    savedMsg.style.color = d.ok ? "var(--done)" : "var(--alarm)";
+    setTimeout(() => { savedMsg.hidden = true; savedMsg.textContent = "Saved";
+                       savedMsg.style.color = ""; }, 4000);
+  } finally { btnTestAlert.disabled = false; btnTestAlert.textContent = was; }
+};
+
 btnSave.onclick = async () => {
   btnSave.disabled = true;
   try {
@@ -988,7 +1302,10 @@ btnSave.onclick = async () => {
       body: JSON.stringify(readSettings())
     });
     dirty = false;
-    document.getElementById("s_immich_api_key").value = "";
+    SECRETS.forEach(k => {
+      const el = document.getElementById("s_" + k);
+      if (el) el.value = "";
+    });
     savedMsg.hidden = false;
     setTimeout(() => { savedMsg.hidden = true; }, 2500);
     await fetch("/api/immich/test", {method:"POST"});
@@ -1093,8 +1410,40 @@ document.querySelectorAll(".tool button[data-plain]").forEach(btn => {
   };
 });
 
+// Live updates. The server bumps a revision on every write and pushes here,
+// so the page reflects a change within a fraction of a second instead of on
+// a five-second timer. Polling stays as a fallback for proxies that buffer
+// or drop event streams.
+let liveOk = false, inFlight = false;
+
+async function tick(){
+  if (inFlight) return;
+  inFlight = true;
+  try { await render(); } finally { inFlight = false; }
+}
+
+function connectLive(){
+  let es;
+  try { es = new EventSource("/api/events"); } catch { return; }
+  es.addEventListener("changed", () => { liveOk = true; tick(); });
+  es.onopen = () => { liveOk = true; setLiveBadge(true); };
+  es.onerror = () => {
+    liveOk = false; setLiveBadge(false);
+    es.close();
+    setTimeout(connectLive, 5000);   // reconnect after a drop
+  };
+}
+
+function setLiveBadge(on){
+  const el = document.getElementById("liveBadge");
+  if (el) el.textContent = on ? "live" : "polling";
+}
+
+connectLive();
 tick();
-setInterval(tick, 5000);
+// Slow safety net; the stream does the real work.
+setInterval(() => { if (!liveOk) tick(); }, 5000);
+setInterval(() => { if (liveOk) tick(); }, 30000);
 </script>
 </body>
 </html>

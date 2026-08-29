@@ -227,6 +227,11 @@ cap. Until the first backups come back — about 30 days after upload, when
 Smart Storage clears them — there is no estimate, and it says so rather than
 inventing one.
 
+The dashboard updates over a server-sent event stream: the ledger bumps a
+revision on every write and pushes immediately, so actions appear at once
+rather than on a timer. It falls back to polling if the stream is blocked by
+a proxy; the header shows which is in use.
+
 Dimensions come from Immich's EXIF data. An existing database is migrated
 automatically and fills in on the next full scan; nothing needs resetting.
 
@@ -255,18 +260,20 @@ take months.
 
 ### Month by month
 
-Below the media breakdown, every month in the library, grouped by year and
-collapsed. Each year shows its file count, size and percent backed up; open
-it for the months, each with photo and video counts, size, a progress bar,
-and a **Send this** button that points the backfill window straight at it.
+Each month opens into four categories rather than sending immediately —
+photos and videos, each split by whether original quality actually gains
+anything over what Google already holds:
 
-That button is the backfill workflow in one click, but the order still
-matters: clear the month from Google Photos *first*, then send it, or you
-end up with the Storage Saver copy and the original side by side.
+| Category | Gains? |
+|---|---|
+| Photos over 16 MP | Yes — Storage Saver would resize these |
+| Photos 16 MP or less | No |
+| Video above 1080p | Yes — Storage Saver would cap these |
+| Video at 1080p or below | No |
 
-A month whose bar is full is finished — every photo in it is confirmed
-backed up at original quality, and it is safe to move on. The currently
-selected month is outlined, and open years stay open through the refresh.
+Send a single category, the whole month, or just point the backfill window
+at it. Sending is always a deliberate second action, never a side effect of
+opening a month.
 
 ## Testing tools
 

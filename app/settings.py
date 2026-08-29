@@ -40,6 +40,18 @@ SPEC: dict[str, tuple[type, object]] = {
     "backfill_enabled": (bool, False),
     "backfill_start": (str, "2015-01-01"),
     "backfill_end": (str, "2015-01-31"),
+    # Alerting
+    "alert_webhook_url": (str, ""),
+    "alert_format": (str, "json"),          # "json" (Gotify, Apprise) or "ntfy"
+    "alert_stall_days": (int, 40),          # Smart Storage clears at 30
+    "alert_immich_hours": (int, 6),
+    "alert_failed_count": (int, 25),
+    # Syncthing (optional, read-only status)
+    "syncthing_url": (str, ""),
+    "syncthing_api_key": (str, ""),
+    "syncthing_folder": (str, ""),
+    # Housekeeping
+    "backup_enabled": (bool, True),
 }
 
 
@@ -57,6 +69,15 @@ class Settings:
     backfill_enabled: bool
     backfill_start: str
     backfill_end: str
+    alert_webhook_url: str
+    alert_format: str
+    alert_stall_days: int
+    alert_immich_hours: int
+    alert_failed_count: int
+    syncthing_url: str
+    syncthing_api_key: str
+    syncthing_folder: str
+    backup_enabled: bool
 
     @property
     def outbox_max_bytes(self) -> int:
@@ -68,7 +89,9 @@ class Settings:
 
     def as_dict(self) -> dict:
         d = asdict(self)
+        # Secrets are reported as present, never echoed back.
         d["immich_api_key"] = "set" if self.immich_api_key else ""
+        d["syncthing_api_key"] = "set" if self.syncthing_api_key else ""
         return d
 
 
@@ -98,7 +121,7 @@ def save(updates: dict) -> Settings:
         if key not in updates:
             continue
         value = updates[key]
-        if key == "immich_api_key" and not str(value).strip():
+        if key in ("immich_api_key", "syncthing_api_key") and not str(value).strip():
             continue
         if kind is bool:
             value = "true" if value in (True, "true", "on", 1, "1") else "false"
