@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS assets (
     last_error    TEXT,
     width         INTEGER,
     height        INTEGER,
-    duration      REAL
+    duration      REAL,
+    forced        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken ON assets(taken_at);
@@ -82,7 +83,8 @@ def connect() -> sqlite3.Connection:
         # EXISTS will not add them, so patch them in.
         have = {r["name"] for r in _conn.execute("PRAGMA table_info(assets)")}
         for col, decl in (("width", "INTEGER"), ("height", "INTEGER"),
-                          ("duration", "REAL")):
+                          ("duration", "REAL"),
+                          ("forced", "INTEGER NOT NULL DEFAULT 0")):
             if col not in have:
                 _conn.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
         _conn.commit()
@@ -168,32 +170,32 @@ def upsert_assets(rows: list[dict]) -> int:
 
 def claim_batch(budget_bytes: int, max_files: int, filt: dict,
                 allow_oversize: bool = False) -> list[sqlite3.Row]:
-    """Oldest-first selection of assets that are eligible and fit the budget.
+    """Oldest-first selection of eligible assets that fit the budget.
 
     Eligibility is applied here rather than at scan time, so the ledger
     always holds the whole library and changing a date window releases
     assets on the next cycle instead of needing a rescan.
 
-    allow_oversize is only true when the outbox is completely empty. It lets
-    a single file larger than the whole cap through, so one huge video can
-    still make progress instead of jamming the queue forever. At any other
-    time the budget is respected strictly -- otherwise a 4 GB video would
-    drop on top of an almost-full outbox and overflow the phone.
-    """
-    if not (filt["ongoing"] or filt["backfill"]):
-        return []
+    Assets marked `forced` — chosen by hand or by resolution category —
+    ignore the date windows entirely and go to the front of the queue.
 
+    allow_oversize is only true when the outbox is empty. It lets a single
+    file larger than the whole cap through, so one huge video can still make
+    progress instead of jamming the queue forever. Otherwise the budget is
+    strict: a 4 GB video must not drop onto an almost-full outbox.
+    """
     sql = """SELECT * FROM assets
              WHERE state IN ('pending','failed') AND attempts < 5
                AND id NOT IN (SELECT id FROM motion_parts)
                AND (kind = 'IMAGE' OR :include_video = 1)
                AND (size = 0 OR size <= :max_asset_bytes)
                AND (
-                    (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
+                    forced = 1
+                 OR (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
                  OR (:backfill = 1 AND substr(taken_at,1,10)
                        BETWEEN :backfill_start AND :backfill_end)
                )
-             ORDER BY taken_at ASC LIMIT :scan_limit"""
+             ORDER BY forced DESC, taken_at ASC LIMIT :scan_limit"""
 
     params = dict(filt)
     params["include_video"] = 1 if filt["include_video"] else 0
@@ -414,38 +416,127 @@ def wipe_ledger(forget_motion_parts: bool = False) -> int:
     return n
 
 
+# The bucket rule lives here once, so the breakdown, the file list and
+# "send this category" can never disagree about what a bucket contains.
+BUCKET_SQL = """
+    CASE
+      WHEN width IS NULL OR width = 0 OR height IS NULL OR height = 0
+           THEN 'unknown'
+      WHEN kind = 'VIDEO' AND MIN(width, height) >= 2160 THEN 'video_4k'
+      WHEN kind = 'VIDEO' AND MIN(width, height) >= 1440 THEN 'video_1440'
+      WHEN kind = 'VIDEO' AND MIN(width, height) >= 1080 THEN 'video_1080'
+      WHEN kind = 'VIDEO'                                THEN 'video_sd'
+      WHEN (width * height) / 1000000.0 > 16.0           THEN 'photo_big'
+      ELSE 'photo_small'
+    END
+"""
+
+
+def list_in_bucket(bucket: str, state: str = "all",
+                   limit: int = 100, offset: int = 0) -> dict:
+    """Files in one resolution bucket, largest first."""
+    where = [f"{BUCKET_SQL} = ?", "state != 'skipped'"]
+    params: list = [bucket]
+    if state != "all":
+        where.append("state = ?")
+        params.append(state)
+    clause = " AND ".join(where)
+
+    total = connect().execute(
+        f"SELECT COUNT(*) n FROM assets WHERE {clause}", params
+    ).fetchone()["n"]
+
+    rows = connect().execute(
+        f"""SELECT id, filename, size, kind, state, taken_at, width, height,
+                   duration, forced, last_error
+            FROM assets WHERE {clause}
+            ORDER BY size DESC LIMIT ? OFFSET ?""",
+        params + [limit, offset],
+    ).fetchall()
+    return {"total": total, "items": [dict(r) for r in rows],
+            "offset": offset, "limit": limit}
+
+
+def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
+    """Queue assets now, ignoring the date windows.
+
+    Already-confirmed items are left alone: they are in Google Photos, and
+    re-sending would just create a duplicate.
+    """
+    c = connect()
+    with _lock:
+        if bucket:
+            cur = c.execute(
+                f"""UPDATE assets SET forced=1, state='pending', attempts=0,
+                                      last_error=NULL
+                    WHERE {BUCKET_SQL} = ?
+                      AND state IN ('pending','failed')
+                      AND id NOT IN (SELECT id FROM motion_parts)""",
+                (bucket,),
+            )
+        elif ids:
+            marks = ",".join("?" * len(ids))
+            cur = c.execute(
+                f"""UPDATE assets SET forced=1, state='pending', attempts=0,
+                                      last_error=NULL
+                    WHERE id IN ({marks})
+                      AND state IN ('pending','failed')
+                      AND id NOT IN (SELECT id FROM motion_parts)""",
+                ids,
+            )
+        else:
+            return 0
+        c.commit()
+    return cur.rowcount
+
+
 def media_breakdown() -> list[dict]:
     """Assets grouped by what they are and how much resolution they carry.
 
     The buckets are chosen around what Storage Saver would have cost you:
     it caps photos at 16 MP and video at 1080p, so anything above those
-    lines is what this whole relay actually buys.
+    lines is what this relay actually buys.
 
     Short side decides the video bucket, so portrait clips land correctly.
     """
-    rows = connect().execute("""
-        SELECT
-          CASE
-            WHEN width IS NULL OR width = 0 OR height IS NULL OR height = 0
-                 THEN 'unknown'
-            WHEN kind = 'VIDEO' AND MIN(width, height) >= 2160 THEN 'video_4k'
-            WHEN kind = 'VIDEO' AND MIN(width, height) >= 1440 THEN 'video_1440'
-            WHEN kind = 'VIDEO' AND MIN(width, height) >= 1080 THEN 'video_1080'
-            WHEN kind = 'VIDEO'                                THEN 'video_sd'
-            WHEN (width * height) / 1000000.0 > 16.0           THEN 'photo_big'
-            ELSE 'photo_small'
-          END AS bucket,
-          kind,
-          COUNT(*)                                                   AS total,
-          COALESCE(SUM(size), 0)                                     AS bytes,
-          SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)       AS confirmed,
-          COALESCE(SUM(CASE WHEN state = 'confirmed' THEN size ELSE 0 END), 0)
+    rows = connect().execute(f"""
+        SELECT {BUCKET_SQL}                                          AS bucket,
+               kind,
+               COUNT(*)                                              AS total,
+               COALESCE(SUM(size), 0)                                AS bytes,
+               SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)  AS confirmed,
+               COALESCE(SUM(CASE WHEN state = 'confirmed' THEN size ELSE 0 END), 0)
                                                                      AS confirmed_bytes,
-          COALESCE(SUM(duration), 0)                                 AS seconds
+               SUM(CASE WHEN state IN ('pending','failed') THEN 1 ELSE 0 END)
+                                                                     AS remaining,
+               COALESCE(SUM(duration), 0)                            AS seconds
         FROM assets
         WHERE state != 'skipped'
         GROUP BY bucket, kind
         ORDER BY bytes DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def monthly_breakdown() -> list[dict]:
+    """Every month in the library, newest first.
+
+    This is the map for the backfill: it shows which months are done, which
+    are part-way, and how big each one is before you commit to clearing it
+    out of Google Photos.
+    """
+    rows = connect().execute("""
+        SELECT substr(taken_at, 1, 7)                                AS month,
+               COUNT(*)                                              AS total,
+               COALESCE(SUM(size), 0)                                AS bytes,
+               SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)  AS confirmed,
+               SUM(CASE WHEN state = 'queued'    THEN 1 ELSE 0 END)  AS queued,
+               SUM(CASE WHEN kind  = 'IMAGE'     THEN 1 ELSE 0 END)  AS photos,
+               SUM(CASE WHEN kind  = 'VIDEO'     THEN 1 ELSE 0 END)  AS videos
+        FROM assets
+        WHERE state != 'skipped' AND taken_at IS NOT NULL AND taken_at != ''
+        GROUP BY month
+        ORDER BY month DESC
     """).fetchall()
     return [dict(r) for r in rows]
 

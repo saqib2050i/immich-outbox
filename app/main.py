@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -60,9 +61,34 @@ async def status():
 async def stats():
     return {
         "breakdown": db.media_breakdown(),
+        "monthly": db.monthly_breakdown(),
         "throughput": db.throughput(30),
         "counts": db.counts(),
     }
+
+
+@app.get("/api/bucket/{bucket}")
+async def bucket_files(bucket: str, state: str = "all",
+                       limit: int = 50, offset: int = 0):
+    return db.list_in_bucket(bucket, state, min(limit, 200), offset)
+
+
+@app.post("/api/send")
+async def send(payload: dict):
+    """Queue things now, ignoring the date windows.
+
+    The outbox cap still applies, so this changes the order work is done in,
+    not how much is in flight at once.
+    """
+    bucket = payload.get("bucket")
+    ids = payload.get("ids")
+    n = db.force_send(ids=ids, bucket=bucket)
+    if n:
+        what = f"category {bucket}" if bucket else f"{n} file(s)"
+        db.log("send", f"{what} moved to the front of the queue ({n} asset(s))")
+        _, used = feeder.reconcile()
+        await feeder.top_up(used)
+    return {"ok": True, "queued": n}
 
 
 @app.get("/api/settings")
@@ -73,6 +99,30 @@ async def get_settings():
 @app.post("/api/settings")
 async def post_settings(payload: dict):
     return settings.save(payload).as_dict()
+
+
+@app.post("/api/window/set")
+async def window_set(payload: dict):
+    """Jump the backfill window straight to a month, from the statistics
+    table, instead of stepping through with Previous/Next."""
+    month = str(payload.get("month", ""))   # "YYYY-MM"
+    try:
+        year, mon = (int(x) for x in month.split("-"))
+        start = date(year, mon, 1)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": f"bad month {month!r}"}
+
+    nxt = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    end = date.fromordinal(nxt.toordinal() - 1)
+
+    cfg = settings.save({
+        "backfill_start": start.isoformat(),
+        "backfill_end": end.isoformat(),
+        "backfill_enabled": bool(payload.get("enable", False)),
+    })
+    return {"ok": True, "start": cfg.backfill_start, "end": cfg.backfill_end,
+            "enabled": cfg.backfill_enabled,
+            "window": db.window_progress(cfg.backfill_start, cfg.backfill_end)}
 
 
 @app.post("/api/window/advance")

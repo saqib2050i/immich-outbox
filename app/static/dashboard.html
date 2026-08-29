@@ -101,6 +101,26 @@
   .controls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
 
   section.stats{margin-top:26px}
+
+  .yr{border-bottom:1px solid var(--rule)}
+  .yr summary{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;
+              padding:9px 0;cursor:pointer;list-style:none}
+  .yr summary::-webkit-details-marker{display:none}
+  .yr summary::before{content:"▸";font-size:11px;color:var(--dim)}
+  .yr[open] summary::before{content:"▾"}
+  .yr .ylabel{font-size:14px;font-weight:700;letter-spacing:-.01em}
+  .yr .yfig{font-size:12px;color:var(--dim);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .yr .ybar{grid-column:1/-1;height:5px;border:1px solid var(--rule)}
+  .yr .ybar i{display:block;height:100%;background:var(--done)}
+  .mo{display:grid;grid-template-columns:78px 1fr auto auto;gap:10px;align-items:center;
+      padding:6px 0 6px 20px;font-size:12px;border-top:1px dotted var(--rule)}
+  .mo .mname{font-variant-numeric:tabular-nums;color:var(--dim)}
+  .mo .mbar{height:5px;border:1px solid var(--rule)}
+  .mo .mbar i{display:block;height:100%;background:var(--done)}
+  .mo .mfig{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dim)}
+  .mo button{font-size:10px;padding:2px 7px}
+  .mo.done .mname{color:var(--done)}
+  .mo.current{background:var(--panel);outline:1px solid var(--transit)}
   section.stats h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 12px;font-weight:600}
   .st-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center;
           padding:9px 0;border-bottom:1px solid var(--rule)}
@@ -112,6 +132,20 @@
   .st-bar{grid-column:1/-1;height:6px;border:1px solid var(--rule);margin-top:2px}
   .st-bar i{display:block;height:100%;background:var(--done)}
   .st-gain{border-left:3px solid var(--transit);padding-left:9px}
+  .st-act{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .st-act button{font-size:10px;padding:3px 9px}
+  .st-act .msg{font-size:11px;color:var(--done)}
+  .files{grid-column:1/-1;margin-top:8px;border-top:1px dotted var(--rule)}
+  .frow{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;
+        padding:5px 0;font-size:12px;border-bottom:1px dotted var(--rule)}
+  .frow:last-child{border-bottom:0}
+  .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fname small{color:var(--dim)}
+  .fmeta{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .fstate{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+  .fstate.confirmed{color:var(--done)}
+  .fstate.failed{color:var(--alarm)}
+  .frow button{font-size:10px;padding:2px 7px}
   .st-total{display:flex;gap:26px;flex-wrap:wrap;margin:14px 0 4px;
             border-top:2px solid var(--ink);padding-top:12px}
   .st-total div{display:flex;flex-direction:column}
@@ -340,6 +374,12 @@
   <div id="stBody"><p class="empty">Working it out…</p></div>
   <div class="st-total" id="stTotals"></div>
   <p class="empty" id="stNote"></p>
+
+  <h2 style="margin-top:26px">Month by month</h2>
+  <p class="empty">Your map for the backfill. Pick a month to point the window
+     at it — do that after clearing that month from Google Photos, or you get
+     duplicates.</p>
+  <div id="stMonths"></div>
 </section>
 
 <details class="tools">
@@ -606,7 +646,48 @@ async function renderStats(d){
     fill.style.width = (r.total ? (r.confirmed / r.total) * 100 : 0) + "%";
     bar.appendChild(fill);
 
-    el.append(nm, fig, bar);
+    const act = document.createElement("div");
+    act.className = "st-act";
+    const files = document.createElement("div");
+    files.className = "files";
+    files.hidden = true;
+
+    const browse = document.createElement("button");
+    browse.textContent = "Show files";
+    browse.onclick = () => toggleFiles(r.bucket, files, browse);
+    act.appendChild(browse);
+
+    if (r.remaining > 0 && r.bucket !== "unknown"){
+      const sendAll = document.createElement("button");
+      sendAll.textContent = "Send all " + fmtNum(r.remaining);
+      const msg = document.createElement("span");
+      msg.className = "msg"; msg.hidden = true;
+      let armed = false, timer = null;
+      sendAll.onclick = async () => {
+        if (!armed){
+          armed = true;
+          sendAll.textContent = "Send " + fmtNum(r.remaining) + "? Click again";
+          timer = setTimeout(() => {
+            armed = false;
+            sendAll.textContent = "Send all " + fmtNum(r.remaining);
+          }, 5000);
+          return;
+        }
+        clearTimeout(timer); armed = false;
+        sendAll.disabled = true; sendAll.textContent = "Queuing";
+        const d2 = await (await fetch("/api/send", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({bucket: r.bucket})
+        })).json();
+        msg.hidden = false;
+        msg.textContent = fmtNum(d2.queued) + " queued, ahead of everything else";
+        sendAll.disabled = false;
+        await tick();
+      };
+      act.append(sendAll, msg);
+    }
+
+    el.append(nm, fig, bar, act, files);
     stBody.appendChild(el);
   });
 
@@ -630,13 +711,182 @@ async function renderStats(d){
     div.append(a, b); stTotals.appendChild(div);
   });
 
+  renderMonths(st.monthly || []);
+
   stNote.textContent = tp.files > 0
     ? "Rate measured over the last " + tp.measured_over_days + " days of actual backups."
     : "No completion estimate until the first photos come back confirmed — "
       + "Smart Storage clears them about 30 days after upload.";
 }
 
+async function toggleFiles(bucket, host, btn, offset){
+  if (host.hidden === false && offset === undefined){
+    host.hidden = true; btn.textContent = "Show files"; return;
+  }
+  btn.disabled = true;
+  const from = offset || 0;
+  try {
+    const d = await (await fetch(`/api/bucket/${bucket}?limit=25&offset=${from}`)).json();
+    if (!from) host.innerHTML = "";
+    host.hidden = false;
+    btn.textContent = "Hide files";
+
+    d.items.forEach(f => host.appendChild(fileRow(f, bucket, host, btn)));
+
+    const more = host.querySelector(".more");
+    if (more) more.remove();
+    const shown = from + d.items.length;
+    if (shown < d.total){
+      const m = document.createElement("button");
+      m.className = "more";
+      m.style.marginTop = "8px";
+      m.textContent = "Show more (" + fmtNum(d.total - shown) + " left)";
+      m.onclick = () => toggleFiles(bucket, host, btn, shown);
+      host.appendChild(m);
+    }
+  } finally { btn.disabled = false; }
+}
+
+function fileRow(f, bucket, host, btn){
+  const el = document.createElement("div");
+  el.className = "frow";
+
+  const nm = document.createElement("span");
+  nm.className = "fname";
+  nm.textContent = f.filename;
+  const when = document.createElement("small");
+  when.textContent = f.taken_at ? "  " + f.taken_at.slice(0, 10) : "";
+  nm.appendChild(when);
+
+  const meta = document.createElement("span");
+  meta.className = "fmeta";
+  meta.textContent = (f.width && f.height ? f.width + "×" + f.height + " · " : "")
+                   + fmtBytes(f.size);
+
+  const st = document.createElement("span");
+  st.className = "fstate " + f.state;
+  st.textContent = f.state === "queued" ? "in outbox"
+                 : f.state === "confirmed" ? "backed up"
+                 : f.state === "failed" ? "failed" : "waiting";
+  if (f.last_error) st.title = f.last_error;
+
+  el.append(nm, meta, st);
+
+  if (f.state !== "confirmed" && f.state !== "queued"){
+    const b = document.createElement("button");
+    b.textContent = f.forced ? "Queued next" : "Send this";
+    b.disabled = !!f.forced;
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = "Queuing";
+      await fetch("/api/send", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ids: [f.id]})
+      });
+      b.textContent = "Queued next";
+      await tick();
+    };
+    el.appendChild(b);
+  } else {
+    el.appendChild(document.createElement("span"));
+  }
+  return el;
+}
+
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
+                     "Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function renderMonths(months){
+  if (!months.length){
+    stMonths.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
+    return;
+  }
+
+  // Remember which years were open, so the 5s refresh does not collapse them.
+  const open = new Set([...stMonths.querySelectorAll("details[open]")]
+                       .map(el => el.dataset.year));
+  const current = (window.__cfg && window.__cfg.backfill_start || "").slice(0, 7);
+
+  const years = new Map();
+  months.forEach(m => {
+    const y = m.month.slice(0, 4);
+    if (!years.has(y)) years.set(y, []);
+    years.get(y).push(m);
+  });
+
+  stMonths.innerHTML = "";
+  [...years.entries()].forEach(([year, list]) => {
+    const tot  = list.reduce((a, m) => a + m.total, 0);
+    const conf = list.reduce((a, m) => a + m.confirmed, 0);
+    const byt  = list.reduce((a, m) => a + m.bytes, 0);
+
+    const det = document.createElement("details");
+    det.className = "yr";
+    det.dataset.year = year;
+    if (open.has(year) || list.some(m => m.month === current)) det.open = true;
+
+    const sum = document.createElement("summary");
+    const lab = document.createElement("span");
+    lab.className = "ylabel"; lab.textContent = year;
+    const fig = document.createElement("span");
+    fig.className = "yfig";
+    fig.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
+                    + Math.round(tot ? (conf / tot) * 100 : 0) + "% backed up";
+    const bar = document.createElement("span");
+    bar.className = "ybar";
+    const fill = document.createElement("i");
+    fill.style.width = (tot ? (conf / tot) * 100 : 0) + "%";
+    bar.appendChild(fill);
+    sum.append(lab, document.createElement("span"), fig, bar);
+    det.appendChild(sum);
+
+    list.forEach(m => {
+      const mi = parseInt(m.month.slice(5, 7), 10) - 1;
+      const rowEl = document.createElement("div");
+      rowEl.className = "mo"
+        + (m.total && m.confirmed === m.total ? " done" : "")
+        + (m.month === current ? " current" : "");
+
+      const nm = document.createElement("span");
+      nm.className = "mname";
+      nm.textContent = MONTH_NAMES[mi] + " " + year;
+
+      const mbar = document.createElement("span");
+      mbar.className = "mbar";
+      const mf = document.createElement("i");
+      mf.style.width = (m.total ? (m.confirmed / m.total) * 100 : 0) + "%";
+      mbar.appendChild(mf);
+
+      const mfig = document.createElement("span");
+      mfig.className = "mfig";
+      mfig.textContent = m.photos + " photo" + (m.photos === 1 ? "" : "s")
+        + (m.videos ? " · " + m.videos + " video" + (m.videos === 1 ? "" : "s") : "")
+        + " · " + fmtBytes(m.bytes)
+        + (m.confirmed ? " · " + m.confirmed + " done" : "");
+
+      const btn = document.createElement("button");
+      btn.textContent = m.month === current ? "Selected" : "Send this";
+      btn.disabled = m.month === current;
+      btn.onclick = async () => {
+        btn.disabled = true; btn.textContent = "Setting";
+        await fetch("/api/window/set", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({month: m.month, enable: true})
+        });
+        dirty = false;
+        await tick();
+      };
+
+      rowEl.append(nm, mbar, mfig, btn);
+      det.appendChild(rowEl);
+    });
+
+    stMonths.appendChild(det);
+  });
+}
+
 function renderWindow(d){
+  window.__cfg = d.settings;
   const cfg = d.settings, w = d.window;
   wRange.textContent = cfg.backfill_start + "  →  " + cfg.backfill_end;
   const pct = w.total ? (w.confirmed / w.total) * 100 : 0;

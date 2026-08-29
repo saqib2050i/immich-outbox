@@ -230,6 +230,44 @@ inventing one.
 Dimensions come from Immich's EXIF data. An existing database is migrated
 automatically and fills in on the next full scan; nothing needs resetting.
 
+### Browsing and sending a category
+
+Each resolution row has **Show files** — the actual files in that bucket,
+largest first, with dimensions, size, state and any error, paged 25 at a
+time. Each one has **Send this**; the row has **Send all**, which needs a
+second click to confirm.
+
+Sending this way sets a `forced` flag: those assets ignore the date windows
+entirely and go to the front of the queue. So you can push all your 4K video
+through first, whatever the cut-off date says, without touching any other
+setting.
+
+Two things it deliberately will not do. It never re-sends an asset that is
+already confirmed — that is in Google Photos, and sending it again would
+just make a duplicate. And it does not raise the outbox cap: forcing changes
+the *order* work happens in, not how much is in flight, so the phone still
+cannot overfill.
+
+Useful in practice for pushing what actually gains quality first. Your 4K
+video is where Storage Saver cost you the most, and it is usually a small
+number of large files — worth doing before thousands of photos that will
+take months.
+
+### Month by month
+
+Below the media breakdown, every month in the library, grouped by year and
+collapsed. Each year shows its file count, size and percent backed up; open
+it for the months, each with photo and video counts, size, a progress bar,
+and a **Send this** button that points the backfill window straight at it.
+
+That button is the backfill workflow in one click, but the order still
+matters: clear the month from Google Photos *first*, then send it, or you
+end up with the Storage Saver copy and the original side by side.
+
+A month whose bar is full is finished — every photo in it is confirmed
+backed up at original quality, and it is safe to move on. The currently
+selected month is outlined, and open years stay open through the refresh.
+
 ## Testing tools
 
 The dashboard has a collapsed **Testing tools** section with everything
