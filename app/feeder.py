@@ -29,15 +29,14 @@ SEP = "__"
 CYCLE_LOCK = asyncio.Lock()
 
 
-def _safe_name(asset_id: str, filename: str) -> str:
-    clean = "".join(ch for ch in filename if ch.isalnum() or ch in "._-")
-    return f"{asset_id}{SEP}{clean or 'file.bin'}"
+# Files written before the ledger tracked names carry an "<id>__" prefix.
+# Still recognised on read so they keep resolving; nothing new uses it.
 
 
 def list_outbox() -> tuple[list[str], int]:
     """Real files in the outbox, plus the bytes they occupy."""
     os.makedirs(config.OUTBOX_DIR, exist_ok=True)
-    ids, total = [], 0
+    names, total = [], 0
     for name in os.listdir(config.OUTBOX_DIR):
         if name in config.IGNORED or name.startswith("."):
             continue
@@ -51,9 +50,8 @@ def list_outbox() -> tuple[list[str], int]:
             total += os.path.getsize(path)
         except OSError:
             continue
-        if SEP in name:
-            ids.append(name.split(SEP, 1)[0])
-    return ids, total
+        names.append(name)
+    return db.ids_for_outbox_names(names), total
 
 
 def sweep_partials(max_age_hours: int = 6) -> int:
@@ -77,34 +75,6 @@ def sweep_partials(max_age_hours: int = 6) -> int:
     return removed
 
 
-def clear_outbox() -> tuple[int, list[str]]:
-    """Empty the outbox and report which assets were in it.
-
-    The caller must requeue those ids. Files vanishing from the outbox
-    normally means Google Photos backed them up, so clearing without
-    requeueing would silently mark the whole batch as done.
-    """
-    removed, ids = 0, []
-    try:
-        names = os.listdir(config.OUTBOX_DIR)
-    except OSError:
-        return 0, []
-    for name in names:
-        if name in config.IGNORED:
-            continue
-        path = os.path.join(config.OUTBOX_DIR, name)
-        if not os.path.isfile(path):
-            continue
-        if SEP in name and not name.startswith("."):
-            ids.append(name.split(SEP, 1)[0])
-        try:
-            os.remove(path)
-            removed += 1
-        except OSError:
-            continue
-    return removed, ids
-
-
 def purge_motion_parts() -> int:
     """Remove motion components left in the outbox by an earlier version.
 
@@ -119,9 +89,10 @@ def purge_motion_parts() -> int:
     except OSError:
         return 0
     for name in names:
-        if SEP not in name or name.startswith("."):
+        if name.startswith("."):
             continue
-        if not db.is_motion_part(name.split(SEP, 1)[0]):
+        ids = db.ids_for_outbox_names([name])
+        if not ids or not db.is_motion_part(ids[0]):
             continue
         try:
             os.remove(os.path.join(config.OUTBOX_DIR, name))
@@ -175,7 +146,10 @@ async def top_up(used: int) -> int:
 
     for row in rows:
         asset_id, filename = row["id"], row["filename"]
-        dest = os.path.join(config.OUTBOX_DIR, _safe_name(asset_id, filename))
+        # Reserve the name first, so a collision is resolved before any bytes
+        # move and the ledger always knows what is on disk.
+        dest = os.path.join(config.OUTBOX_DIR,
+                            db.reserve_outbox_name(asset_id, filename))
         if os.path.exists(dest):
             written.append(asset_id)
             continue
@@ -241,7 +215,7 @@ def empty_outbox() -> tuple[int, list[str]]:
     the next run a genuinely clean test. Returns the count and the asset ids
     that were removed, so the caller can put them back to pending.
     """
-    removed, ids = 0, []
+    removed, gone = 0, []
     try:
         names = os.listdir(config.OUTBOX_DIR)
     except OSError:
@@ -258,11 +232,10 @@ def empty_outbox() -> tuple[int, list[str]]:
         try:
             os.remove(path)
             removed += 1
-            if SEP in name:
-                ids.append(name.split(SEP, 1)[0])
+            gone.append(name)
         except OSError:
             continue
-    return removed, ids
+    return removed, db.ids_for_outbox_names(gone)
 
 
 async def run() -> None:

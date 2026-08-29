@@ -55,10 +55,12 @@ CREATE TABLE IF NOT EXISTS assets (
     width         INTEGER,
     height        INTEGER,
     duration      REAL,
-    forced        INTEGER NOT NULL DEFAULT 0
+    forced        INTEGER NOT NULL DEFAULT 0,
+    outbox_name   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken ON assets(taken_at);
+CREATE INDEX IF NOT EXISTS idx_assets_outbox ON assets(outbox_name);
 
 -- Ids of motion-photo video components. They are never sent: the still
 -- image already carries the embedded clip, so relaying the component too
@@ -97,7 +99,8 @@ def connect() -> sqlite3.Connection:
         have = {r["name"] for r in _conn.execute("PRAGMA table_info(assets)")}
         for col, decl in (("width", "INTEGER"), ("height", "INTEGER"),
                           ("duration", "REAL"),
-                          ("forced", "INTEGER NOT NULL DEFAULT 0")):
+                          ("forced", "INTEGER NOT NULL DEFAULT 0"),
+                          ("outbox_name", "TEXT")):
             if col not in have:
                 _conn.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
         _conn.commit()
@@ -252,6 +255,77 @@ def window_progress(start: str, end: str) -> dict:
         "remaining": out.get("pending", 0) + out.get("failed", 0),
         "done": total > 0 and out.get("confirmed", 0) == total,
     }
+
+
+def reserve_outbox_name(asset_id: str, filename: str) -> str:
+    """Pick the name a file will carry in the outbox.
+
+    The original filename is used as-is so it reaches Google Photos looking
+    the way it does in Immich. The asset id is recorded here instead of being
+    glued onto the front of the name, which is how it used to work -- those
+    prefixes ended up in Google Photos permanently.
+
+    Two assets can share a filename, so collisions get a numeric suffix the
+    way a file manager would.
+    """
+    safe = "".join(ch for ch in filename
+                   if ch.isalnum() or ch in " ._-()[]'&+,").strip() or "file.bin"
+    stem, dot, ext = safe.rpartition(".")
+    if not dot:
+        stem, ext = safe, ""
+
+    c = connect()
+    with _lock:
+        candidate = safe
+        n = 2
+        while True:
+            row = c.execute(
+                "SELECT id FROM assets WHERE outbox_name=? AND id!=?",
+                (candidate, asset_id),
+            ).fetchone()
+            if row is None:
+                break
+            candidate = f"{stem} ({n}){('.' + ext) if ext else ''}"
+            n += 1
+        c.execute("UPDATE assets SET outbox_name=? WHERE id=?", (candidate, asset_id))
+        c.commit()
+        _bump()
+    return candidate
+
+
+def ids_for_outbox_names(names: list[str]) -> list[str]:
+    """Map filenames sitting in the outbox back to asset ids.
+
+    Handles both schemes: files written by an older version still carry an
+    `<id>__` prefix, and they must keep resolving or their disappearance
+    would never be read as a backup.
+    """
+    if not names:
+        return []
+    ids, lookup = [], []
+    for name in names:
+        if "__" in name and len(name.split("__", 1)[0]) == 36:
+            ids.append(name.split("__", 1)[0])
+        else:
+            lookup.append(name)
+
+    if lookup:
+        marks = ",".join("?" * len(lookup))
+        rows = connect().execute(
+            f"SELECT id FROM assets WHERE outbox_name IN ({marks})", lookup
+        ).fetchall()
+        ids.extend(r["id"] for r in rows)
+    return ids
+
+
+def outbox_names_for(asset_ids: list[str]) -> dict[str, str]:
+    if not asset_ids:
+        return {}
+    marks = ",".join("?" * len(asset_ids))
+    rows = connect().execute(
+        f"SELECT id, outbox_name FROM assets WHERE id IN ({marks})", asset_ids
+    ).fetchall()
+    return {r["id"]: r["outbox_name"] for r in rows if r["outbox_name"]}
 
 
 def mark_queued(ids: list[str]) -> None:
