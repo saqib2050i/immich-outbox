@@ -23,6 +23,14 @@ The single exception is `purge_motion_parts()`, which is safe because those
 assets are `skipped`, never `queued`, so their absence is never read as
 confirmation.
 
+The corollary: **absence only counts when the outbox is genuinely there.**
+`feeder.outbox_ready()` keeps a dotfile marker (`.immich-outbox-mounted`)
+inside the outbox, so it disappears exactly when the outbox does. Without
+it, a bind mount that did not come up looks identical to Google Photos
+having verified the entire queue, and confirmed assets are never re-sent.
+Nothing may delete that marker — `empty_outbox()` deliberately skips it —
+and `reconcile()` must keep returning early while it is missing.
+
 **2. The outbox cap is the only flow control.** The outbox mirrors the
 phone's queue folder, so capping the outbox caps the phone. Never add a code
 path that writes past the cap.
@@ -90,15 +98,42 @@ test snippets below.
 
 ## Testing
 
-There is no test suite; verification has been ad-hoc scripts against
-`TestClient` with a temp `DB_PATH` and `OUTBOX_DIR`. **A real test suite is
-the most valuable next contribution.** Worth covering first:
+`pytest` (91 tests, a few seconds). Every test gets its own `DB_PATH` and
+`OUTBOX_DIR` from the `rig` fixture; nothing touches a real Immich or a real
+outbox. CI runs it and will not publish an image if it fails.
 
-- fill → drain → refill, asserting nothing is re-sent and the cap holds
-- motion components skipped in both scan orders
-- backup → change → restore round-trip
-- auth: unauthenticated 401s, forced change, host allowlist
-- date-window and forced-send eligibility
+```
+pip install -r requirements-dev.txt && python -m pytest -q
+```
+
+The local dev Python may be older than 3.10, which the code needs. If so:
+
+```
+docker run --rm -v "$PWD":/srv -w /srv python:3.12-slim \
+  sh -c "pip install -q -r requirements-dev.txt && python -m pytest -q"
+```
+
+What is covered, by file:
+
+- `test_relay.py` — fill → drain → refill, asserting nothing is re-sent and
+  the cap holds; oversize-only-when-empty; truncated and failed downloads;
+  filename collisions; legacy `<id>__` names still confirming
+- `test_outbox_guard.py` — an outbox that is not really there confirms
+  nothing and receives nothing
+- `test_motion.py` — components skipped in both scan orders
+- `test_eligibility.py` — date windows, forced sends, retry ceiling
+- `test_backup.py` — backup → change → restore round-trip, credential
+  stripping, name traversal
+- `test_auth.py` — unauthenticated 401s, forced change, host allowlist,
+  login throttle
+- `test_cycle.py` — the cycle lock, and the housekeeping chores
+- `test_immich.py` — version-aware request shaping and error parsing
+
+Writing a new test: `conftest.asset()` builds a ledger row and
+`conftest.fake_download()` stands in for `immich.stream_original`, returning
+a body of exactly the size the ledger recorded (`top_up` checks the two
+against each other). `rig.deliver(n)` simulates Smart Storage clearing files
+off the phone.
 
 ## Deployment
 
@@ -113,5 +148,6 @@ The GHCR package must be public, or the server needs `docker login ghcr.io`.
 - Google Photos cannot be read: the Library API was restricted to
   app-created media in March 2025. A Takeout importer is the only way to
   reconcile against the real cloud library — discussed, not built.
-- No test suite (see above).
 - Sessions are in memory; a restart signs everyone out.
+- `settings.load()` is one SELECT per key and is called on every Immich
+  client construction. Harmless at this scale, but it is a single query.
