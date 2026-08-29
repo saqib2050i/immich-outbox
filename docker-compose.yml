@@ -31,6 +31,12 @@ services:
       # First-run defaults only. After that, edit everything on the dashboard
       # at http://<server>:8099 -- settings live in the database and apply
       # without a restart.
+      # Optional. The dashboard rejects requests arriving under a hostname it
+      # does not recognise, which blocks DNS-rebinding attacks from a browser
+      # on your LAN. IP addresses and .local/.lan names are allowed already;
+      # add anything else here, comma separated.
+      # ALLOWED_HOSTS: "relay.mydomain.tld"
+
       IMMICH_URL: "http://192.168.1.2:2283"
       IMMICH_API_KEY: "CHANGE-ME"
       OUTBOX_MAX_GB: "16"

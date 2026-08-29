@@ -28,6 +28,29 @@
     font-family:var(--mono); font-size:14px; line-height:1.45;
     padding:20px; max-width:960px; margin-inline:auto;
   }
+  nav.jump{position:sticky;top:0;z-index:20;background:var(--paper);
+           border-bottom:1px solid var(--rule);margin:0 -20px 18px;padding:9px 20px;
+           display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+  nav.jump a{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+             color:var(--dim);text-decoration:none;padding:5px 9px;border:1px solid transparent}
+  nav.jump a:hover{color:var(--ink);border-color:var(--rule)}
+  nav.jump a.warn{color:var(--alarm);border-color:var(--alarm)}
+  nav.jump .spacer{flex:1}
+  nav.jump button{font-size:10px;padding:4px 9px}
+
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100;
+           display:flex;align-items:center;justify-content:center;padding:24px}
+  .overlay[hidden]{display:none}
+  .sheet{background:var(--paper);border:2px solid var(--ink);padding:22px;max-width:400px;width:100%}
+  .sheet h2{font-size:18px;margin:0 0 6px;letter-spacing:-.01em}
+  .sheet p{font-size:12px;color:var(--dim);margin:0 0 16px;line-height:1.5}
+  .sheet label{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+               color:var(--dim);margin:12px 0 5px}
+  .sheet input{width:100%;font:inherit;font-size:14px;background:var(--panel);
+               color:var(--ink);border:1px solid var(--rule);padding:9px 11px}
+  .sheet .err{color:var(--alarm);font-size:12px;min-height:1.2em;margin-top:10px}
+  .sheet .ok{color:var(--done)}
+
   .eyebrow{
     font-size:10px; letter-spacing:.22em; text-transform:uppercase;
     color:var(--dim); margin:0 0 6px;
@@ -281,7 +304,40 @@
 </head>
 <body>
 
-<header>
+<div class="overlay" id="pwSheet" hidden>
+  <div class="sheet">
+    <h2 id="pwTitle">Choose a password</h2>
+    <p id="pwWhy">This dashboard holds your Immich and Syncthing keys, so it should
+       not be left on the default password.</p>
+    <div id="pwCurrentWrap" hidden>
+      <label for="pwCurrent">Current password</label>
+      <input type="password" id="pwCurrent" autocomplete="current-password">
+    </div>
+    <label for="pwNew">New password</label>
+    <input type="password" id="pwNew" autocomplete="new-password" placeholder="at least 8 characters">
+    <label for="pwAgain">Repeat it</label>
+    <input type="password" id="pwAgain" autocomplete="new-password">
+    <div class="controls" style="margin-top:16px">
+      <button id="pwSave">Save password</button>
+      <button id="pwCancel" hidden>Cancel</button>
+    </div>
+    <p class="err" id="pwErr"></p>
+  </div>
+</div>
+
+<nav class="jump">
+  <a href="#top">Overview</a>
+  <a href="#nav-timeline">Timeline</a>
+  <a href="#nav-library">Library</a>
+  <a href="#nav-attention" id="navAttention">Attention</a>
+  <a href="#settings">Settings</a>
+  <a href="#nav-tools">Tools</a>
+  <span class="spacer"></span>
+  <button id="btnPassword">Password</button>
+  <button id="btnLogout">Sign out</button>
+</nav>
+
+<header id="top">
   <p class="eyebrow">Original-quality relay</p>
   <h1>Immich <span class="arrow">→</span> Pixel <span class="arrow">→</span> Google Photos
     <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span>
@@ -333,7 +389,7 @@
   </div>
 </div>
 
-<section class="attention">
+<section class="attention" id="nav-attention">
   <h2>Needs attention</h2>
   <div class="controls"><button id="btnRefresh">Check the outbox now</button></div>
   <div id="attention"></div>
@@ -489,14 +545,14 @@
   <div class="recon" id="recon"></div>
 </section>
 
-<section class="timeline">
+<section class="timeline" id="nav-timeline">
   <h2>Timeline</h2>
   <p class="empty">Only months that actually hold media. Open one to see what is
      worth upgrading before you clear it from Google Photos.</p>
   <div id="tlBody"><p class="empty">Loading…</p></div>
 </section>
 
-<section class="stats">
+<section class="stats" id="nav-library">
   <h2>What is in the library</h2>
   <div id="stBody"><p class="empty">Working it out…</p></div>
   <div class="st-total" id="stTotals"></div>
@@ -504,7 +560,7 @@
 
 </section>
 
-<details class="tools">
+<details class="tools" id="nav-tools">
   <summary>Testing tools</summary>
 
   <div class="warnbox">
@@ -648,6 +704,11 @@ async function render(){
   iInc.textContent   = ago(d.immich.last_incremental_scan);
   iFull.textContent  = ago(d.immich.last_full_scan);
   iBytes.textContent = fmtBytes(c.pending_bytes);
+
+  if (d.auth && d.auth.must_change && pwSheet.hidden) openPasswordSheet(true);
+  const problems = (d.stuck || []).length + (d.problems || []).length;
+  navAttention.classList.toggle("warn", problems > 0);
+  navAttention.textContent = problems > 0 ? "Attention (" + problems + ")" : "Attention";
 
   renderConnection(d);
   renderAlerts(d);
@@ -1401,6 +1462,61 @@ btnTest.onclick = async () => {
   btnTest.textContent = "Testing";
   try { await fetch("/api/immich/test", {method:"POST"}); await tick(); }
   finally { btnTest.disabled = false; btnTest.textContent = "Test connection"; }
+};
+
+// ---- password ----
+let pwForced = false;
+
+function openPasswordSheet(forced){
+  pwForced = forced;
+  pwSheet.hidden = false;
+  pwCurrentWrap.hidden = forced;          // no point typing "admin" twice
+  pwCancel.hidden = forced;
+  pwTitle.textContent = forced ? "Choose a password" : "Change password";
+  pwWhy.textContent = forced
+    ? "This dashboard holds your Immich and Syncthing keys, so it should not be "
+      + "left on the default password."
+    : "Changing it signs out every other browser.";
+  pwErr.textContent = "";
+  pwErr.className = "err";
+  [pwCurrent, pwNew, pwAgain].forEach(i => i.value = "");
+  (forced ? pwNew : pwCurrent).focus();
+}
+
+btnPassword.onclick = () => openPasswordSheet(false);
+pwCancel.onclick = () => { pwSheet.hidden = true; };
+
+pwSave.onclick = async () => {
+  pwErr.className = "err";
+  if (pwNew.value.length < 8){ pwErr.textContent = "Use at least 8 characters"; return; }
+  if (pwNew.value !== pwAgain.value){ pwErr.textContent = "The two do not match"; return; }
+  pwSave.disabled = true;
+  const was = pwSave.textContent;
+  pwSave.textContent = "Saving";
+  try {
+    const r = await fetch("/api/password", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({current: pwCurrent.value, new: pwNew.value})
+    });
+    const d = await r.json();
+    if (!d.ok){ pwErr.textContent = d.error || "Could not change it"; return; }
+    pwErr.className = "err ok";
+    pwErr.textContent = "Saved.";
+    setTimeout(() => { pwSheet.hidden = true; tick(); }, 900);
+  } catch (e) {
+    pwErr.textContent = "Could not reach the server";
+  } finally {
+    pwSave.disabled = false;
+    pwSave.textContent = was;
+  }
+};
+
+[pwNew, pwAgain, pwCurrent].forEach(i =>
+  i.addEventListener("keydown", e => { if (e.key === "Enter") pwSave.click(); }));
+
+btnLogout.onclick = async () => {
+  await fetch("/api/logout", {method:"POST"});
+  window.location = "/login";
 };
 
 btnTestAlert.onclick = async () => {

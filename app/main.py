@@ -1,13 +1,15 @@
 import asyncio
 import json
+import os
 from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               StreamingResponse)
 
-from . import alerts, backup, config, db, feeder, immich, settings, syncthing, worker
+from . import alerts, auth, backup, config, db, feeder, immich, settings, syncthing, worker
 
 STATIC = Path(__file__).parent / "static"
 
@@ -15,6 +17,7 @@ STATIC = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.connect()
+    auth.ensure_initialised()
     db.log("start", "outbox feeder started")
     tasks = [asyncio.create_task(worker.run()), asyncio.create_task(feeder.run())]
     yield
@@ -23,6 +26,88 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Immich outbox feeder", lifespan=lifespan)
+
+# Paths reachable without a session.
+OPEN_PATHS = {"/login", "/api/login", "/healthz"}
+
+
+@app.middleware("http")
+async def gate(request: Request, call_next):
+    if not auth.host_allowed(request.headers.get("host")):
+        return Response("Unrecognised host name. Reach this by IP address, or "
+                        "add the name to ALLOWED_HOSTS.",
+                        status_code=421, media_type="text/plain")
+
+    path = request.url.path
+    if path in OPEN_PATHS:
+        return await call_next(request)
+
+    if not auth.valid_session(request.cookies.get(auth.COOKIE)):
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "not signed in"}, status_code=401)
+        return RedirectResponse("/login", status_code=302)
+
+    # Signed in, but still on the starting password: only the change-password
+    # route works until it is replaced.
+    if auth.must_change() and path not in ("/api/password", "/api/status", "/"):
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "password change required",
+                                 "must_change": True}, status_code=403)
+        return RedirectResponse("/", status_code=302)
+
+    return await call_next(request)
+
+
+@app.post("/api/login")
+async def login(payload: dict):
+    if not auth.verify(str(payload.get("password", ""))):
+        db.log("auth", "failed sign-in attempt")
+        return JSONResponse({"ok": False, "error": "Wrong password"}, status_code=401)
+    token = auth.new_session()
+    resp = JSONResponse({"ok": True, "must_change": auth.must_change()})
+    resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
+                    max_age=auth.SESSION_DAYS * 86400, path="/")
+    return resp
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    auth.end_session(request.cookies.get(auth.COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/password")
+async def change_password(payload: dict, request: Request):
+    current = str(payload.get("current", ""))
+    new = str(payload.get("new", ""))
+
+    # Skip the current-password check only while still on the default, so
+    # first-time setup does not require typing "admin" twice.
+    if not auth.must_change() and not auth.verify(current):
+        return JSONResponse({"ok": False, "error": "Current password is wrong"},
+                            status_code=400)
+    if len(new) < 8:
+        return JSONResponse({"ok": False, "error": "Use at least 8 characters"},
+                            status_code=400)
+    if new == auth.DEFAULT_PASSWORD:
+        return JSONResponse({"ok": False, "error": "Pick something other than the default"},
+                            status_code=400)
+
+    auth.set_password(new)
+    auth.end_all_sessions()
+    db.log("auth", "password changed — all sessions signed out")
+    token = auth.new_session()          # keep this browser signed in
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
+                    max_age=auth.SESSION_DAYS * 86400, path="/")
+    return resp
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(STATIC / "login.html")
 
 
 @app.get("/api/status")
@@ -57,6 +142,8 @@ async def status():
         "alerts": json.loads(db.get_meta("alerts") or "[]"),
         "last_backup": db.get_meta("last_backup"),
         "revision": db.revision(),
+        "auth": {"must_change": auth.must_change(),
+                 "default_password": auth.is_default_password()},
     }
 
 
@@ -190,14 +277,17 @@ async def restore_backup(payload: dict):
 
 
 @app.get("/api/backups/{name}")
-async def download_backup(name: str):
+async def download_backup(name: str, background_tasks: BackgroundTasks):
+    """Download a backup with the credentials removed."""
     try:
-        path = backup.path_for(name)
+        path = backup.export_sanitised(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if not Path(path).is_file():
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="no such backup")
-    return FileResponse(path, filename=name, media_type="application/octet-stream")
+    background_tasks.add_task(os.remove, path)
+    return FileResponse(path, filename=name, media_type="application/octet-stream",
+                        background=background_tasks)
 
 
 @app.get("/api/settings")

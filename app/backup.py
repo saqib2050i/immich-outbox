@@ -129,3 +129,30 @@ def path_for(name: str) -> str:
     if "/" in name or "\\" in name or not name.startswith("bridge-"):
         raise ValueError("bad backup name")
     return os.path.join(BACKUP_DIR, name)
+
+
+def export_sanitised(name: str) -> str:
+    """A copy of a backup with the credentials stripped out.
+
+    The ledger holds the Immich and Syncthing keys in plaintext, so handing
+    the raw file to a browser hands over the keys. Downloads get this copy
+    instead; the on-disk backup keeps everything so a restore still works.
+    """
+    src = path_for(name)
+    if not os.path.isfile(src):
+        raise FileNotFoundError(name)
+
+    tmp = os.path.join(BACKUP_DIR, ".export-" + name)
+    shutil.copyfile(src, tmp)
+    conn = sqlite3.connect(tmp)
+    try:
+        conn.execute("DELETE FROM meta WHERE k IN "
+                     "('cfg_immich_api_key','cfg_syncthing_api_key',"
+                     " 'auth_hash','alert_state')")
+        conn.execute("DELETE FROM meta WHERE k LIKE 'cfg_alert_webhook%'")
+        conn.commit()
+        conn.execute("VACUUM")          # do not leave the values in free pages
+        conn.commit()
+    finally:
+        conn.close()
+    return tmp

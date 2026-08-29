@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo relay — sign in</title>
+<style>
+  :root{
+    --paper:#DCE0DA; --panel:#E6E9E3; --ink:#111E1A; --rule:#A6AFA6; --dim:#5C6660;
+    --transit:#1B4FD8; --alarm:#A82118;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--paper:#0E1614;--panel:#152220;--ink:#DDE4DE;--rule:#33413C;--dim:#8A968F;
+          --transit:#6E97FF;--alarm:#E4695C;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:var(--paper);color:var(--ink);font-family:var(--mono);padding:24px}
+  form{width:100%;max-width:340px}
+  .eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin:0 0 6px}
+  h1{font-size:24px;margin:0 0 20px;letter-spacing:-.02em;
+     border-bottom:2px solid var(--ink);padding-bottom:14px}
+  h1 .arrow{color:var(--transit)}
+  label{display:block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+        color:var(--dim);margin:0 0 6px}
+  input{width:100%;font:inherit;font-size:15px;background:var(--panel);color:var(--ink);
+        border:1px solid var(--rule);padding:10px 12px}
+  input:focus-visible{outline:2px solid var(--transit);outline-offset:1px}
+  button{width:100%;margin-top:14px;font:inherit;font-size:12px;letter-spacing:.12em;
+         text-transform:uppercase;background:var(--ink);color:var(--paper);
+         border:1px solid var(--ink);padding:11px;cursor:pointer}
+  button:hover{background:transparent;color:var(--ink)}
+  button:disabled{opacity:.5;cursor:default}
+  .err{color:var(--alarm);font-size:12px;margin-top:12px;min-height:1.2em}
+  .note{font-size:11px;color:var(--dim);margin-top:18px;line-height:1.5;
+        border-top:1px solid var(--rule);padding-top:12px}
+</style>
+</head>
+<body>
+<form id="f" onsubmit="return false">
+  <p class="eyebrow">Original-quality relay</p>
+  <h1>Immich <span class="arrow">→</span> Pixel <span class="arrow">→</span> Google Photos</h1>
+
+  <label for="pw">Password</label>
+  <input type="password" id="pw" autocomplete="current-password" autofocus>
+  <button id="go">Sign in</button>
+  <p class="err" id="err"></p>
+
+  <p class="note">First time here? The password is <b>admin</b>, and you will be
+     asked to change it straight away.</p>
+</form>
+
+<script>
+async function submit(){
+  err.textContent = "";
+  go.disabled = true;
+  const was = go.textContent;
+  go.textContent = "Checking";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({password: pw.value})
+    });
+    const d = await r.json();
+    if (d.ok){ window.location = "/"; return; }
+    err.textContent = d.error || "Wrong password";
+    pw.select();
+  } catch (e) {
+    err.textContent = "Could not reach the server";
+  } finally {
+    go.disabled = false;
+    go.textContent = was;
+  }
+}
+go.onclick = submit;
+document.getElementById("f").addEventListener("submit", submit);
+pw.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+</script>
+</body>
+</html>
