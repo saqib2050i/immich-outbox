@@ -59,10 +59,24 @@ async def gate(request: Request, call_next):
 
 
 @app.post("/api/login")
-async def login(payload: dict):
+def login(payload: dict, request: Request):
+    # Deliberately a plain `def`: verifying a password is 240k PBKDF2
+    # iterations of straight CPU, and awaiting it on the event loop stalls
+    # the feeder mid-download. FastAPI runs sync routes in a threadpool.
+    client = request.client.host if request.client else "unknown"
+
+    wait = auth.throttle_for(client)
+    if wait > 0:
+        return JSONResponse(
+            {"ok": False, "error": f"Too many attempts — wait {wait:.0f}s"},
+            status_code=429, headers={"Retry-After": str(int(wait) + 1)})
+
     if not auth.verify(str(payload.get("password", ""))):
-        db.log("auth", "failed sign-in attempt")
+        auth.note_failure(client)
+        db.log("auth", f"failed sign-in attempt from {client}")
         return JSONResponse({"ok": False, "error": "Wrong password"}, status_code=401)
+
+    auth.note_success(client)
     token = auth.new_session()
     resp = JSONResponse({"ok": True, "must_change": auth.must_change()})
     resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
@@ -79,7 +93,8 @@ async def logout(request: Request):
 
 
 @app.post("/api/password")
-async def change_password(payload: dict, request: Request):
+def change_password(payload: dict, request: Request):
+    # Sync for the same reason as /api/login: this hashes twice.
     current = str(payload.get("current", ""))
     new = str(payload.get("new", ""))
 
@@ -124,6 +139,7 @@ async def status():
             "last_cycle": db.get_meta("last_cycle"),
             "path": config.OUTBOX_DIR,
             "paused": cfg.paused,
+            "problem": db.get_meta("outbox_problem") or "",
         },
         "immich": {
             "url": cfg.immich_url,
@@ -177,8 +193,12 @@ async def send(payload: dict):
     if n:
         what = f"category {bucket}" if bucket else f"{n} file(s)"
         db.log("send", f"{what} moved to the front of the queue ({n} asset(s))")
-        _, used = feeder.reconcile()
-        await feeder.top_up(used)
+        # Under the cycle lock, or this races the feeder's own top-up: both
+        # would size their batch against the same free space and together
+        # write past the cap.
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
     return {"ok": True, "queued": n}
 
 
@@ -232,8 +252,9 @@ async def month_send(payload: dict):
     if n:
         db.log("send", f"{n} file(s) from {month}"
                        + (f" ({group})" if group else "") + " moved to the front")
-        _, used = feeder.reconcile()
-        await feeder.top_up(used)
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
     return {"ok": True, "queued": n}
 
 
@@ -343,7 +364,10 @@ async def immich_test():
 @app.post("/api/rescan")
 async def rescan():
     db.log("scan", "full rescan requested")
-    asyncio.create_task(worker.full_scan())
+    # Raise the flag rather than starting a second scanner: the worker loop
+    # wakes on it within fifteen seconds. Spawning the scan here instead ran
+    # it concurrently with the loop's own, paginating the whole library twice.
+    db.set_meta("force_full_scan", "1")
     return {"ok": True, "scanning": True}
 
 
@@ -360,32 +384,38 @@ async def reset(payload: dict):
     """Testing tools. Never touches Google Photos or Immich -- only this
     service's own ledger and the outbox folder."""
     scope = str(payload.get("scope", ""))
-
-    if scope == "outbox":
-        removed, ids = feeder.empty_outbox()
-        db.reset_ids(ids)
-        db.log("reset", f"emptied the outbox ({removed} file(s)) and re-queued them")
-        result = {"removed": removed, "requeued": len(ids)}
-
-    elif scope == "resend":
-        removed, _ = feeder.empty_outbox()
-        n = db.reset_states()
-        db.log("reset", f"re-queued {n} asset(s) and emptied the outbox ({removed} file(s))")
-        result = {"removed": removed, "requeued": n}
-
-    elif scope == "fresh":
-        removed, _ = feeder.empty_outbox()
-        n = db.wipe_ledger(forget_motion_parts=bool(payload.get("forget_motion_parts")))
-        db.log("reset", f"cleared the ledger ({n} asset(s)) and emptied the outbox "
-                        f"({removed} file(s)) — rescanning Immich")
-        # Without this the dashboard sits empty until the next scheduled scan.
-        asyncio.create_task(worker.full_scan())
-        result = {"removed": removed, "cleared": n, "rescanning": True}
-
-    else:
+    if scope not in ("outbox", "resend", "fresh"):
         return {"ok": False, "error": f"unknown scope {scope!r}"}
 
-    _, used = feeder.reconcile()
+    # The whole reset happens under the cycle lock. Without it a reset can
+    # land while the feeder is awaiting bytes: the download then finishes
+    # into an outbox that has just been emptied and a ledger that no longer
+    # has a row for it, leaving an orphan file that is re-downloaded later
+    # under a new name — a duplicate in Google Photos.
+    async with feeder.CYCLE_LOCK:
+        if scope == "outbox":
+            removed, ids = feeder.empty_outbox()
+            db.reset_ids(ids)
+            db.log("reset", f"emptied the outbox ({removed} file(s)) and re-queued them")
+            result = {"removed": removed, "requeued": len(ids)}
+
+        elif scope == "resend":
+            removed, _ = feeder.empty_outbox()
+            n = db.reset_states()
+            db.log("reset", f"re-queued {n} asset(s) and emptied the outbox ({removed} file(s))")
+            result = {"removed": removed, "requeued": n}
+
+        else:  # fresh
+            removed, _ = feeder.empty_outbox()
+            n = db.wipe_ledger(forget_motion_parts=bool(payload.get("forget_motion_parts")))
+            db.log("reset", f"cleared the ledger ({n} asset(s)) and emptied the outbox "
+                            f"({removed} file(s)) — rescanning Immich")
+            # Without this the dashboard sits empty until the next scan.
+            db.set_meta("force_full_scan", "1")
+            result = {"removed": removed, "cleared": n, "rescanning": True}
+
+        _, used = feeder.reconcile()
+
     result["ok"] = True
     result["outbox_used"] = used
     return result
@@ -400,8 +430,9 @@ async def requeue(asset_id: str):
 
 @app.post("/api/refresh")
 async def refresh():
-    _, used = feeder.reconcile()
-    added = await feeder.top_up(used)
+    async with feeder.CYCLE_LOCK:
+        _, used = feeder.reconcile()
+        added = await feeder.top_up(used)
     return {"ok": True, "added": added}
 
 

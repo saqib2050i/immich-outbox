@@ -113,6 +113,12 @@ def restore(name: str) -> dict:
 
     db.connect()
     db._bump()  # noqa: SLF001
+
+    # The restored ledger carries its own password hash, so anyone signed in
+    # under the replaced one must not stay signed in.
+    from . import auth
+    auth.end_all_sessions()
+
     db.log("backup", f"ledger restored from {name}")
     return {"restored": name, "safety_copy": safety["name"]}
 

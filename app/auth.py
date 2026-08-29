@@ -38,6 +38,12 @@ def set_password(password: str, must_change: bool = False) -> None:
     db.set_meta("auth_hash", _hash(password, secrets.token_bytes(16)))
     db.set_meta("auth_must_change", "1" if must_change else "0")
     db.set_meta("auth_changed_at", db.now())
+    # Recorded rather than re-derived. The dashboard asks "is this still the
+    # default password?" on every status refresh, and the only way to answer
+    # it from the hash is to run the full PBKDF2 — 240k iterations, tens to
+    # hundreds of milliseconds, on the same event loop that is downloading
+    # photos. The answer is known for free at the moment it is set.
+    db.set_meta("auth_is_default", "1" if password == DEFAULT_PASSWORD else "0")
 
 
 def ensure_initialised() -> None:
@@ -65,7 +71,13 @@ def must_change() -> bool:
 
 
 def is_default_password() -> bool:
-    return verify(DEFAULT_PASSWORD)
+    flag = db.get_meta("auth_is_default")
+    if flag is None:
+        # A database from before the flag existed: pay for the hash once,
+        # then record it.
+        flag = "1" if verify(DEFAULT_PASSWORD) else "0"
+        db.set_meta("auth_is_default", flag)
+    return flag == "1"
 
 
 # ------------------------------------------------------------- sessions
@@ -104,6 +116,47 @@ def end_session(token: str | None) -> None:
 def end_all_sessions() -> None:
     """After a password change, every existing session dies."""
     _sessions.clear()
+
+
+# ------------------------------------------------------- login throttle
+
+# Verifying a password costs a deliberate 240k PBKDF2 iterations, which is
+# also what makes repeated attempts expensive for this service: unthrottled,
+# anything on the LAN can keep the CPU busy hashing and starve the feeder.
+# A short escalating delay per client makes guessing pointless without ever
+# locking the real user out for long.
+MAX_FREE_ATTEMPTS = 5
+MAX_BACKOFF_SECONDS = 30.0
+
+# client -> (consecutive failures, when the last one was)
+_failures: dict[str, tuple[int, datetime]] = {}
+
+
+def throttle_for(client: str) -> float:
+    """Seconds this client must wait before another attempt is considered."""
+    record = _failures.get(client)
+    if not record:
+        return 0.0
+    count, last = record
+    if count < MAX_FREE_ATTEMPTS:
+        return 0.0
+    wait = min(2.0 ** (count - MAX_FREE_ATTEMPTS), MAX_BACKOFF_SECONDS)
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+    return max(0.0, wait - elapsed)
+
+
+def note_failure(client: str) -> None:
+    count, _ = _failures.get(client, (0, None))
+    _failures[client] = (count + 1, datetime.now(timezone.utc))
+    # Bounded, so a spray of forged client addresses cannot grow this
+    # without limit. The oldest attempts are the least interesting.
+    if len(_failures) > 512:
+        for stale, _ in sorted(_failures.items(), key=lambda kv: kv[1][1])[:256]:
+            _failures.pop(stale, None)
+
+
+def note_success(client: str) -> None:
+    _failures.pop(client, None)
 
 
 # --------------------------------------------------- DNS rebinding guard

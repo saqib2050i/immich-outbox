@@ -373,6 +373,7 @@
     <div class="row"><span>Used of cap</span><span id="oUsed">—</span></div>
     <div class="row"><span>Last cycle</span><span id="oCycle">—</span></div>
     <div class="row"><span>Folder</span><span id="oPath">—</span></div>
+    <div class="row bad" id="rowProblem" hidden><span>Outbox</span><span id="oProblem">—</span></div>
     <div class="row" id="rowSync" hidden><span>Synced to phone</span><span id="oSync">—</span></div>
   </div>
 
@@ -697,6 +698,10 @@ async function render(){
   oUsed.textContent  = fmtBytes(d.outbox.used_bytes) + " / " + fmtBytes(d.outbox.cap_bytes);
   oCycle.textContent = ago(d.outbox.last_cycle);
   oPath.textContent  = d.outbox.path;
+  // Nothing is being confirmed while this is set, which is the point: an
+  // outbox that is not really there must never be read as a backup.
+  rowProblem.hidden = !d.outbox.problem;
+  oProblem.textContent = d.outbox.problem || "";
   renderSyncthing();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");

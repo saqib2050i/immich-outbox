@@ -52,10 +52,21 @@ def evaluate() -> list[dict]:
                         "message": f"{conn.get('summary','Not connected')} "
                                    f"(for {age:.0f}h)"})
 
-    # 2. Nothing coming back. Only meaningful once something is in flight:
+    # 2. The outbox is not where it should be. Nothing is being confirmed
+    #    while this is true, deliberately -- see feeder.outbox_ready().
+    problem = db.get_meta("outbox_problem")
+    if problem:
+        out.append({"key": "outbox_missing",
+                    "title": "Outbox unavailable",
+                    "message": problem})
+
+    # 3. Nothing coming back. Only meaningful once something is in flight:
     #    with an empty outbox there is nothing to confirm.
     if counts["queued"] > 0:
-        last_conf = db.get_meta("last_confirm_at")
+        # Before the first confirmation there is no last_confirm_at, so fall
+        # back to when the oldest file went out. Without this a fresh install
+        # reports "nothing confirmed ever" on its very first cycle.
+        last_conf = db.get_meta("last_confirm_at") or db.oldest_sent_at()
         age = _age_hours(last_conf)
         days = (age / 24) if age is not None else None
         if days is None or days >= cfg.alert_stall_days:
@@ -67,7 +78,7 @@ def evaluate() -> list[dict]:
                                    f"is on and Smart Storage is set to remove backed-up "
                                    f"photos."})
 
-    # 3. Outbox full and not moving -- the phone is not draining it.
+    # 4. Outbox full and not moving -- the phone is not draining it.
     used = int(db.get_meta("outbox_used", "0"))
     cap = cfg.outbox_max_bytes
     if cap and used >= cap * 0.98:
@@ -84,7 +95,7 @@ def evaluate() -> list[dict]:
     else:
         db.set_meta("outbox_full_since", "")
 
-    # 4. Failures piling up.
+    # 5. Failures piling up.
     if counts["failed"] >= cfg.alert_failed_count:
         out.append({"key": "failures",
                     "title": f"{counts['failed']} downloads failed",

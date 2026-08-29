@@ -22,29 +22,81 @@ import tempfile
 
 from . import alerts, backup, config, db, immich, settings
 
-SEP = "__"
-
 # Held while a cycle runs, so a reset from the dashboard cannot land halfway
 # through a download and leave the ledger disagreeing with the outbox.
 CYCLE_LOCK = asyncio.Lock()
+
+# Proof that the outbox we are looking at is the real one. See outbox_ready().
+MOUNT_MARKER = ".immich-outbox-mounted"
 
 
 # Files written before the ledger tracked names carry an "<id>__" prefix.
 # Still recognised on read so they keep resolving; nothing new uses it.
 
 
+def _real_names() -> list[str]:
+    """Everything in the outbox that is a delivered file.
+
+    Excludes Syncthing's bookkeeping and its in-flight temporaries, our own
+    dotfiles (the mount marker, download partials), and anything else
+    hidden. One definition, so the listing, the purge and the emptier can
+    never disagree about what counts as a file.
+    """
+    try:
+        names = os.listdir(config.OUTBOX_DIR)
+    except OSError:
+        return []
+    return [n for n in names
+            if n not in config.IGNORED
+            and not n.startswith(".")
+            and not n.startswith("~syncthing~")
+            and not n.endswith(".tmp")]
+
+
+def outbox_ready() -> tuple[bool, str]:
+    """Is the outbox actually there?
+
+    Confirmation is derived from files disappearing, so an outbox that
+    quietly vanishes -- a bind mount that did not come up, a wrong host
+    path, Docker creating an empty directory where the share should be --
+    reads as "Google Photos has verified every one of these". The whole
+    queue gets marked confirmed and, because confirmed assets are never
+    re-sent, those originals never make the trip.
+
+    The guard is a marker file living *inside* the outbox, so it disappears
+    exactly when the outbox does. Absence is only treated as a fresh start
+    when nothing is waiting to be confirmed; once the ledger says files
+    should be here, an unmarked empty directory is the failure itself.
+    """
+    marker = os.path.join(config.OUTBOX_DIR, MOUNT_MARKER)
+    if os.path.isdir(config.OUTBOX_DIR) and os.path.exists(marker):
+        return True, ""
+
+    queued = db.counts()["queued"]
+    if queued and not _real_names():
+        return False, (f"the outbox at {config.OUTBOX_DIR} is empty and unmarked "
+                       f"while {queued} file(s) should be in it — refusing to read "
+                       f"that as a backup. Check the volume is mounted.")
+
+    # Safe to (re)claim it: either nothing is in flight, so nothing can be
+    # falsely confirmed, or the files are visibly right here.
+    try:
+        os.makedirs(config.OUTBOX_DIR, exist_ok=True)
+        with open(marker, "w") as fh:
+            fh.write("Created by immich-outbox. Do not delete: its absence is how\n"
+                     "the service notices the outbox has gone missing.\n")
+        os.chmod(marker, 0o664)
+    except OSError as exc:
+        return False, f"cannot write to {config.OUTBOX_DIR}: {exc}"
+    return True, ""
+
+
 def list_outbox() -> tuple[list[str], int]:
     """Real files in the outbox, plus the bytes they occupy."""
-    os.makedirs(config.OUTBOX_DIR, exist_ok=True)
     names, total = [], 0
-    for name in os.listdir(config.OUTBOX_DIR):
-        if name in config.IGNORED or name.startswith("."):
-            continue
+    for name in _real_names():
         path = os.path.join(config.OUTBOX_DIR, name)
         if not os.path.isfile(path):
-            continue
-        # Syncthing's in-flight temporaries are not delivered photos yet.
-        if name.endswith(".tmp") or name.startswith("~syncthing~"):
             continue
         try:
             total += os.path.getsize(path)
@@ -83,17 +135,22 @@ def purge_motion_parts() -> int:
     ledger, so their disappearance is not read as confirmation. The still
     image carries the embedded clip, so nothing is lost.
     """
-    removed = 0
-    try:
-        names = os.listdir(config.OUTBOX_DIR)
-    except OSError:
+    names = _real_names()
+    if not names:
         return 0
-    for name in names:
-        if name.startswith("."):
-            continue
-        ids = db.ids_for_outbox_names([name])
-        if not ids or not db.is_motion_part(ids[0]):
-            continue
+    # One pass, not two queries per file: on a full outbox the per-file
+    # version cost thousands of round trips every cycle.
+    parts = set(db.motion_parts_among(db.ids_for_outbox_names(names)))
+    if not parts:
+        return 0
+
+    doomed = set(db.outbox_names_for(sorted(parts)).values())
+    # Legacy files carry the id in the name instead of the ledger, so they
+    # have to be matched the other way round.
+    doomed |= {n for n in names if "__" in n and n.split("__", 1)[0] in parts}
+
+    removed = 0
+    for name in doomed & set(names):
         try:
             os.remove(os.path.join(config.OUTBOX_DIR, name))
             removed += 1
@@ -106,6 +163,17 @@ def purge_motion_parts() -> int:
 
 
 def reconcile() -> tuple[list[str], int]:
+    ready, why = outbox_ready()
+    db.set_meta("outbox_problem", "" if ready else why)
+    if not ready:
+        # Nothing is confirmed, nothing is topped up, and the ledger is left
+        # exactly as it was. The originals are all still in Immich.
+        if db.get_meta("outbox_problem_logged") != why:
+            db.log("error", why)
+            db.set_meta("outbox_problem_logged", why)
+        return [], 0
+    db.set_meta("outbox_problem_logged", "")
+
     sweep_partials()
     purge_motion_parts()
     present, used = list_outbox()
@@ -122,6 +190,12 @@ def reconcile() -> tuple[list[str], int]:
 async def top_up(used: int) -> int:
     cfg = settings.load()
     if cfg.paused:
+        return 0
+
+    # Never write into an outbox we cannot vouch for: the files would go
+    # nowhere and the ledger would call them sent.
+    ready, _ = outbox_ready()
+    if not ready:
         return 0
 
     budget = cfg.outbox_max_bytes - used
@@ -216,18 +290,12 @@ def empty_outbox() -> tuple[int, list[str]]:
     that were removed, so the caller can put them back to pending.
     """
     removed, gone = 0, []
-    try:
-        names = os.listdir(config.OUTBOX_DIR)
-    except OSError:
-        return 0, []
-    for name in names:
-        if name in config.IGNORED:
-            continue
+    # _real_names() already drops Syncthing's bookkeeping, our own mount
+    # marker and any in-flight temporary: deleting the marker would make the
+    # very next cycle think the outbox had gone missing.
+    for name in _real_names():
         path = os.path.join(config.OUTBOX_DIR, name)
         if not os.path.isfile(path):
-            continue
-        # Leave Syncthing's own bookkeeping alone.
-        if name.startswith(".st"):
             continue
         try:
             os.remove(path)
@@ -236,6 +304,27 @@ def empty_outbox() -> tuple[int, list[str]]:
         except OSError:
             continue
     return removed, db.ids_for_outbox_names(gone)
+
+
+async def housekeeping() -> None:
+    """The chores that have to happen whether or not anyone is looking.
+
+    Both of these used to exist only as buttons and endpoints. That is the
+    wrong place for them: the failure this system actually has is going
+    quiet, and it goes quiet precisely when nobody has the dashboard open.
+    An alert that only fires while you are watching is not an alert, and a
+    backup that only happens when you remember is not a backup.
+    """
+    try:
+        await alerts.check_and_notify()
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"alert check failed: {exc}")
+
+    try:
+        if settings.load().backup_enabled and backup.due():
+            backup.create()
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"scheduled backup failed: {exc}")
 
 
 async def run() -> None:
@@ -248,13 +337,15 @@ async def run() -> None:
                 # Only log on change, so a long outage does not flood the log.
                 db.log("info" if conn["ok"] else "error", conn["summary"])
                 was_ok = conn["ok"]
-            if not conn["ok"]:
-                await asyncio.sleep(config.FEED_INTERVAL_MIN * 60)
-                continue
 
-            async with CYCLE_LOCK:
-                _, used = reconcile()
-                await top_up(used)
+            if conn["ok"]:
+                async with CYCLE_LOCK:
+                    _, used = reconcile()
+                    await top_up(used)
+
+            # Runs even while Immich is unreachable -- that is itself one of
+            # the things worth being told about.
+            await housekeeping()
         except Exception as exc:  # noqa: BLE001
             db.log("error", f"feeder error: {exc}")
         await asyncio.sleep(config.FEED_INTERVAL_MIN * 60)

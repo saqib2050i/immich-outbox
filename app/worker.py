@@ -32,28 +32,38 @@ async def _scan(taken_after: str | None, label: str) -> None:
 
 
 async def full_scan() -> None:
-    """Scan the whole library now, rather than waiting for the next cycle."""
-    await _scan("1970-01-01T00:00:00.000Z", "full")
+    """Scan the whole library now, rather than waiting for the next cycle.
+
+    The request flag is cleared before the scan starts, not after: a rescan
+    asked for while this one is running is a request for a *further* scan,
+    and clearing afterwards would swallow it.
+    """
     db.set_meta("force_full_scan", "0")
+    # From the beginning: the ledger holds the whole library and the date
+    # windows decide what is released from it.
+    await _scan("1970-01-01T00:00:00.000Z", "full")
 
 
 async def run() -> None:
     from . import settings
 
     last_full = 0.0
+    complained = False
     while True:
-        loop_now = asyncio.get_event_loop().time()
+        loop_now = asyncio.get_running_loop().time()
         if not settings.load().immich_api_key:
-            db.log("error", "No Immich API key set — add one in Settings")
+            # Once, not every minute: an unconfigured install would otherwise
+            # push the rest of the event log out of the 500-line window.
+            if not complained:
+                db.log("error", "No Immich API key set — add one in Settings")
+                complained = True
             await asyncio.sleep(60)
             continue
+        complained = False
         try:
             forced = db.get_meta("force_full_scan") == "1"
-            if forced:
-                db.set_meta("force_full_scan", "0")
             if forced or loop_now - last_full > config.FULL_SCAN_INTERVAL_HOURS * 3600:
-                floor = "1970-01-01"  # ledger holds everything; windows filter
-                await _scan(f"{floor}T00:00:00.000Z" if len(floor) == 10 else floor, "full")
+                await full_scan()
                 last_full = loop_now
             else:
                 since = datetime.now(timezone.utc) - timedelta(

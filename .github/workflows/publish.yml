@@ -22,8 +22,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Sanity-check the app
         run: python -m compileall -q app
+
+      # A broken relay is expensive to notice: it fails by going quiet, and
+      # the cost of a bad ledger is a duplicate of your library in Google
+      # Photos. Nothing gets published without the suite passing.
+      - name: Test
+        run: |
+          pip install -q -r requirements-dev.txt
+          python -m pytest -q
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3

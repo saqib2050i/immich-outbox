@@ -107,6 +107,15 @@ def connect() -> sqlite3.Connection:
     return _conn
 
 
+def close() -> None:
+    """Drop the connection. Reopened lazily by the next connect()."""
+    global _conn
+    with _lock:
+        if _conn is not None:
+            _conn.close()
+            _conn = None
+
+
 def log(kind: str, msg: str) -> None:
     c = connect()
     with _lock:
@@ -319,6 +328,7 @@ def ids_for_outbox_names(names: list[str]) -> list[str]:
 
 
 def outbox_names_for(asset_ids: list[str]) -> dict[str, str]:
+    """id -> the name that id's file carries in the outbox."""
     if not asset_ids:
         return {}
     marks = ",".join("?" * len(asset_ids))
@@ -371,7 +381,8 @@ def confirm_absent(present_ids: list[str]) -> int:
         cur = c.execute(
             "SELECT id FROM assets WHERE state='queued' AND seen_on_phone=1"
         )
-        gone = [r["id"] for r in cur.fetchall() if r["id"] not in set(present_ids)]
+        here = set(present_ids)
+        gone = [r["id"] for r in cur.fetchall() if r["id"] not in here]
         if gone:
             c.executemany(
                 "UPDATE assets SET state='confirmed', confirmed_at=?, forced=0 WHERE id=?",
@@ -390,6 +401,17 @@ def is_motion_part(asset_id: str) -> bool:
     return connect().execute(
         "SELECT 1 FROM motion_parts WHERE id=?", (asset_id,)
     ).fetchone() is not None
+
+
+def motion_parts_among(asset_ids: list[str]) -> list[str]:
+    """Which of these are motion components. One query, not one per id."""
+    if not asset_ids:
+        return []
+    marks = ",".join("?" * len(asset_ids))
+    rows = connect().execute(
+        f"SELECT id FROM motion_parts WHERE id IN ({marks})", asset_ids
+    ).fetchall()
+    return [r["id"] for r in rows]
 
 
 def mark_failed(asset_id: str, error: str) -> None:

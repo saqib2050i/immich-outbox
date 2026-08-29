@@ -52,11 +52,15 @@ async def status() -> dict:
                 conns = (r.json().get("connections") or {})
                 online = [c for c in conns.values() if c.get("connected")]
                 out["devices_connected"] = len(online)
-                out["ok"] = out.get("ok", False) or True
+                # Reached and authenticated. A folder-level error, if there
+                # was one, is reported separately in out["error"].
+                out["ok"] = True
             elif r.status_code in (401, 403):
                 out["error"] = "API key rejected"
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
 
-    db.set_meta("syncthing", str(out.get("in_sync_pct", "")))
+    # Nothing reads a stored copy of this, and writing one would bump the
+    # ledger revision on every poll, pushing a pointless re-render to every
+    # open dashboard.
     return out
