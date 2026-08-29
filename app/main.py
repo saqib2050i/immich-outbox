@@ -66,6 +66,7 @@ async def stats():
         "breakdown": db.media_breakdown(),
         "monthly": db.monthly_breakdown(),
         "throughput": db.throughput(30),
+        "structural_bytes_per_day": db.structural_rate(settings.load().outbox_max_bytes),
         "counts": db.counts(),
     }
 
@@ -124,6 +125,11 @@ async def events():
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     })
+
+
+@app.get("/api/timeline")
+async def timeline():
+    return {"months": db.timeline()}
 
 
 @app.get("/api/month/{month}")

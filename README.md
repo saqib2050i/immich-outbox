@@ -200,6 +200,42 @@ Set `MIN_TAKEN_AT` to last week, let twenty photos through, then check
 Google One storage. If usage climbed, the Pixel exemption isn't applying and
 none of the rest matters.
 
+## Timeline
+
+The main working surface, above the statistics. Year → month → category,
+all collapsed, and **only periods that actually hold media appear** — no
+scrolling past empty years. It refreshes over the live event stream, so
+months appear as scans find them.
+
+A year shows its file count, size, percent done, and how much of it is worth
+upgrading. A month shows photo and video counts, size, done and remaining,
+and a badge with the bytes worth upgrading — enough to decide whether it is
+worth opening at all.
+
+Opening a month gives the four categories:
+
+| Category | Gains? |
+|---|---|
+| Photos over 16 MP | Yes — Storage Saver would resize these |
+| Photos 16 MP or less | No |
+| Video above 1080p | Yes — Storage Saver would cap these |
+| Video at 1080p or below | No |
+
+Each has its own send button, plus one for the whole month.
+
+### Working through it
+
+1. Open a month and see what is worth upgrading.
+2. Delete exactly those files from Google Photos, on the web, then empty
+   the trash.
+3. Send the matching category here.
+4. Move on when the month reads 0 left.
+
+Delete only what you are about to send. The app cannot see your Google
+Photos library — no third-party app can, since Google removed the read
+scopes in March 2025 — so it cannot warn you about anything deleted there
+and not replaced here.
+
 ## Statistics
 
 The dashboard breaks the library down by what Storage Saver would have cost

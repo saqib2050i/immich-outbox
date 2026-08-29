@@ -554,6 +554,14 @@ def media_breakdown() -> list[dict]:
 # Whether an item beats what Storage Saver would have done to it. Photos are
 # capped at 16 MP and video at 1080p, so anything above those lines is what
 # this relay actually buys you.
+GAIN_SQL_A = """
+    CASE
+      WHEN a.width IS NULL OR a.width = 0 OR a.height IS NULL OR a.height = 0 THEN 0
+      WHEN a.kind = 'VIDEO' THEN CASE WHEN MIN(a.width, a.height) > 1080 THEN 1 ELSE 0 END
+      ELSE CASE WHEN (a.width * a.height) / 1000000.0 > 16.0 THEN 1 ELSE 0 END
+    END
+"""
+
 GAIN_SQL = """
     CASE
       WHEN width IS NULL OR width = 0 OR height IS NULL OR height = 0 THEN 0
@@ -670,6 +678,36 @@ def reconciliation() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def timeline() -> list[dict]:
+    """Every month that actually holds media, newest first.
+
+    Empty months are absent by construction -- the GROUP BY only produces
+    months with rows -- so the UI never shows a year of nothing.
+    """
+    rows = connect().execute(f"""
+        SELECT substr(a.taken_at, 1, 7)                               AS month,
+               COUNT(*)                                               AS total,
+               COALESCE(SUM(a.size), 0)                               AS bytes,
+               SUM(CASE WHEN a.kind = 'IMAGE' THEN 1 ELSE 0 END)      AS photos,
+               SUM(CASE WHEN a.kind = 'VIDEO' THEN 1 ELSE 0 END)      AS videos,
+               SUM(CASE WHEN a.state = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+               SUM(CASE WHEN a.state = 'queued' THEN 1 ELSE 0 END)    AS queued,
+               SUM(CASE WHEN a.state IN ('pending','failed') THEN 1 ELSE 0 END)
+                                                                      AS remaining,
+               COALESCE(SUM(CASE WHEN a.state IN ('pending','failed')
+                                 THEN a.size ELSE 0 END), 0)          AS remaining_bytes,
+               SUM(CASE WHEN {GAIN_SQL_A} = 1 THEN 1 ELSE 0 END)        AS gains,
+               COALESCE(SUM(CASE WHEN {GAIN_SQL_A} = 1 AND a.state != 'confirmed'
+                                 THEN a.size ELSE 0 END), 0)          AS gain_bytes
+        FROM assets a
+        WHERE a.state != 'skipped'
+          AND a.taken_at IS NOT NULL AND a.taken_at != ''
+        GROUP BY substr(a.taken_at, 1, 7)
+        ORDER BY substr(a.taken_at, 1, 7) DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
 def monthly_breakdown() -> list[dict]:
     """Every month in the library, newest first.
 
@@ -694,7 +732,14 @@ def monthly_breakdown() -> list[dict]:
 
 
 def throughput(days: int = 30) -> dict:
-    """What has actually been confirmed lately, for a real completion estimate."""
+    """What has actually been confirmed lately.
+
+    Confirmations arrive in bursts -- Smart Storage clears a whole batch at
+    once -- so a short measurement window turns one burst into an absurd
+    daily rate. Below MIN_DAYS there is no honest estimate and we say so
+    rather than inventing one.
+    """
+    MIN_DAYS = 7.0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     row = connect().execute(
         """SELECT COUNT(*) n, COALESCE(SUM(size),0) b
@@ -705,22 +750,38 @@ def throughput(days: int = 30) -> dict:
         "SELECT MIN(confirmed_at) t FROM assets WHERE state='confirmed'"
     ).fetchone()["t"]
 
-    # Measure over the time actually elapsed, so a young install does not
-    # look thirty times slower than it is.
-    span = float(days)
+    age = None
     if first:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(first)).total_seconds() / 86400
-        span = max(0.5, min(float(days), age))
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(first)).total_seconds() / 86400
+        except ValueError:
+            age = None
+
+    span = min(float(days), age) if age is not None else None
+    enough = span is not None and span >= MIN_DAYS
 
     return {
         "days": days,
         "files": row["n"],
         "bytes": row["b"],
-        "bytes_per_day": row["b"] / span if span else 0,
-        "files_per_day": row["n"] / span if span else 0,
-        "measured_over_days": round(span, 1),
+        "enough_data": enough,
+        "min_days": MIN_DAYS,
+        "bytes_per_day": (row["b"] / span) if enough and span else 0,
+        "files_per_day": (row["n"] / span) if enough and span else 0,
+        "measured_over_days": round(span, 1) if span is not None else 0,
         "since": first,
     }
+
+
+def structural_rate(cap_bytes: int, hold_days: int = 30) -> float:
+    """The ceiling the design imposes, regardless of measurement.
+
+    Nothing leaves the phone until Smart Storage clears it, so at most one
+    outbox-worth moves per hold period. This is the number that actually
+    governs how long a backfill takes.
+    """
+    return cap_bytes / float(hold_days) if hold_days else 0.0
 
 
 def counts() -> dict:

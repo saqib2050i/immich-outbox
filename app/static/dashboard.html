@@ -100,6 +100,38 @@
   .attention{margin-top:26px}
   .controls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
 
+  section.timeline{margin-top:26px}
+  section.timeline h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;
+                      color:var(--dim);margin:0 0 4px;font-weight:600}
+  .tl-yr{border-bottom:1px solid var(--rule)}
+  .tl-yr > summary{display:grid;grid-template-columns:auto 1fr auto;gap:12px;
+                   align-items:center;padding:10px 0;cursor:pointer;list-style:none}
+  .tl-yr > summary::-webkit-details-marker{display:none}
+  .tl-yr > summary::before{content:"▸";font-size:11px;color:var(--dim)}
+  .tl-yr[open] > summary::before{content:"▾"}
+  .tl-yr .yn{font-size:15px;font-weight:700;letter-spacing:-.01em}
+  .tl-yr .yf{font-size:12px;color:var(--dim);text-align:right;
+             font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tl-yr .yb{grid-column:1/-1;height:5px;border:1px solid var(--rule)}
+  .tl-yr .yb i{display:block;height:100%;background:var(--done)}
+
+  .tl-mo{margin:2px 0 2px 18px;border-left:2px solid var(--rule)}
+  .tl-mo > summary{display:grid;grid-template-columns:auto 96px 1fr auto;gap:10px;
+                   align-items:center;padding:8px 10px;cursor:pointer;list-style:none;
+                   font-size:12px}
+  .tl-mo > summary::-webkit-details-marker{display:none}
+  .tl-mo > summary::before{content:"▸";font-size:10px;color:var(--dim)}
+  .tl-mo[open] > summary::before{content:"▾"}
+  .tl-mo[open]{border-left-color:var(--transit);background:var(--panel)}
+  .tl-mo .mn{font-weight:700;font-variant-numeric:tabular-nums}
+  .tl-mo .mm{color:var(--dim);font-variant-numeric:tabular-nums}
+  .tl-mo .mr{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tl-mo.done{border-left-color:var(--done)}
+  .tl-mo.done .mn{color:var(--done)}
+  .badge{font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+         border:1px solid var(--rule);padding:1px 5px;margin-left:6px;color:var(--dim)}
+  .tl-body{padding:4px 12px 14px 12px}
+
   section.stats{margin-top:26px}
 
   .yr{border-bottom:1px solid var(--rule)}
@@ -457,17 +489,19 @@
   <div class="recon" id="recon"></div>
 </section>
 
+<section class="timeline">
+  <h2>Timeline</h2>
+  <p class="empty">Only months that actually hold media. Open one to see what is
+     worth upgrading before you clear it from Google Photos.</p>
+  <div id="tlBody"><p class="empty">Loading…</p></div>
+</section>
+
 <section class="stats">
   <h2>What is in the library</h2>
   <div id="stBody"><p class="empty">Working it out…</p></div>
   <div class="st-total" id="stTotals"></div>
   <p class="empty" id="stNote"></p>
 
-  <h2 style="margin-top:26px">Month by month</h2>
-  <p class="empty">Your map for the backfill. Pick a month to point the window
-     at it — do that after clearing that month from Google Photos, or you get
-     duplicates.</p>
-  <div id="stMonths"></div>
 </section>
 
 <details class="tools">
@@ -617,6 +651,7 @@ async function render(){
 
   renderConnection(d);
   renderAlerts(d);
+  renderTimeline();
   renderRecon();
   renderStats(d);
   renderBackups();
@@ -799,14 +834,23 @@ async function renderStats(d){
 
   const c = st.counts, tp = st.throughput;
   const remaining = c.pending_bytes + c.outbox_bytes;
-  const perDay = tp.bytes_per_day;
+
+  // Smart Storage holds each file ~30 days, so at most one outbox-worth
+  // moves per cycle however fast the downloads are. Confirmations also
+  // arrive in bursts, so a measured rate is only trusted once there is
+  // enough history. Take whichever is slower -- that is the real answer.
+  const structural = st.structural_bytes_per_day || 0;
+  const measured = tp.enough_data ? tp.bytes_per_day : 0;
+  const perDay = measured > 0 ? Math.min(measured, structural || measured)
+                              : structural;
   const daysLeft = perDay > 0 ? Math.ceil(remaining / perDay) : null;
 
   stTotals.innerHTML = "";
   const totals = [
     [fmtNum(gainFiles), "files gain quality"],
     [fmtBytes(gainBytes), "of that is the gain"],
-    [perDay > 0 ? fmtBytes(perDay) + "/day" : "—", "measured rate"],
+    [perDay > 0 ? fmtBytes(perDay * 30) + "/month" : "—",
+     measured > 0 && measured <= structural ? "measured rate" : "rate the design allows"],
     [daysLeft ? (daysLeft > 60 ? Math.round(daysLeft/30) + " months" : daysLeft + " days") : "—",
      "left at that rate"]
   ];
@@ -817,12 +861,15 @@ async function renderStats(d){
     div.append(a, b); stTotals.appendChild(div);
   });
 
-  renderMonths(st.monthly || []);
-
-  stNote.textContent = tp.files > 0
-    ? "Rate measured over the last " + tp.measured_over_days + " days of actual backups."
-    : "No completion estimate until the first photos come back confirmed — "
-      + "Smart Storage clears them about 30 days after upload.";
+  stNote.textContent = !tp.enough_data
+    ? "Estimate uses the ceiling the design allows: one outbox (" 
+      + fmtBytes(st.structural_bytes_per_day * 30) + ") per 30-day Smart Storage cycle. "
+      + "A measured rate needs " + tp.min_days + " days of history — confirmations "
+      + "arrive in bursts, so a shorter window is misleading."
+    : "Measured over " + tp.measured_over_days + " days of real backups"
+      + (measured > structural
+          ? ", but capped by the outbox: only one outbox-worth clears per 30 days."
+          : ".");
 }
 
 async function toggleFiles(bucket, host, btn, offset){
@@ -901,16 +948,20 @@ function fileRow(f, bucket, host, btn){
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
                      "Jul","Aug","Sep","Oct","Nov","Dec"];
 
-function renderMonths(months){
+async function renderTimeline(){
+  let d;
+  try { d = await (await fetch("/api/timeline")).json(); } catch { return; }
+  const months = d.months || [];
   if (!months.length){
-    stMonths.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
+    tlBody.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
     return;
   }
 
-  // Remember which years were open, so the 5s refresh does not collapse them.
-  const open = new Set([...stMonths.querySelectorAll("details[open]")]
-                       .map(el => el.dataset.year));
-  const current = (window.__cfg && window.__cfg.backfill_start || "").slice(0, 7);
+  // Keep whatever the user has open across a live refresh.
+  const openYears  = new Set([...tlBody.querySelectorAll("details.tl-yr[open]")]
+                             .map(e => e.dataset.year));
+  const openMonths = new Set([...tlBody.querySelectorAll("details.tl-mo[open]")]
+                             .map(e => e.dataset.month));
 
   const years = new Map();
   months.forEach(m => {
@@ -919,70 +970,143 @@ function renderMonths(months){
     years.get(y).push(m);
   });
 
-  stMonths.innerHTML = "";
-  [...years.entries()].forEach(([year, list]) => {
+  tlBody.innerHTML = "";
+  for (const [year, list] of years){
     const tot  = list.reduce((a, m) => a + m.total, 0);
     const conf = list.reduce((a, m) => a + m.confirmed, 0);
     const byt  = list.reduce((a, m) => a + m.bytes, 0);
+    const gain = list.reduce((a, m) => a + m.gain_bytes, 0);
 
-    const det = document.createElement("details");
-    det.className = "yr";
-    det.dataset.year = year;
-    if (open.has(year) || list.some(m => m.month === current)) det.open = true;
+    const yd = document.createElement("details");
+    yd.className = "tl-yr";
+    yd.dataset.year = year;
+    if (openYears.has(year)) yd.open = true;
 
-    const sum = document.createElement("summary");
-    const lab = document.createElement("span");
-    lab.className = "ylabel"; lab.textContent = year;
-    const fig = document.createElement("span");
-    fig.className = "yfig";
-    fig.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
-                    + Math.round(tot ? (conf / tot) * 100 : 0) + "% backed up";
-    const bar = document.createElement("span");
-    bar.className = "ybar";
-    const fill = document.createElement("i");
-    fill.style.width = (tot ? (conf / tot) * 100 : 0) + "%";
-    bar.appendChild(fill);
-    sum.append(lab, document.createElement("span"), fig, bar);
-    det.appendChild(sum);
+    const ys = document.createElement("summary");
+    const yn = document.createElement("span");
+    yn.className = "yn"; yn.textContent = year;
+    const yf = document.createElement("span");
+    yf.className = "yf";
+    yf.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
+                   + Math.round(tot ? (conf / tot) * 100 : 0) + "% done"
+                   + (gain ? " · " + fmtBytes(gain) + " worth upgrading" : "");
+    const yb = document.createElement("span");
+    yb.className = "yb";
+    const yi = document.createElement("i");
+    yi.style.width = (tot ? (conf / tot) * 100 : 0) + "%";
+    yb.appendChild(yi);
+    ys.append(yn, document.createElement("span"), yf, yb);
+    yd.appendChild(ys);
 
-    list.forEach(m => {
-      const mi = parseInt(m.month.slice(5, 7), 10) - 1;
-      const rowEl = document.createElement("div");
-      rowEl.className = "mo"
-        + (m.total && m.confirmed === m.total ? " done" : "")
-        + (m.month === current ? " current" : "");
+    list.forEach(m => yd.appendChild(monthNode(m, openMonths)));
+    tlBody.appendChild(yd);
+  }
+}
 
-      const nm = document.createElement("span");
-      nm.className = "mname";
-      nm.textContent = MONTH_NAMES[mi] + " " + year;
+function monthNode(m, openMonths){
+  const md = document.createElement("details");
+  md.className = "tl-mo" + (m.remaining === 0 && m.total ? " done" : "");
+  md.dataset.month = m.month;
 
-      const mbar = document.createElement("span");
-      mbar.className = "mbar";
-      const mf = document.createElement("i");
-      mf.style.width = (m.total ? (m.confirmed / m.total) * 100 : 0) + "%";
-      mbar.appendChild(mf);
+  const sum = document.createElement("summary");
+  const mi = parseInt(m.month.slice(5, 7), 10) - 1;
 
-      const mfig = document.createElement("span");
-      mfig.className = "mfig";
-      mfig.textContent = m.photos + " photo" + (m.photos === 1 ? "" : "s")
-        + (m.videos ? " · " + m.videos + " video" + (m.videos === 1 ? "" : "s") : "")
-        + " · " + fmtBytes(m.bytes)
-        + (m.confirmed ? " · " + m.confirmed + " done" : "");
+  const nm = document.createElement("span");
+  nm.className = "mn";
+  nm.textContent = MONTH_NAMES[mi];
 
-      const btn = document.createElement("button");
-      btn.textContent = "Open";
-      const detail = document.createElement("div");
-      detail.className = "mdetail";
-      detail.hidden = true;
-      btn.onclick = () => toggleMonth(m.month, detail, btn);
+  const mid = document.createElement("span");
+  mid.className = "mm";
+  mid.textContent = m.photos + "p" + (m.videos ? " · " + m.videos + "v" : "");
 
-      rowEl.append(nm, mbar, mfig, btn);
-      det.appendChild(rowEl);
-      det.appendChild(detail);
-    });
+  const right = document.createElement("span");
+  right.className = "mr";
+  right.textContent = fmtBytes(m.bytes) + " · " + fmtNum(m.confirmed) + " done"
+    + (m.remaining ? " · " + fmtNum(m.remaining) + " left" : "")
+    + (m.queued ? " · " + m.queued + " in outbox" : "");
 
-    stMonths.appendChild(det);
+  const tags = document.createElement("span");
+  if (m.gain_bytes > 0){
+    const g = document.createElement("span");
+    g.className = "badge";
+    g.textContent = fmtBytes(m.gain_bytes) + " to upgrade";
+    tags.appendChild(g);
+  }
+
+  sum.append(nm, mid, right, tags);
+  md.appendChild(sum);
+
+  const body = document.createElement("div");
+  body.className = "tl-body";
+  body.innerHTML = '<p class="empty">Loading…</p>';
+  md.appendChild(body);
+
+  md.addEventListener("toggle", () => {
+    if (md.open) loadMonthBody(m, body);
   });
+  if (openMonths.has(m.month)){ md.open = true; loadMonthBody(m, body); }
+  return md;
+}
+
+async function loadMonthBody(m, host){
+  let d;
+  try { d = await (await fetch("/api/month/" + m.month)).json(); }
+  catch { host.innerHTML = '<p class="empty">Could not load.</p>'; return; }
+
+  host.innerHTML = "";
+
+  (d.groups || []).forEach(g => {
+    const el = document.createElement("div");
+    el.className = "cat" + (g.gains ? " gain" : "");
+    const nm = document.createElement("span");
+    nm.className = "cname"; nm.textContent = g.label;
+    const why = document.createElement("small");
+    why.className = "cwhy"; why.textContent = g.why;
+    nm.appendChild(why);
+
+    const fig = document.createElement("span");
+    fig.className = "cfig";
+    fig.textContent = fmtNum(g.total) + " · " + fmtBytes(g.bytes)
+      + " · " + fmtNum(g.confirmed) + " done"
+      + (g.queued ? " · " + g.queued + " in outbox" : "");
+    el.append(nm, fig);
+
+    if (g.remaining > 0){
+      const b = document.createElement("button");
+      b.textContent = "Send " + fmtNum(g.remaining);
+      b.onclick = async () => {
+        b.disabled = true; b.textContent = "Queuing";
+        await fetch("/api/month/send", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({month: m.month, group: g.group})
+        });
+        await tick();
+      };
+      el.appendChild(b);
+    } else {
+      el.appendChild(Object.assign(document.createElement("span"),
+        {className:"cfig", textContent:"all sent"}));
+    }
+    host.appendChild(el);
+  });
+
+  const remaining = (d.groups || []).reduce((a, g) => a + g.remaining, 0);
+  if (remaining > 0){
+    const foot = document.createElement("div");
+    foot.className = "foot";
+    const all = document.createElement("button");
+    all.textContent = "Send the whole month (" + fmtNum(remaining) + ")";
+    all.onclick = async () => {
+      all.disabled = true; all.textContent = "Queuing";
+      await fetch("/api/month/send", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month: m.month})
+      });
+      await tick();
+    };
+    foot.appendChild(all);
+    host.appendChild(foot);
+  }
 }
 
 async function toggleMonth(month, host, btn){
