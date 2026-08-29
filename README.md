@@ -202,6 +202,10 @@ none of the rest matters.
 - **"Needs attention"** lists files sitting in the outbox longer than 45
   days. That means Smart Storage is off, backup is paused, or Photos is
   refusing that file type.
+- **Unraid and cross-device renames.** `/mnt/user` is a FUSE overlay: two
+  folders in the same share can sit on different physical disks, so a
+  rename between them fails with `EXDEV`. That is why the temp file lives
+  inside the outbox rather than in a separate spool.
 - **The ledger holds your whole library**, and the two date windows only
   decide what is released. Widening a window takes effect on the next cycle
   — no rescan needed.

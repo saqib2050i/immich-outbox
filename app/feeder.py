@@ -52,7 +52,29 @@ def list_outbox() -> tuple[list[str], int]:
     return ids, total
 
 
+def sweep_partials(max_age_hours: int = 6) -> int:
+    """Remove temp files orphaned by a crash or restart."""
+    import time
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        for name in os.listdir(config.OUTBOX_DIR):
+            if not (name.startswith(".partial-") and name.endswith(".part")):
+                continue
+            path = os.path.join(config.OUTBOX_DIR, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
+
+
 def reconcile() -> tuple[list[str], int]:
+    sweep_partials()
     present, used = list_outbox()
     db.mark_present(present)
     confirmed = db.confirm_absent(present)
@@ -87,7 +109,6 @@ async def top_up(used: int) -> int:
     if not rows:
         return 0
 
-    os.makedirs(config.SPOOL_DIR, exist_ok=True)
     written = []
 
     for row in rows:
@@ -99,12 +120,17 @@ async def top_up(used: int) -> int:
 
         tmp = None
         try:
-            # Download outside the synced folder, then move in. A partial
-            # file inside the outbox would be picked up by Syncthing and
-            # handed to Google Photos half-written.
+            # The temp file goes INSIDE the outbox, hidden and .part-suffixed.
+            # A rename within one directory is atomic, so Syncthing never sees
+            # a half-written file; the outbox listing skips dotfiles anyway.
+            #
+            # It cannot live in a separate folder: on Unraid /mnt/user is a
+            # FUSE overlay, so two directories in the same share may sit on
+            # different disks and rename() fails with EXDEV.
             resp, client = await immich.stream_original(asset_id)
             try:
-                fd, tmp = tempfile.mkstemp(dir=config.SPOOL_DIR, suffix=".part")
+                fd, tmp = tempfile.mkstemp(dir=config.OUTBOX_DIR,
+                                           prefix=".partial-", suffix=".part")
                 with os.fdopen(fd, "wb") as fh:
                     async for chunk in resp.aiter_bytes(1024 * 512):
                         fh.write(chunk)

@@ -456,35 +456,47 @@ function setStatus(ok, text){
 }
 
 function renderAttention(d){
-  const rows = [
-    ...d.stuck.map(a => ({...a, why: "not cleared"})),
-    ...d.problems.map(a => ({...a, why: "download failed"})),
-  ];
-  if (!rows.length){
-    attention.innerHTML = '<p class="empty">Nothing stuck. Every file sent has been backed up and cleared.</p>';
+  const stuck = d.stuck || [], failed = d.problems || [];
+  if (!stuck.length && !failed.length){
+    attention.innerHTML = '<p class="empty">Nothing stuck. Everything sent has been backed up and cleared.</p>';
     return;
   }
   attention.innerHTML = "";
-  const hdr = document.createElement("p");
-  hdr.className = "empty";
-  hdr.textContent = "Sitting in the outbox longer than " + d.stuck_after_days +
-    " days. Usually Smart Storage is off, or Photos backup is paused.";
-  attention.appendChild(hdr);
-  rows.slice(0, 20).forEach(a => {
-    const el = document.createElement("div");
-    el.className = "item";
-    el.innerHTML = `<span class="name"></span><span class="why"></span>`;
-    el.querySelector(".name").textContent = a.filename;
-    el.querySelector(".why").textContent = a.why;
-    const btn = document.createElement("button");
-    btn.textContent = "Send again";
-    btn.onclick = async () => {
-      btn.disabled = true;
-      await fetch("/api/requeue/" + a.id, {method:"POST"});
-      tick();
-    };
-    el.appendChild(btn);
-    attention.appendChild(el);
+
+  // Two different problems with two different causes -- label them apart.
+  const groups = [
+    {rows: failed, why: "download failed",
+     note: "Could not be fetched from Immich. They retry automatically up to five times."},
+    {rows: stuck, why: "not cleared",
+     note: "Sitting in the outbox longer than " + d.stuck_after_days +
+           " days. Usually Smart Storage is off, or Photos backup is paused."}
+  ];
+
+  groups.forEach(g => {
+    if (!g.rows.length) return;
+    const hdr = document.createElement("p");
+    hdr.className = "empty";
+    hdr.textContent = g.note;
+    attention.appendChild(hdr);
+
+    g.rows.slice(0, 15).forEach(a => {
+      const el = document.createElement("div");
+      el.className = "item";
+      const nm = document.createElement("span");
+      nm.className = "name"; nm.textContent = a.filename;
+      const wy = document.createElement("span");
+      wy.className = "why"; wy.textContent = g.why;
+      el.append(nm, wy);
+      const btn = document.createElement("button");
+      btn.textContent = "Send again";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        await fetch("/api/requeue/" + a.id, {method:"POST"});
+        tick();
+      };
+      el.appendChild(btn);
+      attention.appendChild(el);
+    });
   });
 }
 

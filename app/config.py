@@ -20,7 +20,10 @@ IMMICH_API_KEY = os.getenv("IMMICH_API_KEY", "")
 
 # --- The outbox: this folder is what Syncthing mirrors to the Pixel ---
 OUTBOX_DIR = os.getenv("OUTBOX_DIR", "/outbox")
-SPOOL_DIR = os.getenv("SPOOL_DIR", "/spool")
+# No longer used. Temp files are written inside OUTBOX_DIR and renamed in
+# place, because on Unraid /mnt/user is a FUSE overlay: two folders in the
+# same share can live on different disks, so a cross-folder rename fails
+# with EXDEV. A rename within one directory is always atomic.
 
 # The single most important number here.
 #

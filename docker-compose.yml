@@ -1,33 +1,42 @@
 # Deployment compose. Pulls the published image -- no source checkout needed
 # on the server. Paste this straight into Dockge or Portainer.
 #
-# Replace YOUR-GITHUB-USERNAME below.
+# The outbox path must be exactly the folder Syncthing shares with the Pixel.
+# Create it owned by 99:100 before first start:
+#
+#   mkdir -p /mnt/user/appdata/immich-outbox /mnt/user/photo-outbox/photos
+#   chown -R 99:100 /mnt/user/appdata/immich-outbox /mnt/user/photo-outbox
+#   chmod -R 775 /mnt/user/photo-outbox
 
 services:
   immich-outbox:
-    image: ghcr.io/YOUR-GITHUB-USERNAME/immich-outbox:latest
+    image: ghcr.io/saqib2050i/immich-outbox:latest
     container_name: immich-outbox
     restart: unless-stopped
+
+    # Unraid's nobody:users. Without this the container writes root-owned
+    # files that Syncthing (also 99:100) cannot delete, so the phone's
+    # deletions never propagate and the outbox never drains.
+    user: "99:100"
+
     ports:
       - "8099:8099"
     volumes:
       - /mnt/user/appdata/immich-outbox:/data
-      # The folder Syncthing shares with the Pixel.
-      - /mnt/user/photo-outbox:/outbox
-      # Downloads land here first, then move into the outbox. Keep it on the
-      # same filesystem as the outbox so the move is atomic -- a half-written
-      # file inside the outbox would be synced and uploaded as-is.
-      - /mnt/user/photo-outbox-spool:/spool
+      # The exact folder Syncthing shares with the Pixel. Temp files are
+      # written inside it (hidden, .part) and renamed in place, so there is
+      # no second mount to keep on the same disk.
+      - /mnt/user/photo-outbox/photos:/outbox
     environment:
       # First-run defaults only. After that, edit everything on the dashboard
       # at http://<server>:8099 -- settings live in the database and apply
       # without a restart.
-      IMMICH_URL: "http://192.168.1.10:2283"
+      IMMICH_URL: "http://192.168.1.2:2283"
       IMMICH_API_KEY: "CHANGE-ME"
-      OUTBOX_MAX_GB: "10"
+      OUTBOX_MAX_GB: "16"
       MIN_TAKEN_AT: "1970-01-01"
       INCLUDE_VIDEO: "true"
-      MAX_ASSET_MB: "4096"
+      MAX_ASSET_MB: "2000"
       FEED_INTERVAL_MIN: "10"
       SCAN_INTERVAL_MIN: "15"
       FULL_SCAN_INTERVAL_HOURS: "6"
