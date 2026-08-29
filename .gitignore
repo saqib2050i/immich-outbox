@@ -4,3 +4,4 @@ _data/
 _outbox/
 _spool/
 .env
+.pytest_cache/
