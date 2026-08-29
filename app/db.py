@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken ON assets(taken_at);
 
+-- Ids of motion-photo video components. They are never sent: the still
+-- image already carries the embedded clip, so relaying the component too
+-- puts a stray video in Google Photos next to the photo.
+CREATE TABLE IF NOT EXISTS motion_parts (
+    id TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -82,6 +89,29 @@ def log(kind: str, msg: str) -> None:
         c.commit()
 
 
+def mark_motion_parts(ids: list[str]) -> int:
+    """Record motion components and retire any already queued.
+
+    The component can be scanned before the still that points at it, so this
+    also demotes rows already sitting in the ledger. Anything already
+    confirmed is left alone -- it is in Google Photos and rewriting history
+    would not remove it.
+    """
+    if not ids:
+        return 0
+    c = connect()
+    with _lock:
+        c.executemany("INSERT OR IGNORE INTO motion_parts (id) VALUES (?)",
+                      [(i,) for i in ids])
+        cur = c.executemany(
+            "UPDATE assets SET state='skipped' WHERE id=? AND state IN "
+            "('pending','failed','queued')",
+            [(i,) for i in ids],
+        )
+        c.commit()
+    return cur.rowcount if cur else 0
+
+
 def get_meta(k: str, default: str | None = None) -> str | None:
     row = connect().execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
     return row["v"] if row else default
@@ -108,6 +138,9 @@ def upsert_assets(rows: list[dict]) -> int:
                VALUES (:id, :filename, :size, :checksum, :taken_at, :kind, :state, :queued_at)""",
             rows,
         )
+        c.execute("""UPDATE assets SET state='skipped'
+                     WHERE state='pending'
+                       AND id IN (SELECT id FROM motion_parts)""")
         c.commit()
         after = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
     return after - before
@@ -132,6 +165,7 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
 
     sql = """SELECT * FROM assets
              WHERE state IN ('pending','failed') AND attempts < 5
+               AND id NOT IN (SELECT id FROM motion_parts)
                AND (kind = 'IMAGE' OR :include_video = 1)
                AND (size = 0 OR size <= :max_asset_bytes)
                AND (
@@ -194,13 +228,20 @@ def mark_queued(ids: list[str]) -> None:
 
 
 def mark_present(ids: list[str]) -> None:
-    """Phone reports these files exist in the queue folder right now."""
+    """These files exist in the outbox right now.
+
+    Motion components are excluded: one left over from before they were
+    recognised would otherwise be promoted back to 'queued' every cycle and
+    never stay retired.
+    """
     if not ids:
         return
     c = connect()
     with _lock:
         c.executemany(
-            "UPDATE assets SET seen_on_phone=1, state='queued', sent_at=COALESCE(sent_at,?) WHERE id=?",
+            "UPDATE assets SET seen_on_phone=1, state='queued', "
+            "sent_at=COALESCE(sent_at,?) WHERE id=? "
+            "AND id NOT IN (SELECT id FROM motion_parts)",
             [(now(), i) for i in ids],
         )
         c.commit()
@@ -223,6 +264,12 @@ def confirm_absent(present_ids: list[str]) -> int:
             )
             c.commit()
     return len(gone)
+
+
+def is_motion_part(asset_id: str) -> bool:
+    return connect().execute(
+        "SELECT 1 FROM motion_parts WHERE id=?", (asset_id,)
+    ).fetchone() is not None
 
 
 def mark_failed(asset_id: str, error: str) -> None:

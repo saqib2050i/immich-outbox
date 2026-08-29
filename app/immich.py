@@ -109,6 +109,19 @@ def version_text() -> str:
     return _version_text
 
 
+# Immich has used a few names for the link from a still to its motion clip.
+_MOTION_KEYS = ("livePhotoVideoId", "motionPhotoVideoId", "livePhotoVideoID")
+
+
+def motion_part_id(item: dict) -> str | None:
+    """The id of this asset's motion component, if it has one."""
+    for key in _MOTION_KEYS:
+        value = item.get(key)
+        if value:
+            return str(value)
+    return None
+
+
 def _normalise(item: dict) -> dict | None:
     """Map an Immich asset to a ledger row.
 
@@ -188,6 +201,13 @@ async def list_assets(taken_after: str | None = None) -> AsyncIterator[list[dict
                 return
 
             rows = [r for r in (_normalise(i) for i in items) if r]
+            # A motion photo is two assets in Immich: the still, which still
+            # contains the embedded clip, and an extracted video component.
+            # Sending the component separately makes Google Photos show a
+            # stray video next to the photo, so record and skip them.
+            motion = [m for m in (motion_part_id(i) for i in items) if m]
+            if motion:
+                db.mark_motion_parts(motion)
             if rows:
                 yield rows
 

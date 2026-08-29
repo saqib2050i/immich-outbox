@@ -73,8 +73,38 @@ def sweep_partials(max_age_hours: int = 6) -> int:
     return removed
 
 
+def purge_motion_parts() -> int:
+    """Remove motion components left in the outbox by an earlier version.
+
+    This is the one case where a file is deleted from the outbox. It is safe
+    because it is never counted as backed up: components are 'skipped' in the
+    ledger, so their disappearance is not read as confirmation. The still
+    image carries the embedded clip, so nothing is lost.
+    """
+    removed = 0
+    try:
+        names = os.listdir(config.OUTBOX_DIR)
+    except OSError:
+        return 0
+    for name in names:
+        if SEP not in name or name.startswith("."):
+            continue
+        if not db.is_motion_part(name.split(SEP, 1)[0]):
+            continue
+        try:
+            os.remove(os.path.join(config.OUTBOX_DIR, name))
+            removed += 1
+        except OSError:
+            continue
+    if removed:
+        db.log("info", f"removed {removed} motion-photo clip(s) from the outbox — "
+                       "the still image already contains them")
+    return removed
+
+
 def reconcile() -> tuple[list[str], int]:
     sweep_partials()
+    purge_motion_parts()
     present, used = list_outbox()
     db.mark_present(present)
     confirmed = db.confirm_absent(present)

@@ -31,7 +31,21 @@ Changes apply on the next cycle; no restart.
 | `queued` | in the outbox, mirrored to the phone |
 | `confirmed` | gone from the outbox → backed up |
 | `failed` | download errored; retried up to 5 times |
-| `skipped` | excluded on purpose (oversized, or video when off) |
+| `skipped` | excluded on purpose (oversized, video when off, or a motion-photo clip) |
+
+### Motion photos
+
+Immich stores a Pixel motion photo as two assets: the still `.MP.jpg`, which
+still contains the embedded clip, and an extracted `.MP.mp4` component. Only
+the still is ever relayed. Sending the component as well puts a stray
+silent video in Google Photos beside the photo, and the still already
+carries the motion, so nothing is lost by skipping it.
+
+Components are identified by the `livePhotoVideoId` link on the still, not
+by filename, so this holds regardless of how they are named. They are the
+one thing the service will delete from the outbox — safe, because a
+component is never counted as backed up, so removing it cannot be mistaken
+for confirmation.
 
 **Confirmation is evidence.** This service never deletes from the outbox.
 Only the phone deletes, only Smart Storage deletes there, and Smart Storage
