@@ -58,10 +58,6 @@ CREATE TABLE IF NOT EXISTS assets (
     forced        INTEGER NOT NULL DEFAULT 0,
     outbox_name   TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state);
-CREATE INDEX IF NOT EXISTS idx_assets_taken ON assets(taken_at);
-CREATE INDEX IF NOT EXISTS idx_assets_outbox ON assets(outbox_name);
-
 -- Ids of motion-photo video components. They are never sent: the still
 -- image already carries the embedded clip, so relaying the component too
 -- puts a stray video in Google Photos next to the photo.
@@ -82,6 +78,27 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does
+# nothing to a table that already exists, so an older database arrives
+# without them and they have to be patched in.
+MIGRATIONS = (
+    ("width", "INTEGER"),
+    ("height", "INTEGER"),
+    ("duration", "REAL"),
+    ("forced", "INTEGER NOT NULL DEFAULT 0"),
+    ("outbox_name", "TEXT"),
+)
+
+# Deliberately not part of SCHEMA: an index on a migrated column has to be
+# built *after* MIGRATIONS has added it. Creating idx_assets_outbox inside
+# SCHEMA meant that on any database predating outbox_name, startup died with
+# "no such column: outbox_name" before the migration could run.
+INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_assets_state  ON assets(state);
+CREATE INDEX IF NOT EXISTS idx_assets_taken  ON assets(taken_at);
+CREATE INDEX IF NOT EXISTS idx_assets_outbox ON assets(outbox_name);
+"""
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -93,16 +110,15 @@ def connect() -> sqlite3.Connection:
         _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
+        # Order matters: tables, then the columns an older database is
+        # missing, and only then the indexes -- some of which are built on
+        # those very columns.
         _conn.executescript(SCHEMA)
-        # Existing databases predate the media columns. CREATE TABLE IF NOT
-        # EXISTS will not add them, so patch them in.
         have = {r["name"] for r in _conn.execute("PRAGMA table_info(assets)")}
-        for col, decl in (("width", "INTEGER"), ("height", "INTEGER"),
-                          ("duration", "REAL"),
-                          ("forced", "INTEGER NOT NULL DEFAULT 0"),
-                          ("outbox_name", "TEXT")):
+        for col, decl in MIGRATIONS:
             if col not in have:
                 _conn.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
+        _conn.executescript(INDEXES)
         _conn.commit()
     return _conn
 
