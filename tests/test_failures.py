@@ -209,3 +209,108 @@ async def test_dismiss_never_touches_motion_parts_protection(rig):
     db.upsert_assets([asset(0, size=100)])
     db.mark_motion_parts(["asset-0"])
     assert db.force_send(ids=["asset-0"]) == 0
+
+
+# ---- the backlog: the pile behind the queue -------------------------------
+
+async def test_the_backlog_is_visible_by_month(rig):
+    from app import db, main
+
+    db.upsert_assets(
+        [asset(i, size=100, taken="2025-11-05") for i in range(4)] +
+        [asset(10 + i, size=200, taken="2026-01-09") for i in range(2)])
+    db.mark_failed("asset-0", "original missing from Immich storage (HTTP 404)",
+                   permanent=True)
+
+    b = await main.backlog()
+    by = {m["month"]: m for m in b["months"]}
+    assert b["total"] == 6
+    assert by["2025-11"]["total"] == 4 and by["2025-11"]["failed"] == 1
+    assert by["2026-01"]["total"] == 2
+    assert b["months"][0]["month"] == "2026-01", "newest first"
+
+
+async def test_dismissing_a_month_stops_it_refilling_the_queue(rig, monkeypatch):
+    """The real case: a month was force-sent, the originals were then
+    deleted from Immich, and every refresh pulled another forty."""
+    from app import db, feeder, immich, main, settings
+
+    settings.save({"max_batch_files": 5})
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(20)]
+                     + [asset(50, size=100, taken="2026-02-01")])
+    db.force_send_month("2025-11")
+
+    r = await main.backlog_dismiss({"month": "2025-11"})
+    assert r["dismissed"] == 20
+
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    added = await feeder.top_up(used)
+    assert added == 1, "a dismissed month came back"
+    assert db.queue_contents()[0]["taken_at"].startswith("2026-02")
+
+    assert (await main.backlog())["total"] == 0
+
+
+async def test_a_dismissed_month_can_be_sent_again_after_a_rescan(rig):
+    """Dismissing is an exclusion, not a tombstone: once the files are back
+    in Immich, sending the month must work."""
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(3)])
+    await main.backlog_dismiss({"month": "2025-11"})
+    assert db.counts()["skipped"] == 3
+
+    assert db.force_send_month("2025-11") == 3
+    assert db.counts()["pending"] == 3
+    assert (await main.backlog())["total"] == 3
+
+
+async def test_dismissing_the_whole_backlog(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(5)]
+                     + [asset(10 + i, size=100, taken="2019-03-02") for i in range(5)])
+    r = await main.backlog_dismiss({"all": True})
+    assert r["dismissed"] == 10
+    assert (await main.backlog())["total"] == 0
+    assert db.counts()["skipped"] == 10
+
+
+async def test_dismissing_the_backlog_leaves_the_outbox_alone(rig, monkeypatch):
+    """Files already written are the phone's business; only the waiting
+    pile is dismissed."""
+    from app import db, feeder, immich, main, settings
+
+    settings.save({"max_batch_files": 3})
+    db.upsert_assets([asset(i, size=100) for i in range(8)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 3
+
+    await main.backlog_dismiss({"all": True})
+    assert db.counts()["queued"] == 3
+    assert len(rig.files()) == 3
+    assert db.counts()["confirmed"] == 0
+
+
+async def test_dismissing_never_touches_confirmed_assets(rig):
+    """They are in Google Photos; their record must not be rewritten."""
+    from app import db, main
+
+    db.upsert_assets([asset(0, size=100)])
+    db.mark_queued(["asset-0"])
+    db.confirm_absent([])
+    assert db.counts()["confirmed"] == 1
+
+    await main.backlog_dismiss({"all": True})
+    assert db.counts()["confirmed"] == 1
+    assert db.counts()["skipped"] == 0
+
+
+async def test_backlog_dismiss_needs_a_scope(rig):
+    from fastapi import HTTPException
+    from app import main
+    with pytest.raises(HTTPException) as exc:
+        await main.backlog_dismiss({})
+    assert exc.value.status_code == 400
