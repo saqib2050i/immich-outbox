@@ -116,3 +116,96 @@ async def test_cancel_all_with_an_empty_queue_is_a_no_op(rig):
     from app import main
     r = await main.queue_cancel({"all": True})
     assert r == {"ok": True, "cancelled": 0, "removed": 0}
+
+
+async def test_cancel_with_skip_does_not_come_back(rig, monkeypatch):
+    """The complaint: cancel-all, press refresh, forty more appear. With
+    mode=skip the cancelled files must not rejoin the queue on the next
+    top-up."""
+    from app import db, feeder, immich, main, settings
+
+    settings.save({"max_batch_files": 40})
+    db.upsert_assets([asset(i, size=100) for i in range(10)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 10
+
+    r = await main.queue_cancel({"all": True, "mode": "skip"})
+    assert r["cancelled"] == 10 and r["mode"] == "skip"
+    assert rig.files() == set()
+
+    # The refresh that used to bring forty more back.
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 0, "skipped files were re-sent"
+    assert db.counts()["skipped"] == 10
+    assert db.counts()["confirmed"] == 0
+
+
+async def test_cancel_default_still_means_send_later(rig, monkeypatch):
+    from app import db, feeder, immich, main
+
+    db.upsert_assets([asset(0, size=100)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    await main.queue_cancel({"all": True})
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 1, "default cancel should allow resend"
+
+
+async def test_dismiss_failed_clears_without_resending(rig, monkeypatch):
+    from app import db, feeder, immich, main, settings
+
+    settings.save({"alert_failed_count": 2})
+    db.upsert_assets([asset(i, size=100) for i in range(3)])
+    for i in range(3):
+        db.mark_failed(f"asset-{i}", "original missing from Immich storage (HTTP 404)",
+                       permanent=True)
+
+    r = await main.failed_dismiss({})
+    assert r["dismissed"] == 3
+    assert db.counts()["failed"] == 0
+    assert db.counts()["skipped"] == 3
+    assert db.problems() == []
+
+    # Not eligible for sending any more...
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 0
+
+    # ...and the failures alert is gone.
+    from app import alerts
+    assert not any(a["key"] == "failures" for a in alerts.evaluate())
+
+
+async def test_dismiss_specific_failed_ids(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100) for i in range(2)])
+    db.mark_failed("asset-0", "boom")
+    db.mark_failed("asset-1", "boom")
+    r = await main.failed_dismiss({"ids": ["asset-0"]})
+    assert r["dismissed"] == 1
+    assert db.counts()["failed"] == 1
+
+
+async def test_a_dismissed_file_can_be_deliberately_resent(rig):
+    """Skip is an exclusion, not a tombstone."""
+    from app import db
+
+    db.upsert_assets([asset(0, size=100)])
+    db.mark_failed("asset-0", "boom")
+    db.dismiss_failed(["asset-0"])
+    assert db.force_send(ids=["asset-0"]) == 1
+    row = db.connect().execute("SELECT state, forced FROM assets WHERE id='asset-0'").fetchone()
+    assert (row["state"], row["forced"]) == ("pending", 1)
+
+
+async def test_dismiss_never_touches_motion_parts_protection(rig):
+    """force_send resurrecting skipped rows must still exclude components."""
+    from app import db
+
+    db.upsert_assets([asset(0, size=100)])
+    db.mark_motion_parts(["asset-0"])
+    assert db.force_send(ids=["asset-0"]) == 0

@@ -222,27 +222,55 @@ def queue_contents(limit: int = 500) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def cancel_queued(ids: list[str]) -> int:
+def cancel_queued(ids: list[str], skip: bool = False) -> int:
     """Take these back out of the queue.
 
-    Deliberately 'pending', never 'confirmed': the file is about to be
-    deleted from the outbox by the caller, and if that disappearance were
-    read as a Google Photos confirmation the asset would be recorded as
-    backed up when it is not. Putting it back to pending means the worst
-    case is that it is sent again later.
+    skip=False returns them to 'pending': they rejoin the waiting pile and
+    the feeder sends them again whenever there is room. That surprised a
+    real user -- cancel-all followed by a refresh refilled the outbox with
+    the next forty of thirteen thousand -- so skip=True exists for what
+    they actually meant: 'skipped', which claim_batch never touches.
+
+    Either way, never 'confirmed': the caller is about to delete the files,
+    and if that disappearance were read as a Google Photos confirmation the
+    assets would be recorded as backed up when they are not.
     """
     if not ids:
         return 0
+    state = "skipped" if skip else "pending"
     marks = ",".join("?" * len(ids))
     c = connect()
     with _lock:
         cur = c.execute(
-            f"""UPDATE assets SET state='pending', seen_on_phone=0, attempts=0,
+            f"""UPDATE assets SET state='{state}', seen_on_phone=0, attempts=0,
                                   sent_at=NULL, confirmed_at=NULL,
                                   last_error=NULL, forced=0
                 WHERE id IN ({marks}) AND state='queued'""",
             ids,
         )
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
+def dismiss_failed(ids: list[str] | None = None) -> int:
+    """Retire failed assets without resending them.
+
+    The only exits from 'failed' used to be retry or wait forever, so a
+    hundred 404s from a lost external library sat in the problem list as
+    permanent noise. Dismissing moves them to 'skipped': out of the queue,
+    out of the alerts, still in the ledger. force_send by ids brings one
+    back deliberately.
+    """
+    c = connect()
+    with _lock:
+        if ids:
+            marks = ",".join("?" * len(ids))
+            cur = c.execute(
+                f"UPDATE assets SET state='skipped' "
+                f"WHERE id IN ({marks}) AND state='failed'", ids)
+        else:
+            cur = c.execute("UPDATE assets SET state='skipped' WHERE state='failed'")
         c.commit()
         _bump()
     return cur.rowcount
@@ -733,12 +761,16 @@ def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
                 (bucket,),
             )
         elif ids:
+            # Named ids may also resurrect 'skipped' rows: dismissing a
+            # failure or cancelling with "don't send" must be reversible.
+            # Motion components stay excluded by the NOT IN below, so this
+            # cannot resurrect a stray clip.
             marks = ",".join("?" * len(ids))
             cur = c.execute(
                 f"""UPDATE assets SET forced=1, state='pending', attempts=0,
                                       last_error=NULL
                     WHERE id IN ({marks})
-                      AND state IN ('pending','failed')
+                      AND state IN ('pending','failed','skipped')
                       AND id NOT IN (SELECT id FROM motion_parts)""",
                 ids,
             )

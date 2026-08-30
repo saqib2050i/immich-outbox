@@ -373,7 +373,7 @@ async def housekeeping() -> None:
         db.log("error", f"scheduled backup failed: {exc}")
 
 
-def cancel(ids: list[str]) -> dict:
+def cancel(ids: list[str], skip: bool = False) -> dict:
     """Pull specific files back out of the outbox.
 
     This deletes from the outbox, which the service otherwise never does.
@@ -392,7 +392,7 @@ def cancel(ids: list[str]) -> dict:
         return {"cancelled": 0, "removed": 0}
 
     names = db.outbox_names_for(ids)
-    cancelled = db.cancel_queued(ids)
+    cancelled = db.cancel_queued(ids, skip=skip)
 
     removed = 0
     for asset_id in ids:
@@ -408,8 +408,9 @@ def cancel(ids: list[str]) -> dict:
                 continue
 
     if cancelled:
-        db.log("cancel", f"{cancelled} file(s) taken out of the queue and "
-                         f"put back in the pending list")
+        db.log("cancel", f"{cancelled} file(s) taken out of the queue — "
+                         + ("they will not be sent unless asked for again"
+                            if skip else "they rejoin the waiting list"))
     return {"cancelled": cancelled, "removed": removed}
 
 

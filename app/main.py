@@ -158,7 +158,10 @@ async def status():
         "failure_kinds": db.failure_breakdown(),
         "events": [dict(r) for r in db.recent_events()],
         "stuck_after_days": config.STUCK_AFTER_DAYS,
-        "alerts": json.loads(db.get_meta("alerts") or "[]"),
+        # Evaluated live rather than read from the meta snapshot: the
+        # snapshot only refreshes on the housekeeping cycle, so a dismissed
+        # failure kept its alert on screen for up to ten minutes.
+        "alerts": alerts.evaluate(),
         "last_backup": db.get_meta("last_backup"),
         "revision": db.revision(),
         "auth": {"must_change": auth.must_change(),
@@ -287,11 +290,33 @@ async def queue_cancel(payload: dict):
     if not ids:
         return {"ok": True, "cancelled": 0, "removed": 0}
 
+    # mode "later" returns them to the waiting pile; "skip" excludes them
+    # from sending until they are asked for by name. The distinction exists
+    # because cancel-all followed by a refresh otherwise refills the outbox
+    # from the backlog, which reads as cancel not working.
+    skip = payload.get("mode") == "skip"
+
     # Under the lock: cancelling mid-download would race the writer.
     async with feeder.CYCLE_LOCK:
-        result = feeder.cancel(ids)
+        result = feeder.cancel(ids, skip=skip)
         _, used = feeder.reconcile()
-    return {"ok": True, "outbox_used": used, **result}
+    return {"ok": True, "outbox_used": used, "mode": "skip" if skip else "later",
+            **result}
+
+
+@app.post("/api/failed/dismiss")
+async def failed_dismiss(payload: dict | None = None):
+    """Clear failures without resending. They move to 'skipped' — out of
+    the queue and the alerts, recoverable from the library by name."""
+    ids = (payload or {}).get("ids")
+    if ids is not None and (not isinstance(ids, list)
+                            or not all(isinstance(i, str) for i in ids)):
+        raise HTTPException(status_code=400, detail="ids must be a list of strings")
+    n = db.dismiss_failed(ids)
+    if n:
+        db.log("dismiss", f"{n} failed file(s) dismissed — they will not be "
+                          "retried or sent")
+    return {"ok": True, "dismissed": n}
 
 
 @app.post("/api/pause")
@@ -526,4 +551,8 @@ async def healthz():
 
 @app.get("/")
 async def dashboard():
-    return FileResponse(STATIC / "dashboard.html")
+    # no-cache means "revalidate, don't reuse blindly": without it browsers
+    # apply heuristic caching and can keep serving a stale dashboard for
+    # hours after a deploy. The ETag makes revalidation a cheap 304.
+    return FileResponse(STATIC / "dashboard.html",
+                        headers={"Cache-Control": "no-cache"})

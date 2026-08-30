@@ -23,6 +23,9 @@
            --dim:#8A968F; --transit:#6E97FF; --done:#A8C44A; --alarm:#E4695C; }
   }
   *{box-sizing:border-box}
+  /* Several components set their own display (flex, inline-block), which
+     silently defeats the hidden attribute. This keeps hidden meaning hidden. */
+  [hidden]{display:none !important}
   body{
     margin:0; background:var(--paper); color:var(--ink);
     font-family:var(--mono); font-size:14px; line-height:1.45;
@@ -230,6 +233,39 @@
   .tool p{font-size:12px;color:var(--dim);margin:0 0 4px}
   .tool p.keeps{color:var(--done)}
   .tool .act{margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  /* ---- tabs ---- */
+  nav.jump a{position:relative}
+  nav.jump a.active{background:var(--ink);color:var(--paper)}
+  .tbadge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:9px;
+          font-size:10px;line-height:16px;background:var(--transit);
+          color:var(--paper);font-variant-numeric:tabular-nums}
+  .tbadge.alarmb{background:var(--alarm)}
+  nav.jump a.active .tbadge{background:var(--paper);color:var(--ink)}
+  [data-tab]{display:none}
+  [data-tab].tab-on{display:block}
+  section[aria-label="Pipeline"].tab-on{display:block}
+  .grid.tab-on{display:grid}
+
+  /* ---- cancel dialog ---- */
+  dialog{
+    background:var(--paper);color:var(--ink);border:1px solid var(--ink);
+    border-radius:8px;padding:18px 20px;max-width:30rem;
+    font-family:var(--mono);font-size:13px;
+  }
+  dialog::backdrop{background:rgba(10,18,15,.55)}
+  dialog h3{margin:0 0 8px;font-size:13px;letter-spacing:.08em;
+            text-transform:uppercase}
+  dialog p{margin:0 0 10px;line-height:1.5}
+  .dlghint{color:var(--dim);font-size:12px}
+  .dlgrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .dlgrow .spacer{flex:1}
+
+  /* ---- problems toolbar ---- */
+  .pbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;
+        padding:8px 10px;background:var(--panel);border:1px solid var(--rule);
+        border-radius:6px}
+  .pbar .psummary{color:var(--dim);font-size:13px;margin-left:auto}
+
   /* ---- queue ---- */
   .queue{margin:28px 0}
   .qnote{color:var(--dim);font-size:13px;margin:4px 0 0;max-width:62ch}
@@ -376,18 +412,30 @@
   </div>
 </div>
 
-<nav class="jump">
-  <a href="#top">Overview</a>
-  <a href="#nav-queue">Queue</a>
-  <a href="#nav-timeline">Timeline</a>
-  <a href="#nav-library">Library</a>
-  <a href="#nav-attention" id="navAttention">Attention</a>
-  <a href="#settings">Settings</a>
-  <a href="#nav-tools">Tools</a>
+<nav class="jump" id="tabbar" role="tablist" aria-label="Sections">
+  <a href="#overview" data-for="overview" role="tab">Overview</a>
+  <a href="#queue" data-for="queue" role="tab">Queue<span class="tbadge" id="badgeQueue" hidden></span></a>
+  <a href="#problems" data-for="problems" role="tab">Problems<span class="tbadge alarmb" id="badgeProblems" hidden></span></a>
+  <a href="#library" data-for="library" role="tab">Library</a>
+  <a href="#settings" data-for="settings" role="tab">Settings</a>
+  <a href="#tools" data-for="tools" role="tab">Tools</a>
   <span class="spacer"></span>
   <button id="btnPassword">Password</button>
   <button id="btnLogout">Sign out</button>
 </nav>
+
+<dialog id="dlgCancel">
+  <h3 id="dlgCancelTitle">Cancel files</h3>
+  <p id="dlgCancelBody"></p>
+  <p class="dlghint">If Google Photos has already taken a copy from the phone,
+     neither choice removes it from there.</p>
+  <div class="dlgrow">
+    <button id="dlgLater">Send later</button>
+    <button id="dlgSkip" class="danger">Don't send</button>
+    <span class="spacer"></span>
+    <button id="dlgKeep">Keep in queue</button>
+  </div>
+</dialog>
 
 <header id="top">
   <p class="eyebrow">Original-quality relay</p>
@@ -404,7 +452,7 @@
 
 <div class="alertbox" id="alertBox" hidden></div>
 
-<section aria-label="Pipeline">
+<section aria-label="Pipeline" data-tab="overview">
   <div class="belt" id="belt">
     <div class="seg queued"  id="segQueued"  style="flex-grow:1"></div>
     <div class="seg onphone" id="segPhone"   style="flex-grow:0"></div>
@@ -417,7 +465,7 @@
   </div>
 </section>
 
-<div class="grid">
+<div class="grid" data-tab="overview">
   <div class="card">
     <h2>Outbox</h2>
     <div class="gauge"><i id="gaugeFill" style="width:0%"></i></div>
@@ -442,10 +490,12 @@
   </div>
 </div>
 
-<section class="queue" id="nav-queue">
+<section class="queue" id="nav-queue" data-tab="queue">
   <h2>Queue</h2>
   <p class="qnote" id="qNote">Files written to the outbox, waiting for the phone
-    to take them. They leave on their own when Google Photos has them.</p>
+    to take them. They leave on their own when Google Photos has them.
+    Cancelling asks whether they should be sent later or not at all —
+    "send later" means the feeder will refill from the backlog.</p>
 
   <div class="qbar" id="qBar">
     <label class="qall" title="Select every file in the list">
@@ -470,13 +520,18 @@
   <ol class="qlist" id="qList"></ol>
 </section>
 
-<section class="attention" id="nav-attention">
+<section class="attention" id="nav-attention" data-tab="problems">
   <h2>Needs attention</h2>
-  <div class="controls"><button id="btnRefresh">Check the outbox now</button></div>
+  <div class="pbar">
+    <button id="btnRefresh">Check the outbox now</button>
+    <button id="btnRetryAll" hidden>Retry all failed</button>
+    <button id="btnDismissAll" class="danger" hidden>Dismiss all failed</button>
+    <span class="psummary" id="pSummary"></span>
+  </div>
   <div id="attention"></div>
 </section>
 
-<section class="window">
+<section class="window" data-tab="library">
   <h2>Backfill window</h2>
   <p class="range" id="wRange">—</p>
   <div class="bar"><i id="wBar" style="width:0%"></i></div>
@@ -487,7 +542,7 @@
   </div>
 </section>
 
-<form class="settings" id="settings" onsubmit="return false">
+<form class="settings" id="settings" data-tab="settings" onsubmit="return false">
   <h2>Settings</h2>
 
   <fieldset>
@@ -619,21 +674,21 @@
   </div>
 </form>
 
-<section class="tools">
+<section class="tools" data-tab="library">
   <h2 class="eyebrow">What has not made it yet</h2>
   <p class="empty">Everything in Immich that is not yet in Google Photos, and why.
      With a curated library this should trend to empty.</p>
   <div class="recon" id="recon"></div>
 </section>
 
-<section class="timeline" id="nav-timeline">
+<section class="timeline" id="nav-timeline" data-tab="library">
   <h2>Timeline</h2>
   <p class="empty">Only months that actually hold media. Open one to see what is
      worth upgrading before you clear it from Google Photos.</p>
   <div id="tlBody"><p class="empty">Loading…</p></div>
 </section>
 
-<section class="stats" id="nav-library">
+<section class="stats" id="nav-library" data-tab="library">
   <h2>What is in the library</h2>
   <div id="stBody"><p class="empty">Working it out…</p></div>
   <div class="st-total" id="stTotals"></div>
@@ -641,7 +696,7 @@
 
 </section>
 
-<details class="tools" id="nav-tools">
+<details class="tools" id="nav-tools" data-tab="tools">
   <summary>Testing tools</summary>
 
   <div class="warnbox">
@@ -728,7 +783,7 @@
   </div>
 </details>
 
-<section class="log">
+<section class="log" data-tab="overview">
   <h2 class="eyebrow">Activity</h2>
   <ol id="log"></ol>
 </section>
@@ -793,8 +848,10 @@ async function render(){
 
   if (d.auth && d.auth.must_change && pwSheet.hidden) openPasswordSheet(true);
   const problems = (d.stuck || []).length + (d.problems || []).length;
-  navAttention.classList.toggle("warn", problems > 0);
-  navAttention.textContent = problems > 0 ? "Attention (" + problems + ")" : "Attention";
+  badgeQueue.hidden = !c.queued;
+  badgeQueue.textContent = fmtNum(c.queued);
+  badgeProblems.hidden = !problems;
+  badgeProblems.textContent = fmtNum(problems);
 
   renderConnection(d);
   renderAlerts(d);
@@ -1500,22 +1557,38 @@ qSelectAll.onclick = () => {
   syncRows();
 };
 
+// "Cancel" turned out to mean two different things. A user who cancels the
+// whole queue and presses refresh gets the next forty from the backlog,
+// which reads as cancel not working -- what they wanted was "don't send".
+// So the dialog asks which one they mean instead of guessing.
+function askCancelMode(count, all){
+  const what = all ? `all ${fmtNum(count)} queued files` :
+               count > 1 ? `${fmtNum(count)} files` : "this file";
+  dlgCancelBody.textContent =
+    `Take ${what} out of the outbox? "Send later" returns them to the ` +
+    `waiting list, so the feeder will send them again when there is room. ` +
+    `"Don't send" excludes them until you ask for them again by name.`;
+  return new Promise(resolve => {
+    const done = mode => { dlgCancel.close(); resolve(mode); };
+    dlgLater.onclick = () => done("later");
+    dlgSkip.onclick = () => done("skip");
+    dlgKeep.onclick = () => done(null);
+    dlgCancel.oncancel = e => { e.preventDefault(); done(null); };
+    dlgCancel.showModal();
+  });
+}
+
 async function cancelQueued(ids, all = false){
   const count = all ? qOrder.length : ids.length;
   if (!count) return;
-  const what = all ? `all ${fmtNum(count)} files` :
-               count > 1 ? `${fmtNum(count)} files` : "this file";
-  if (!confirm(
-      `Take ${what} out of the outbox?\n\n` +
-      "They go back to the waiting list and will be sent again later. " +
-      "If Google Photos has already taken a copy from the phone, cancelling " +
-      "here will not remove it from there.")) return;
+  const mode = await askCancelMode(count, all);
+  if (!mode) return;
 
   qSetBusy(true);
   try {
     const r = await fetch("/api/queue/cancel", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(all ? {all: true} : {ids})
+      body: JSON.stringify(all ? {all: true, mode} : {ids, mode})
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     if (all) qSelected.clear(); else ids.forEach(id => qSelected.delete(id));
@@ -1677,6 +1750,13 @@ function setStatus(ok, text){
 
 function renderAttention(d){
   const stuck = d.stuck || [], failed = d.problems || [];
+  const kinds = d.failure_kinds || [];
+
+  btnRetryAll.hidden = btnDismissAll.hidden = !failed.length;
+  pSummary.textContent = kinds.length
+    ? kinds.map(k => `${fmtNum(k.total)} ${k.kind}`).join(" · ")
+    : "";
+
   if (!stuck.length && !failed.length){
     attention.innerHTML = '<p class="empty">Nothing stuck. Everything sent has been backed up and cleared.</p>';
     return;
@@ -1685,9 +1765,11 @@ function renderAttention(d){
 
   // Two different problems with two different causes -- label them apart.
   const groups = [
-    {rows: failed, why: "download failed",
-     note: "Could not be fetched from Immich. They retry automatically up to five times."},
-    {rows: stuck, why: "not cleared",
+    {rows: failed, why: a => (a.last_error || "download failed").slice(0, 60),
+     dismiss: true,
+     note: "Could not be fetched from Immich. Retry sends them again; " +
+           "Dismiss clears them without sending."},
+    {rows: stuck, why: () => "not cleared", dismiss: false,
      note: "Sitting in the outbox longer than " + d.stuck_after_days +
            " days. Usually Smart Storage is off, or Photos backup is paused."}
   ];
@@ -1705,8 +1787,10 @@ function renderAttention(d){
       const nm = document.createElement("span");
       nm.className = "name"; nm.textContent = a.filename;
       const wy = document.createElement("span");
-      wy.className = "why"; wy.textContent = g.why;
+      wy.className = "why"; wy.textContent = g.why(a);
+      wy.title = a.last_error || "";
       el.append(nm, wy);
+
       const btn = document.createElement("button");
       btn.textContent = "Send again";
       btn.onclick = async () => {
@@ -1715,10 +1799,42 @@ function renderAttention(d){
         tick();
       };
       el.appendChild(btn);
+
+      if (g.dismiss){
+        const dis = document.createElement("button");
+        dis.textContent = "Dismiss";
+        dis.className = "danger";
+        dis.onclick = async () => {
+          dis.disabled = true;
+          await fetch("/api/failed/dismiss", {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({ids:[a.id]})});
+          tick();
+        };
+        el.appendChild(dis);
+      }
       attention.appendChild(el);
     });
   });
 }
+
+btnRetryAll.onclick = async () => {
+  btnRetryAll.disabled = true;
+  try { await fetch("/api/retry-failed", {method:"POST"}); }
+  finally { btnRetryAll.disabled = false; tick(); }
+};
+
+btnDismissAll.onclick = async () => {
+  if (!confirm("Dismiss every failed file?\n\nThey will not be retried or " +
+               "sent. You can still send one later by name from the Library."))
+    return;
+  btnDismissAll.disabled = true;
+  try {
+    await fetch("/api/failed/dismiss", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({})});
+  } finally { btnDismissAll.disabled = false; tick(); }
+};
 
 function renderLog(events){
   log.innerHTML = "";
@@ -1956,6 +2072,32 @@ function setLiveBadge(on){
   const el = document.getElementById("liveBadge");
   if (el) el.textContent = on ? "live" : "polling";
 }
+
+// ---- tabs -----------------------------------------------------------
+// The page used to be one long scroll with jump anchors; each area is now
+// a tab. Hash-routed so tabs survive reload and can be linked. Old anchors
+// (#nav-queue, #settings, ...) map onto their tab so bookmarks keep working.
+const TABS = ["overview","queue","problems","library","settings","tools"];
+const LEGACY = {"nav-queue":"queue","nav-attention":"problems","top":"overview",
+                "nav-timeline":"library","nav-library":"library",
+                "nav-tools":"tools","settings":"settings"};
+
+function setTab(raw){
+  const name = TABS.includes(raw) ? raw : (LEGACY[raw] || "overview");
+  document.querySelectorAll("[data-tab]").forEach(el =>
+    el.classList.toggle("tab-on", el.dataset.tab === name));
+  document.querySelectorAll('#tabbar a[data-for]').forEach(a => {
+    const on = a.dataset.for === name;
+    a.classList.toggle("active", on);
+    a.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  // Tools is a <details>; opening the tab should not leave it collapsed.
+  if (name === "tools") document.getElementById("nav-tools").open = true;
+}
+
+window.addEventListener("hashchange",
+  () => setTab(location.hash.replace(/^#/, "")));
+setTab(location.hash.replace(/^#/, ""));
 
 connectLive();
 tick();
