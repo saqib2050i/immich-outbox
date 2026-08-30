@@ -253,31 +253,63 @@ def cancel_queued(ids: list[str], skip: bool = False) -> int:
     return cur.rowcount
 
 
-def waiting_breakdown() -> list[dict]:
-    """The backlog: everything waiting to be sent, by month.
+# Is this row actually going to be sent? Same predicate claim_batch uses,
+# so the backlog cannot disagree with what the feeder will do.
+ELIGIBLE_SQL = """
+    ((:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
+     OR (:backfill = 1 AND substr(taken_at,1,10)
+           BETWEEN :backfill_start AND :backfill_end))
+"""
 
-    The queue view only shows the forty-odd files currently in the outbox,
-    so a backlog of thousands was invisible -- cancel the queue, press
-    refresh, and the next forty arrive from a pile you cannot see. This is
-    that pile.
+
+def _window_params() -> dict:
+    from . import settings
+    cfg = settings.load()
+    return {"ongoing": 1 if cfg.ongoing_enabled else 0,
+            "ongoing_from": cfg.ongoing_from,
+            "backfill": 1 if cfg.backfill_enabled else 0,
+            "backfill_start": cfg.backfill_start,
+            "backfill_end": cfg.backfill_end}
+
+
+def waiting_breakdown() -> list[dict]:
+    """The backlog, by month, split by whether it is actually going out.
+
+    The ledger deliberately holds the entire Immich library, so "everything
+    not yet sent" is most of the library and is not a backlog in any useful
+    sense -- presenting it as one invited dismissing twelve thousand files
+    that were never queued for anything. Three groups instead:
+
+        asked     forced by hand -- "send this month", "send this category"
+        eligible  inside a date window, so the feeder will take it in turn
+        resting   outside every window: present in the ledger, going nowhere
+
+    Only the first two are a backlog. `resting` is shown for completeness
+    and is never what a bulk action defaults to.
     """
-    rows = connect().execute("""
+    rows = connect().execute(f"""
         SELECT COALESCE(NULLIF(substr(taken_at, 1, 7), ''), 'undated') AS month,
                COUNT(*)                                               AS total,
                COALESCE(SUM(size), 0)                                 AS bytes,
                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END)      AS failed,
-               SUM(CASE WHEN forced = 1 THEN 1 ELSE 0 END)            AS forced
+               SUM(CASE WHEN forced = 1 THEN 1 ELSE 0 END)            AS asked,
+               SUM(CASE WHEN forced = 0 AND {ELIGIBLE_SQL}
+                        THEN 1 ELSE 0 END)                            AS eligible,
+               SUM(CASE WHEN forced = 0 AND NOT {ELIGIBLE_SQL}
+                        THEN 1 ELSE 0 END)                            AS resting,
+               COALESCE(SUM(CASE WHEN forced = 1 OR {ELIGIBLE_SQL}
+                                 THEN size ELSE 0 END), 0)            AS to_send_bytes
         FROM assets
         WHERE state IN ('pending','failed')
           AND id NOT IN (SELECT id FROM motion_parts)
         GROUP BY month
         ORDER BY month DESC
-    """).fetchall()
+    """, _window_params()).fetchall()
     return [dict(r) for r in rows]
 
 
 def dismiss_waiting(month: str | None = None, ids: list[str] | None = None,
-                    everything: bool = False) -> int:
+                    everything: bool = False, scope: str = "to_send") -> int:
     """Take waiting assets out of the running without sending them.
 
     For the case this was written for: a month was force-sent, then the
@@ -289,7 +321,78 @@ def dismiss_waiting(month: str | None = None, ids: list[str] | None = None,
     -- so after re-uploading to Immich and rescanning, the month can be
     sent again deliberately.
     """
-    where = ["state IN ('pending','failed')"]
+    sql = ["UPDATE assets SET state='skipped', forced=0",
+           "WHERE state IN ('pending','failed')",
+           "AND id NOT IN (SELECT id FROM motion_parts)"]
+    params: dict = {}
+
+    if month:
+        sql.append("AND COALESCE(NULLIF(substr(taken_at,1,7),''),'undated')"
+                   " = :month")
+        params["month"] = month
+    elif ids:
+        keys = [f"i{n}" for n in range(len(ids))]
+        sql.append("AND id IN (%s)" % ",".join(":" + k for k in keys))
+        params.update(dict(zip(keys, ids)))
+    elif everything:
+        # scope narrows a whole-backlog dismissal only. Picking a month or
+        # specific files is already an explicit target.
+        #
+        # "to_send" is the default because the ledger holds every asset in
+        # Immich and nearly all of them sit 'pending' forever by design --
+        # so an unscoped "dismiss everything waiting" meant the entire
+        # library, which is exactly how twelve thousand untouched photos
+        # got dismissed in one click.
+        if scope == "to_send":
+            sql.append(f"AND (forced = 1 OR {ELIGIBLE_SQL})")
+            params.update(_window_params())
+        elif scope == "asked":
+            sql.append("AND forced = 1")
+    else:
+        return 0
+
+    c = connect()
+    with _lock:
+        cur = c.execute(" ".join(sql), params)
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
+def dismissed_breakdown() -> list[dict]:
+    """Assets the user dismissed by hand, by month.
+
+    Motion components are excluded: they are skipped because of what they
+    are, not because anyone chose it, and offering to "restore" them would
+    put stray clips back in the queue.
+    """
+    rows = connect().execute("""
+        SELECT COALESCE(NULLIF(substr(taken_at, 1, 7), ''), 'undated') AS month,
+               COUNT(*)                                               AS total,
+               COALESCE(SUM(size), 0)                                 AS bytes
+        FROM assets
+        WHERE state = 'skipped'
+          AND id NOT IN (SELECT id FROM motion_parts)
+        GROUP BY month
+        ORDER BY month DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def restore_dismissed(month: str | None = None, ids: list[str] | None = None,
+                      everything: bool = False) -> int:
+    """Put dismissed assets back in the running.
+
+    Dismissing was documented as reversible, but every view that could find
+    the rows again -- timeline, monthly breakdown, buckets, the backlog
+    list -- filters 'skipped' out, and a rescan cannot help because scans
+    are INSERT OR IGNORE and never touch an existing row. Without this,
+    "dismiss everything waiting" was a one-way door.
+
+    Restores to 'pending', not 'forced': they rejoin the queue in their
+    normal order and the date windows apply as usual.
+    """
+    where = ["state = 'skipped'", "id NOT IN (SELECT id FROM motion_parts)"]
     params: list = []
     if month:
         where.append("COALESCE(NULLIF(substr(taken_at,1,7),''),'undated') = ?")
@@ -303,8 +406,8 @@ def dismiss_waiting(month: str | None = None, ids: list[str] | None = None,
     c = connect()
     with _lock:
         cur = c.execute(
-            f"UPDATE assets SET state='skipped', forced=0 WHERE {' AND '.join(where)}",
-            params)
+            f"""UPDATE assets SET state='pending', attempts=0, last_error=NULL
+                WHERE {' AND '.join(where)}""", params)
         c.commit()
         _bump()
     return cur.rowcount
@@ -778,7 +881,7 @@ BUCKET_SQL = """
 def list_in_bucket(bucket: str, state: str = "all",
                    limit: int = 100, offset: int = 0) -> dict:
     """Files in one resolution bucket, largest first."""
-    where = [f"{BUCKET_SQL} = ?", "state != 'skipped'"]
+    where = [f"{BUCKET_SQL} = ?", "id NOT IN (SELECT id FROM motion_parts)"]
     params: list = [bucket]
     if state != "all":
         where.append("state = ?")
@@ -859,7 +962,7 @@ def media_breakdown() -> list[dict]:
                                                                      AS remaining,
                COALESCE(SUM(duration), 0)                            AS seconds
         FROM assets
-        WHERE state != 'skipped'
+        WHERE id NOT IN (SELECT id FROM motion_parts)
         GROUP BY bucket, kind
         ORDER BY bytes DESC
     """).fetchall()
@@ -901,7 +1004,8 @@ def month_detail(month: str) -> dict:
                MIN(CASE WHEN width>0 AND height>0 THEN MIN(width,height) END) AS min_side,
                MAX(CASE WHEN width>0 AND height>0 THEN MAX(width,height) END) AS max_side
         FROM assets
-        WHERE state != 'skipped' AND substr(taken_at, 1, 7) = ?
+        WHERE id NOT IN (SELECT id FROM motion_parts)
+          AND substr(taken_at, 1, 7) = ?
         GROUP BY kind, gains
     """, (month,)).fetchall()
 
@@ -969,7 +1073,13 @@ def reconciliation() -> list[dict]:
         SELECT
           CASE
             WHEN state = 'failed'  THEN 'failed'
-            WHEN state = 'skipped' THEN 'skipped'
+            -- 'skipped' holds two unrelated things: motion components,
+            -- which are a fact about the library, and assets the user
+            -- dismissed by hand. Reporting 12,000 dismissed photos as
+            -- "motion-photo clips" is worse than not reporting them.
+            WHEN state = 'skipped' AND id IN (SELECT id FROM motion_parts)
+                                   THEN 'motion_part'
+            WHEN state = 'skipped' THEN 'dismissed'
             WHEN state = 'queued'  THEN 'in_outbox'
             WHEN kind = 'VIDEO' AND :include_video = 0 THEN 'video_off'
             WHEN size > :max_bytes THEN 'too_big'
@@ -1015,11 +1125,15 @@ def timeline() -> list[dict]:
                                                                       AS remaining,
                COALESCE(SUM(CASE WHEN a.state IN ('pending','failed')
                                  THEN a.size ELSE 0 END), 0)          AS remaining_bytes,
+               SUM(CASE WHEN a.state = 'skipped' THEN 1 ELSE 0 END)    AS dismissed,
                SUM(CASE WHEN {GAIN_SQL_A} = 1 THEN 1 ELSE 0 END)        AS gains,
                COALESCE(SUM(CASE WHEN {GAIN_SQL_A} = 1 AND a.state != 'confirmed'
                                  THEN a.size ELSE 0 END), 0)          AS gain_bytes
         FROM assets a
-        WHERE a.state != 'skipped'
+        -- Motion components are excluded because they are not separate
+        -- photos. Dismissed assets are NOT: hiding them made a month whose
+        -- files had all been dismissed read as fully backed up.
+        WHERE a.id NOT IN (SELECT id FROM motion_parts)
           AND a.taken_at IS NOT NULL AND a.taken_at != ''
         GROUP BY substr(a.taken_at, 1, 7)
         ORDER BY substr(a.taken_at, 1, 7) DESC
@@ -1041,9 +1155,11 @@ def monthly_breakdown() -> list[dict]:
                SUM(CASE WHEN state = 'confirmed' THEN 1 ELSE 0 END)  AS confirmed,
                SUM(CASE WHEN state = 'queued'    THEN 1 ELSE 0 END)  AS queued,
                SUM(CASE WHEN kind  = 'IMAGE'     THEN 1 ELSE 0 END)  AS photos,
-               SUM(CASE WHEN kind  = 'VIDEO'     THEN 1 ELSE 0 END)  AS videos
+               SUM(CASE WHEN kind  = 'VIDEO'     THEN 1 ELSE 0 END)  AS videos,
+               SUM(CASE WHEN state = 'skipped'    THEN 1 ELSE 0 END)  AS dismissed
         FROM assets
-        WHERE state != 'skipped' AND taken_at IS NOT NULL AND taken_at != ''
+        WHERE id NOT IN (SELECT id FROM motion_parts)
+          AND taken_at IS NOT NULL AND taken_at != ''
         GROUP BY month
         ORDER BY month DESC
     """).fetchall()
