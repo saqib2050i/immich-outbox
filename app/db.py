@@ -1001,6 +1001,10 @@ def month_detail(month: str) -> dict:
                SUM(CASE WHEN state = 'queued'    THEN 1 ELSE 0 END)  AS queued,
                SUM(CASE WHEN state IN ('pending','failed') THEN 1 ELSE 0 END)
                                                                      AS remaining,
+               -- Counted separately so a dismissed month cannot read as
+               -- finished, and so the send button knows there is still
+               -- something it can be asked to send.
+               SUM(CASE WHEN state = 'skipped' THEN 1 ELSE 0 END)     AS dismissed,
                MIN(CASE WHEN width>0 AND height>0 THEN MIN(width,height) END) AS min_side,
                MAX(CASE WHEN width>0 AND height>0 THEN MAX(width,height) END) AS max_side
         FROM assets

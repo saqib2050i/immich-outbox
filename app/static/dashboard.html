@@ -1316,7 +1316,11 @@ async function drawTimeline(){
 
 function monthNode(m, openMonths){
   const md = document.createElement("details");
-  md.className = "tl-mo" + (m.remaining === 0 && m.total ? " done" : "");
+  // Green means backed up, not merely "nothing queued". A month whose files
+  // were all dismissed has nothing remaining either, and showing that as
+  // done was how a dismissed library came to look fully backed up.
+  const finished = m.total > 0 && m.confirmed === m.total;
+  md.className = "tl-mo" + (finished ? " done" : "");
   md.dataset.month = m.month;
 
   const sum = document.createElement("summary");
@@ -1397,12 +1401,17 @@ function paintMonthBody(m, host, d){
     fig.className = "cfig";
     fig.textContent = fmtNum(g.total) + " · " + fmtBytes(g.bytes)
       + " · " + fmtNum(g.confirmed) + " done"
-      + (g.queued ? " · " + g.queued + " in outbox" : "");
+      + (g.queued ? " · " + g.queued + " in outbox" : "")
+      + (g.dismissed ? " · " + fmtNum(g.dismissed) + " dismissed" : "");
     el.append(nm, fig);
 
-    if (g.remaining > 0){
+    // Dismissed files count as sendable: dismissing is an exclusion, and
+    // "send this month" is how you take it back.
+    const sendable = g.remaining + (g.dismissed || 0);
+    if (sendable > 0){
       const b = document.createElement("button");
-      b.textContent = "Send " + fmtNum(g.remaining);
+      b.textContent = "Send " + fmtNum(sendable);
+      if (g.dismissed) b.title = fmtNum(g.dismissed) + " of these were dismissed";
       b.onclick = async () => {
         b.disabled = true; b.textContent = "Queuing";
         await fetch("/api/month/send", {
@@ -1419,7 +1428,8 @@ function paintMonthBody(m, host, d){
     host.appendChild(el);
   });
 
-  const remaining = (d.groups || []).reduce((a, g) => a + g.remaining, 0);
+  const remaining = (d.groups || []).reduce(
+    (a, g) => a + g.remaining + (g.dismissed || 0), 0);
   if (remaining > 0){
     const foot = document.createElement("div");
     foot.className = "foot";

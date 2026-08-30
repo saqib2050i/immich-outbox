@@ -64,7 +64,7 @@ async def test_a_vanished_outbox_stops_new_downloads(rig, monkeypatch):
 async def test_the_guard_lifts_when_the_mount_returns(rig, monkeypatch):
     from app import db, feeder, immich, settings
 
-    settings.save({"max_batch_files": 2})
+    rig.cap(200)                      # two 100-byte files fill it
     db.upsert_assets([asset(i, size=100) for i in range(4)])
     monkeypatch.setattr(immich, "stream_original", fake_download())
     _, used = feeder.reconcile()

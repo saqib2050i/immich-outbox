@@ -282,7 +282,7 @@ async def test_dismissing_the_backlog_leaves_the_outbox_alone(rig, monkeypatch):
     pile is dismissed."""
     from app import db, feeder, immich, main, settings
 
-    settings.save({"max_batch_files": 3})
+    rig.cap(300)                      # three 100-byte files fill it
     db.upsert_assets([asset(i, size=100) for i in range(8)])
     monkeypatch.setattr(immich, "stream_original", fake_download())
     _, used = feeder.reconcile()
@@ -509,3 +509,69 @@ async def test_an_unknown_scope_is_rejected(rig):
     with pytest.raises(HTTPException) as exc:
         await main.backlog_dismiss({"all": True, "scope": "everything-please"})
     assert exc.value.status_code == 400
+
+
+# ---- a dismissed month must stay reachable ------------------------------
+
+async def test_a_dismissed_month_is_not_reported_as_finished(rig):
+    """Reported: clear the queue and the library goes green, with no send
+    option when you open a month."""
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2026-03-05") for i in range(6)])
+    db.mark_queued(["asset-0"])
+    db.confirm_absent([])
+    await main.backlog_dismiss({"all": True, "scope": "all"})
+
+    row = next(m for m in db.timeline() if m["month"] == "2026-03")
+    assert row["confirmed"] == 1
+    assert row["total"] == 6
+    assert row["confirmed"] != row["total"], "month would render as done"
+
+    detail = await main.month_detail("2026-03")
+    sendable = sum(g["remaining"] + g["dismissed"] for g in detail["groups"])
+    assert sendable == 5, "the month offered nothing to send"
+
+
+async def test_month_detail_counts_dismissed_separately(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2026-04-05") for i in range(4)])
+    await main.backlog_dismiss({"all": True, "scope": "all"})
+
+    groups = (await main.month_detail("2026-04"))["groups"]
+    assert sum(g["dismissed"] for g in groups) == 4
+    assert sum(g["remaining"] for g in groups) == 0
+
+
+async def test_sending_a_dismissed_month_puts_it_back(rig, monkeypatch):
+    """The send button has to actually work on a dismissed month."""
+    from app import db, feeder, immich, main
+
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(4)])
+    await main.backlog_dismiss({"all": True, "scope": "all"})
+    assert db.counts()["skipped"] == 4
+
+    r = await main.month_send({"month": "2026-05"})
+    assert r["queued"] == 4
+
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 4
+
+
+async def test_a_month_outside_the_window_is_still_sendable_by_hand(rig, monkeypatch):
+    """With ongoing_from set to a recent date, old months are not eligible
+    automatically -- 'send this month' is the way to move them."""
+    from app import db, feeder, immich, main, settings
+
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-28",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(3)])
+
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 0, "an out-of-window month sent itself"
+
+    assert (await main.month_send({"month": "2025-11"}))["queued"] == 3
+    assert db.counts()["queued"] == 3

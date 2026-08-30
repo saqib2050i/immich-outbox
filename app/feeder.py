@@ -215,6 +215,17 @@ def reconcile() -> tuple[list[str], int]:
 
 
 async def top_up(used: int) -> int:
+    """Fill the outbox to its cap with assets that have never been sent.
+
+    The cap is the flow control, so the cap -- not a file count -- decides
+    when to stop. `max_batch_files` bounds how many are claimed at a time,
+    not how many a cycle may send: with a 16 GB outbox and 4 MB photos, a
+    hard limit of forty files filled 160 MB of it and left the rest idle
+    until the next cycle.
+
+    Paused is re-read between files, so pausing takes effect within one
+    file rather than at the end of a long fill.
+    """
     cfg = settings.load()
     if cfg.paused:
         return 0
@@ -238,17 +249,46 @@ async def top_up(used: int) -> int:
         "backfill_start": cfg.backfill_start,
         "backfill_end": cfg.backfill_end,
     }
-    rows = db.claim_batch(budget, cfg.max_batch_files, filt,
-                          allow_oversize=(used == 0))
-    if not rows:
-        return 0
 
-    written = []
+    written: list[str] = []
+    started_empty = used == 0
+
+    while budget > 0:
+        rows = db.claim_batch(budget, cfg.max_batch_files, filt,
+                              allow_oversize=(started_empty and not written))
+        if not rows:
+            break
+
+        spent, stopped = await _fetch_batch(rows, budget)
+        budget -= spent
+        written.extend(stopped["written"])
+        if stopped["paused"] or not stopped["progressed"]:
+            # Either the user pressed pause, or nothing in that claim could
+            # be written -- keep claiming and we would spin on the same rows.
+            break
+
+    if written:
+        # One log line per cycle: the per-file signal is the state change
+        # itself, and forty lines an hour would bury everything else.
+        db.log("queue", f"added {len(written)} file(s) to the outbox")
+    return len(written)
+
+
+async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
+    """Download one claim's worth. Returns bytes written and what happened."""
     global TRANSFER
+
+    written: list[str] = []
+    spent = 0
+    paused = False
     batch_bytes = sum(r["size"] or 0 for r in rows)
     batch_done_bytes = 0
 
     for index, row in enumerate(rows, 1):
+        if settings.load().paused:
+            paused = True
+            break
+
         asset_id, filename = row["id"], row["filename"]
         # Published before the bytes move, so the dashboard can name the file
         # it is working on instead of going quiet for the length of a batch.
@@ -302,13 +342,12 @@ async def top_up(used: int) -> int:
             os.chmod(dest, 0o664)
             tmp = None
             written.append(asset_id)
-            batch_done_bytes += size
             # Marked the moment the file lands, not once the whole batch is
             # done. Batching the update meant a queue of 40 appeared to the
-            # dashboard as nothing at all for minutes and then a jump of 40;
-            # every write bumps the ledger revision, which is what the event
-            # stream watches.
+            # dashboard as nothing at all for minutes and then a jump of 40.
             db.mark_queued([asset_id])
+            batch_done_bytes += size
+            spent += size
         except immich.OriginalMissing as exc:
             # Retrying cannot conjure the file back; spend the whole retry
             # budget now instead of failing identically five times.
@@ -323,11 +362,8 @@ async def top_up(used: int) -> int:
 
     TRANSFER = None
     db.clear_progress()
-    if written:
-        # One log line for the batch: the per-file signal is the state change
-        # itself, and forty lines an hour would bury everything else.
-        db.log("queue", f"added {len(written)} file(s) to the outbox")
-    return len(written)
+    return spent, {"written": written, "paused": paused,
+                   "progressed": bool(written)}
 
 
 async def refresh_connection() -> dict:
