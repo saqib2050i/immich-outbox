@@ -4,6 +4,8 @@ The property that matters is that a confirmed asset never goes out again.
 Everything else in the service exists to protect it.
 """
 
+import asyncio
+
 import pytest
 
 from conftest import asset, fake_download
@@ -260,3 +262,50 @@ async def test_a_batch_that_writes_nothing_does_not_spin(rig, monkeypatch):
     _, used = feeder.reconcile()
     assert await feeder.top_up(used) == 0
     assert calls["n"] == 5, "kept claiming after a claim that wrote nothing"
+async def test_a_file_already_on_disk_does_not_loop_forever(rig, monkeypatch):
+    """A crash between the rename and the ledger write leaves a file in the
+    outbox with its row still pending. The fill loop then claims it, sees
+    the file, counts it as written but never changes its state -- so the
+    next claim hands back the same row, forever, holding the cycle lock.
+
+    Bounded by wait_for so a regression fails in seconds instead of hanging.
+    """
+    from app import db, feeder, immich, settings
+
+    rig.cap(10_000)
+    settings.save({"max_batch_files": 5})
+    db.upsert_assets([asset(0, size=100)])
+
+    # Exactly the state a crash between the rename and the ledger write
+    # leaves behind. top_up is called directly: a reconcile first would map
+    # the file back to its row and mark it queued, which is what normally
+    # keeps this path unreachable.
+    name = db.reserve_outbox_name("asset-0", "IMG_0000.jpg")
+    (rig.outbox / name).write_bytes(b"x" * 100)
+    assert db.counts()["pending"] == 1
+
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    added = await asyncio.wait_for(feeder.top_up(0), timeout=10)
+
+    assert added == 1
+    assert db.counts()["queued"] == 1, "the row was never marked, so it would re-claim"
+    assert db.counts()["pending"] == 0
+
+
+async def test_the_cycle_lock_is_released_after_a_fill(rig, monkeypatch):
+    """A spin inside top_up would hold the lock and freeze cancel, pause and
+    refresh along with it."""
+    from app import db, feeder, immich, settings
+
+    rig.cap(1000)
+    settings.save({"max_batch_files": 3})
+    db.upsert_assets([asset(i, size=100) for i in range(12)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async with feeder.CYCLE_LOCK:
+        pass                                   # free before
+    _, used = feeder.reconcile()
+    await asyncio.wait_for(feeder.top_up(used), timeout=10)
+    assert not feeder.CYCLE_LOCK.locked()
+    async with feeder.CYCLE_LOCK:
+        pass                                   # and free after
