@@ -995,9 +995,17 @@ const fmtDur = s => {
   return h ? h + " h " + m + " m" : m + " min";
 };
 
+// Same reasoning as the timeline: redrawing identical data on every ledger
+// write is pure churn, and it resets anything the user is interacting with.
+let stSignature = "";
+
 async function renderStats(d){
   let st;
   try { st = await (await fetch("/api/stats")).json(); } catch { return; }
+
+  const stSig = JSON.stringify([st.breakdown, st.throughput, st.counts]);
+  if (stSig === stSignature) return;
+  stSignature = stSig;
 
   const rows = st.breakdown.filter(r => r.total > 0);
   if (!rows.length){
@@ -1196,20 +1204,41 @@ function fileRow(f, bucket, host, btn){
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
                      "Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// What the user has open. Held here rather than read back out of the DOM:
+// renderTimeline is async and was called without await, so two runs could
+// overlap -- one wiping tlBody while the other was still reading which
+// months were open, which is why an expanded month closed itself.
+const tlOpenYears = new Set();
+const tlOpenMonths = new Set();
+
+// The last payload we drew. The feeder writes to the ledger once per file,
+// and every write pushes an event, so this ran dozens of times a minute and
+// rebuilt the whole tree each time. Nothing to redraw means nothing to do.
+let tlSignature = "";
+let tlDrawing = false;
+
 async function renderTimeline(){
+  if (tlDrawing) return;
+  tlDrawing = true;
+  try { await drawTimeline(); } finally { tlDrawing = false; }
+}
+
+async function drawTimeline(){
   let d;
   try { d = await (await fetch("/api/timeline")).json(); } catch { return; }
   const months = d.months || [];
   if (!months.length){
     tlBody.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
+    tlSignature = "";
     return;
   }
 
-  // Keep whatever the user has open across a live refresh.
-  const openYears  = new Set([...tlBody.querySelectorAll("details.tl-yr[open]")]
-                             .map(e => e.dataset.year));
-  const openMonths = new Set([...tlBody.querySelectorAll("details.tl-mo[open]")]
-                             .map(e => e.dataset.month));
+  const signature = JSON.stringify(months);
+  if (signature === tlSignature) return;   // identical data: leave the DOM alone
+  tlSignature = signature;
+  monthCache.clear();                      // month bodies may have moved too
+
+  const openYears = tlOpenYears, openMonths = tlOpenMonths;
 
   const years = new Map();
   months.forEach(m => {
@@ -1230,6 +1259,9 @@ async function renderTimeline(){
     yd.className = "tl-yr";
     yd.dataset.year = year;
     if (openYears.has(year)) yd.open = true;
+    yd.addEventListener("toggle", () => {
+      yd.open ? tlOpenYears.add(year) : tlOpenYears.delete(year);
+    });
 
     const ys = document.createElement("summary");
     const yn = document.createElement("span");
@@ -1292,17 +1324,35 @@ function monthNode(m, openMonths){
   md.appendChild(body);
 
   md.addEventListener("toggle", () => {
-    if (md.open) loadMonthBody(m, body);
+    if (md.open){ tlOpenMonths.add(m.month); loadMonthBody(m, body); }
+    else tlOpenMonths.delete(m.month);
   });
-  if (openMonths.has(m.month)){ md.open = true; loadMonthBody(m, body); }
+  // Setting .open fires toggle, which does the loading -- calling it here
+  // as well fetched every open month twice on every redraw.
+  if (openMonths.has(m.month)) md.open = true;
   return md;
 }
 
+// Month bodies survive a redraw, so reopening does not flash "Loading…"
+// and a rebuild does not refetch what is already on screen.
+const monthCache = new Map();
+
 async function loadMonthBody(m, host){
+  const cached = monthCache.get(m.month);
+  if (cached) paintMonthBody(m, host, cached);
+  else host.innerHTML = '<p class="empty">Loading…</p>';
+
   let d;
   try { d = await (await fetch("/api/month/" + m.month)).json(); }
-  catch { host.innerHTML = '<p class="empty">Could not load.</p>'; return; }
+  catch {
+    if (!cached) host.innerHTML = '<p class="empty">Could not load.</p>';
+    return;
+  }
+  monthCache.set(m.month, d);
+  paintMonthBody(m, host, d);
+}
 
+function paintMonthBody(m, host, d){
   host.innerHTML = "";
 
   (d.groups || []).forEach(g => {
@@ -1851,9 +1901,15 @@ const RECON = {
   skipped:        ["Skipped", "not being sent"],
 };
 
+let reconSignature = "";
+
 async function renderRecon(){
   let d;
   try { d = await (await fetch("/api/reconciliation")).json(); } catch { return; }
+  const reconSig = JSON.stringify(d.groups || []);
+  if (reconSig === reconSignature) return;
+  reconSignature = reconSig;
+
   const groups = d.groups || [];
   if (!groups.length){
     recon.innerHTML = '<p class="empty">Everything in Immich is backed up at original quality.</p>';
