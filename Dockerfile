@@ -1,5 +1,14 @@
 FROM python:3.12-slim
 
+# Stamped by CI (see .github/workflows/publish.yml) so the running container
+# can tell you which image it is.
+ARG APP_VERSION=dev
+ARG APP_REVISION=
+ARG APP_BUILT_AT=
+ENV APP_VERSION=$APP_VERSION \
+    APP_REVISION=$APP_REVISION \
+    APP_BUILT_AT=$APP_BUILT_AT
+
 WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

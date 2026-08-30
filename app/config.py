@@ -56,5 +56,13 @@ STUCK_AFTER_DAYS = _i("STUCK_AFTER_DAYS", 45)
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 
+# --- Build identity ---
+# Stamped into the image by CI so the dashboard can answer "am I running the
+# latest?" without anyone having to inspect the container. Running from a
+# source checkout leaves these at their defaults.
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+APP_REVISION = os.getenv("APP_REVISION", "")
+APP_BUILT_AT = os.getenv("APP_BUILT_AT", "")
+
 # Syncthing's own bookkeeping, never treated as photos.
 IGNORED = (".stfolder", ".stversions", ".stignore", "lost+found")
