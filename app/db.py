@@ -298,7 +298,7 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     strict: a 4 GB video must not drop onto an almost-full outbox.
     """
     sql = """SELECT * FROM assets
-             WHERE state IN ('pending','failed') AND attempts < 5
+             WHERE state IN ('pending','failed') AND attempts < :max_attempts
                AND id NOT IN (SELECT id FROM motion_parts)
                AND (kind = 'IMAGE' OR :include_video = 1)
                AND (size = 0 OR size <= :max_asset_bytes)
@@ -315,6 +315,7 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     params["ongoing"] = 1 if filt["ongoing"] else 0
     params["backfill"] = 1 if filt["backfill"] else 0
     params["scan_limit"] = max_files * 4
+    params["max_attempts"] = MAX_ATTEMPTS
 
     rows = connect().execute(sql, params).fetchall()
 
@@ -498,15 +499,60 @@ def motion_parts_among(asset_ids: list[str]) -> list[str]:
     return [r["id"] for r in rows]
 
 
-def mark_failed(asset_id: str, error: str) -> None:
+# claim_batch stops retrying at this many attempts.
+MAX_ATTEMPTS = 5
+
+
+def mark_failed(asset_id: str, error: str, permanent: bool = False) -> None:
+    """Record a failed download.
+
+    permanent=True spends the whole retry budget at once. It is for errors
+    that retrying cannot fix — Immich returning 404 for the original —
+    where five more attempts would just produce five more identical log
+    lines before arriving at the same place. `retry_failed()` still resets
+    them, so a deliberate "try again" after fixing the library works.
+    """
     c = connect()
     with _lock:
         c.execute(
-            "UPDATE assets SET state='failed', attempts=attempts+1, last_error=? WHERE id=?",
-            (error[:300], asset_id),
+            "UPDATE assets SET state='failed', "
+            "attempts=CASE WHEN ? THEN ? ELSE attempts+1 END, "
+            "last_error=? WHERE id=?",
+            (1 if permanent else 0, MAX_ATTEMPTS, error[:300], asset_id),
         )
         c.commit()
         _bump()
+
+
+def failure_breakdown() -> list[dict]:
+    """Failed assets grouped by what actually went wrong.
+
+    The alert used to say "check the Immich connection and the outbox
+    folder permissions" for every failure, which for a 404 sends the user
+    hunting through Syncthing ownership for a problem that lives entirely
+    in Immich's storage."""
+    # The CASE lives in a subquery so the outer GROUP BY sees only its
+    # alias. Grouping directly would rebind `kind` to the assets column of
+    # the same name (IMAGE/VIDEO) and collapse everything into one group --
+    # the exact alias trap CLAUDE.md warns about.
+    rows = connect().execute("""
+        SELECT kind, COUNT(*) AS total, COALESCE(SUM(size), 0) AS bytes
+        FROM (
+          SELECT size,
+                 CASE
+                   WHEN last_error LIKE '%missing from Immich storage%'
+                        OR last_error LIKE '%HTTP 404%' THEN 'missing'
+                   WHEN last_error LIKE '%size mismatch%'  THEN 'truncated'
+                   WHEN last_error LIKE '%ConnectError%'
+                        OR last_error LIKE '%timed out%'
+                        OR last_error LIKE '%ReadTimeout%' THEN 'unreachable'
+                   ELSE 'other'
+                 END AS kind
+          FROM assets WHERE state='failed'
+        )
+        GROUP BY kind ORDER BY total DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
 
 
 def requeue(asset_id: str) -> None:

@@ -155,6 +155,7 @@ async def status():
         "settings": cfg.as_dict(),
         "stuck": [dict(r) for r in db.stuck(config.STUCK_AFTER_DAYS)],
         "problems": [dict(r) for r in db.problems()],
+        "failure_kinds": db.failure_breakdown(),
         "events": [dict(r) for r in db.recent_events()],
         "stuck_after_days": config.STUCK_AFTER_DAYS,
         "alerts": json.loads(db.get_meta("alerts") or "[]"),
@@ -271,10 +272,18 @@ async def queue():
 
 @app.post("/api/queue/cancel")
 async def queue_cancel(payload: dict):
-    """Take files back out of the outbox and return them to pending."""
-    ids = payload.get("ids") or []
-    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-        raise HTTPException(status_code=400, detail="ids must be a list of strings")
+    """Take files back out of the outbox and return them to pending.
+
+    {"all": true} cancels everything queued, resolved server-side — nobody
+    should have to tick a hundred checkboxes to empty the queue, and a
+    client-collected id list can go stale between render and click.
+    """
+    if payload.get("all"):
+        ids = [item["id"] for item in db.queue_contents(limit=100000)]
+    else:
+        ids = payload.get("ids") or []
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise HTTPException(status_code=400, detail="ids must be a list of strings")
     if not ids:
         return {"ok": True, "cancelled": 0, "removed": 0}
 
