@@ -33,6 +33,18 @@ def rig(tmp_path, monkeypatch):
 
     auth._sessions.clear()
     auth._failures.clear()
+
+    # asyncio primitives bind to the first event loop that uses them, and
+    # every test gets a fresh loop, so a module-level lock carried over from
+    # an earlier test raises "bound to a different event loop". Rebuild the
+    # feeder's cross-test state here rather than reloading the module, which
+    # would leave other modules holding the old object.
+    import asyncio
+    from app import feeder
+    feeder.CYCLE_LOCK = asyncio.Lock()
+    feeder.TRANSFERS.clear()
+    feeder.BATCH = None
+
     db.connect()
 
     yield Rig(tmp_path, outbox, monkeypatch)

@@ -33,6 +33,10 @@ SPEC: dict[str, tuple[type, object]] = {
     "paused": (bool, False),
     "outbox_max_gb": (int, config.OUTBOX_MAX_BYTES // config.GB),
     "max_batch_files": (int, config.MAX_BATCH_FILES),
+    # How many files move at once, counted separately so a 4 GB video
+    # cannot hold up a queue of photos behind it.
+    "photo_workers": (int, 3),
+    "video_workers": (int, 1),
     "include_video": (bool, config.INCLUDE_VIDEO),
     "max_asset_mb": (int, config.MAX_ASSET_BYTES // (1024 * 1024)),
     "ongoing_enabled": (bool, True),
@@ -62,6 +66,8 @@ class Settings:
     paused: bool
     outbox_max_gb: int
     max_batch_files: int
+    photo_workers: int
+    video_workers: int
     include_video: bool
     max_asset_mb: int
     ongoing_enabled: bool
@@ -78,6 +84,13 @@ class Settings:
     syncthing_api_key: str
     syncthing_folder: str
     backup_enabled: bool
+
+    @property
+    def lanes(self) -> dict:
+        """Concurrent downloads per kind, floored at one so a lane set to
+        zero cannot silently stop that kind moving at all."""
+        return {"IMAGE": max(1, self.photo_workers),
+                "VIDEO": max(1, self.video_workers)}
 
     @property
     def outbox_max_bytes(self) -> int:
