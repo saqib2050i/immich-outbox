@@ -230,6 +230,29 @@
   .tool p{font-size:12px;color:var(--dim);margin:0 0 4px}
   .tool p.keeps{color:var(--done)}
   .tool .act{margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  /* ---- queue ---- */
+  .queue{margin:28px 0}
+  .qnote{color:var(--dim);font-size:13px;margin:4px 0 0;max-width:62ch}
+  .qsummary{color:var(--dim);font-size:13px;align-self:center;margin-left:auto}
+  .qpaused{border-left:3px solid var(--alarm);padding:8px 12px;margin:12px 0;
+           color:var(--dim);font-size:13px;background:var(--panel)}
+  .qprogress{display:flex;align-items:center;gap:8px;margin:12px 0;
+             font-size:13px;color:var(--transit);font-family:var(--mono)}
+  .spin{width:9px;height:9px;border-radius:50%;background:var(--transit);
+        animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+  @media (prefers-reduced-motion:reduce){.spin{animation:none;opacity:.7}}
+  .qlist{list-style:none;margin:12px 0 0;padding:0;
+         border-top:1px solid var(--rule)}
+  .qlist li{display:flex;align-items:center;gap:10px;padding:7px 2px;
+            border-bottom:1px solid var(--rule);font-size:13px}
+  .qlist input[type=checkbox]{flex:none;margin:0}
+  .qlist .qname{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;
+                white-space:nowrap;flex:1 1 auto;min-width:0}
+  .qlist .qmeta{color:var(--dim);flex:none;font-variant-numeric:tabular-nums}
+  .qlist .qgone{color:var(--done);flex:none;font-size:12px}
+  .qlist button{flex:none;padding:2px 8px;font-size:12px}
+  .qlist .empty{color:var(--dim);padding:14px 2px;border-bottom:none}
   .tool button.danger{border-color:var(--alarm);color:var(--alarm)}
   .tool button.danger:hover{background:var(--alarm);color:var(--paper)}
   .tool .confirm{font-size:12px;color:var(--alarm)}
@@ -327,6 +350,7 @@
 
 <nav class="jump">
   <a href="#top">Overview</a>
+  <a href="#nav-queue">Queue</a>
   <a href="#nav-timeline">Timeline</a>
   <a href="#nav-library">Library</a>
   <a href="#nav-attention" id="navAttention">Attention</a>
@@ -389,6 +413,29 @@
     <div class="checks" id="checks"></div>
   </div>
 </div>
+
+<section class="queue" id="nav-queue">
+  <h2>Queue</h2>
+  <p class="qnote" id="qNote">Files written to the outbox, waiting for the phone
+    to take them. They leave on their own when Google Photos has them.</p>
+
+  <div class="controls">
+    <button id="btnPause">Pause sending</button>
+    <button id="btnCancelSel" disabled>Cancel selected</button>
+    <span class="qsummary" id="qSummary"></span>
+  </div>
+
+  <div class="qprogress" id="qProgress" hidden>
+    <span class="spin"></span><span id="qProgressText">—</span>
+  </div>
+
+  <div class="qpaused" id="qPaused" hidden>
+    Sending is paused. Files already in the outbox still go to the phone —
+    they cannot be recalled, and removing them would be read as a backup.
+  </div>
+
+  <ol class="qlist" id="qList"></ol>
+</section>
 
 <section class="attention" id="nav-attention">
   <h2>Needs attention</h2>
@@ -703,6 +750,7 @@ async function render(){
   rowProblem.hidden = !d.outbox.problem;
   oProblem.textContent = d.outbox.problem || "";
   renderSyncthing();
+  renderQueue();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
@@ -1267,6 +1315,130 @@ async function sendMonth(month, group, btn, host, opener){
     btn.textContent = label;
   } finally { btn.disabled = false; }
 }
+
+// ---- queue ----------------------------------------------------------
+// Selection survives a re-render, which matters because the stream pushes
+// an update every time a file lands: a list that rebuilt itself and lost
+// your ticks would be impossible to use while a batch is running.
+const qSelected = new Set();
+
+function qSetBusy(on){
+  btnPause.disabled = on;
+  btnCancelSel.disabled = on || qSelected.size === 0;
+}
+
+async function renderQueue(){
+  let q;
+  try { q = await (await fetch("/api/queue")).json(); } catch { return; }
+
+  btnPause.textContent = q.paused ? "Resume sending" : "Pause sending";
+  qPaused.hidden = !q.paused;
+
+  if (q.progress){
+    qProgress.hidden = false;
+    const n = q.progress.total ? ` (${q.progress.done + 1} of ${q.progress.total})` : "";
+    qProgressText.textContent = "Fetching " + q.progress.filename + n;
+  } else {
+    qProgress.hidden = true;
+  }
+
+  qSummary.textContent = q.count
+    ? `${fmtNum(q.count)} file(s) · ${fmtBytes(q.bytes)}`
+    : "";
+
+  // Drop selections for files that have since left the outbox.
+  const live = new Set(q.items.map(i => i.id));
+  [...qSelected].forEach(id => { if (!live.has(id)) qSelected.delete(id); });
+
+  qList.innerHTML = "";
+  if (!q.items.length){
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = q.paused
+      ? "Nothing in the outbox. Sending is paused."
+      : "Nothing in the outbox — everything sent so far has been backed up.";
+    qList.appendChild(li);
+    qSetBusy(false);
+    return;
+  }
+
+  q.items.forEach(item => {
+    const li = document.createElement("li");
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = qSelected.has(item.id);
+    box.setAttribute("aria-label", "Select " + item.filename);
+    box.onchange = () => {
+      box.checked ? qSelected.add(item.id) : qSelected.delete(item.id);
+      btnCancelSel.disabled = qSelected.size === 0;
+    };
+
+    const name = document.createElement("span");
+    name.className = "qname";
+    name.textContent = item.outbox_name || item.filename;
+    name.title = item.filename;
+
+    const meta = document.createElement("span");
+    meta.className = "qmeta";
+    meta.textContent = fmtBytes(item.size) + " · " + ago(item.sent_at);
+
+    li.append(box, name, meta);
+
+    if (!item.on_disk){
+      // The phone took it; the next check will mark it backed up.
+      const gone = document.createElement("span");
+      gone.className = "qgone";
+      gone.textContent = "taken";
+      li.append(gone);
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = "Cancel";
+      btn.onclick = () => cancelQueued([item.id]);
+      li.append(btn);
+    }
+    qList.appendChild(li);
+  });
+  qSetBusy(false);
+}
+
+async function cancelQueued(ids){
+  if (!ids.length) return;
+  const many = ids.length > 1 ? `${ids.length} files` : "this file";
+  if (!confirm(
+      `Take ${many} out of the outbox?\n\n` +
+      "They go back to the waiting list and will be sent again later. " +
+      "If Google Photos has already taken a copy from the phone, cancelling " +
+      "here will not remove it from there.")) return;
+
+  qSetBusy(true);
+  try {
+    const r = await fetch("/api/queue/cancel", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids})
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    ids.forEach(id => qSelected.delete(id));
+  } catch (e) {
+    alert("Could not cancel: " + e.message);
+  } finally {
+    await tick();
+  }
+}
+
+btnCancelSel.onclick = () => cancelQueued([...qSelected]);
+
+btnPause.onclick = async () => {
+  qSetBusy(true);
+  try {
+    await fetch("/api/pause", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({})
+    });
+  } finally {
+    await tick();
+  }
+};
 
 let syncAt = 0;
 async function renderSyncthing(){
