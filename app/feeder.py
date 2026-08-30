@@ -218,8 +218,11 @@ async def top_up(used: int) -> int:
 
     written = []
 
-    for row in rows:
+    for index, row in enumerate(rows, 1):
         asset_id, filename = row["id"], row["filename"]
+        # Published before the bytes move, so the dashboard can name the file
+        # it is working on instead of going quiet for the length of a batch.
+        db.set_progress(filename=filename, done=index - 1, total=len(rows))
         # Reserve the name first, so a collision is resolved before any bytes
         # move and the ledger always knows what is on disk.
         dest = os.path.join(config.OUTBOX_DIR,
@@ -256,6 +259,12 @@ async def top_up(used: int) -> int:
             os.chmod(dest, 0o664)
             tmp = None
             written.append(asset_id)
+            # Marked the moment the file lands, not once the whole batch is
+            # done. Batching the update meant a queue of 40 appeared to the
+            # dashboard as nothing at all for minutes and then a jump of 40;
+            # every write bumps the ledger revision, which is what the event
+            # stream watches.
+            db.mark_queued([asset_id])
         except Exception as exc:  # noqa: BLE001
             db.mark_failed(asset_id, str(exc))
             db.log("error", f"{filename}: {exc}")
@@ -263,8 +272,10 @@ async def top_up(used: int) -> int:
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)
 
+    db.clear_progress()
     if written:
-        db.mark_queued(written)
+        # One log line for the batch: the per-file signal is the state change
+        # itself, and forty lines an hour would bury everything else.
         db.log("queue", f"added {len(written)} file(s) to the outbox")
     return len(written)
 
@@ -306,6 +317,36 @@ def empty_outbox() -> tuple[int, list[str]]:
     return removed, db.ids_for_outbox_names(gone)
 
 
+# How often the outbox is re-read looking for files the phone has cleared.
+# The feed cycle is minutes apart because it talks to Immich; noticing a
+# departure costs one listdir, so it can happen far more often.
+WATCH_INTERVAL_SECONDS = 15
+
+
+async def watch() -> None:
+    """Notice files leaving the outbox promptly.
+
+    Confirmation used to arrive only on the feed cycle, so a phone that
+    cleared a batch two minutes after the cycle ran left the dashboard
+    showing stale numbers for the next eight. This reads the directory and
+    nothing else -- no Immich, no downloads -- so it is cheap enough to run
+    continuously.
+
+    It never waits for the cycle lock. If a feed is in progress it simply
+    skips this tick: that feed is already publishing per-file updates, and
+    blocking here would only queue up redundant passes behind it.
+    """
+    while True:
+        await asyncio.sleep(WATCH_INTERVAL_SECONDS)
+        try:
+            if CYCLE_LOCK.locked():
+                continue
+            async with CYCLE_LOCK:
+                reconcile()
+        except Exception as exc:  # noqa: BLE001
+            db.log("error", f"outbox watch error: {exc}")
+
+
 async def housekeeping() -> None:
     """The chores that have to happen whether or not anyone is looking.
 
@@ -325,6 +366,46 @@ async def housekeeping() -> None:
             backup.create()
     except Exception as exc:  # noqa: BLE001
         db.log("error", f"scheduled backup failed: {exc}")
+
+
+def cancel(ids: list[str]) -> dict:
+    """Pull specific files back out of the outbox.
+
+    This deletes from the outbox, which the service otherwise never does.
+    It is safe for the same reason `empty_outbox()` is: the ledger rows go
+    back to `pending` in the same breath, so the files' absence is never
+    read as a Google Photos confirmation. The order matters -- ledger first,
+    then the files -- because a crash between the two must leave rows that
+    say 'not sent' rather than rows that say 'sent' with nothing on disk.
+
+    The caveat this cannot solve: if Google Photos has already taken a copy
+    from the phone, cancelling it here does not remove it from there, and
+    the asset will be sent again later as a duplicate. Cancelling is for
+    files still waiting, not for undoing an upload.
+    """
+    if not ids:
+        return {"cancelled": 0, "removed": 0}
+
+    names = db.outbox_names_for(ids)
+    cancelled = db.cancel_queued(ids)
+
+    removed = 0
+    for asset_id in ids:
+        candidates = [names[asset_id]] if asset_id in names else []
+        # Legacy files carry the id in the name instead of the ledger.
+        candidates += [n for n in _real_names()
+                       if n.startswith(f"{asset_id}__")]
+        for name in candidates:
+            try:
+                os.remove(os.path.join(config.OUTBOX_DIR, name))
+                removed += 1
+            except OSError:
+                continue
+
+    if cancelled:
+        db.log("cancel", f"{cancelled} file(s) taken out of the queue and "
+                         f"put back in the pending list")
+    return {"cancelled": cancelled, "removed": removed}
 
 
 async def run() -> None:

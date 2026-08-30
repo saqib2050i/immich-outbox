@@ -180,6 +180,74 @@ def set_meta(k: str, v: str) -> None:
         _bump()
 
 
+def set_progress(filename: str, done: int, total: int) -> None:
+    """What the feeder is working on right now, for the dashboard."""
+    import json
+    set_meta("feed_progress", json.dumps(
+        {"filename": filename, "done": done, "total": total, "at": now()}))
+
+
+def clear_progress() -> None:
+    set_meta("feed_progress", "")
+
+
+def progress() -> dict | None:
+    import json
+    raw = get_meta("feed_progress")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def queue_contents(limit: int = 500) -> list[dict]:
+    """What is in the outbox right now, oldest first.
+
+    'queued' is the state that means a file has been written and is waiting
+    on the phone, so this is the live queue: what Syncthing is carrying,
+    what Google Photos has yet to take, and what Smart Storage has yet to
+    clear.
+    """
+    rows = connect().execute(
+        """SELECT id, filename, outbox_name, size, kind, taken_at, sent_at,
+                  width, height, duration, forced
+           FROM assets
+           WHERE state = 'queued'
+           ORDER BY sent_at ASC, filename ASC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cancel_queued(ids: list[str]) -> int:
+    """Take these back out of the queue.
+
+    Deliberately 'pending', never 'confirmed': the file is about to be
+    deleted from the outbox by the caller, and if that disappearance were
+    read as a Google Photos confirmation the asset would be recorded as
+    backed up when it is not. Putting it back to pending means the worst
+    case is that it is sent again later.
+    """
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"""UPDATE assets SET state='pending', seen_on_phone=0, attempts=0,
+                                  sent_at=NULL, confirmed_at=NULL,
+                                  last_error=NULL, forced=0
+                WHERE id IN ({marks}) AND state='queued'""",
+            ids,
+        )
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
 def upsert_assets(rows: list[dict]) -> int:
     """Insert newly discovered Immich assets. Never touches existing rows,
     so a confirmed asset is never re-queued."""
