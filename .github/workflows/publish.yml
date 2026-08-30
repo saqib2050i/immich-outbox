@@ -49,6 +49,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A version a person can compare at a glance. Without this the image
+      # reported its branch name ("main") and a commit hash, which answers
+      # "which commit" but not "am I on the latest?".
+      #
+      # A release tag wins when there is one; otherwise the workflow run
+      # number, which only ever goes up.
+      - id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=build ${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -72,6 +87,6 @@ jobs:
           cache-to: type=gha,mode=max
           # So the dashboard can show which image is running.
           build-args: |
-            APP_VERSION=${{ github.ref_name }}
+            APP_VERSION=${{ steps.version.outputs.name }}
             APP_REVISION=${{ github.sha }}
-            APP_BUILT_AT=${{ github.event.repository.updated_at }}
+            APP_BUILT_AT=${{ steps.version.outputs.built_at }}

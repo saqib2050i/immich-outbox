@@ -122,3 +122,30 @@ async def test_healthz_reports_the_build_without_a_session(rig, monkeypatch):
 async def test_the_build_stamp_falls_back_to_dev(rig):
     from app import config
     assert config.APP_VERSION == "dev", "an unstamped build should say so"
+
+
+# ---- the version has to mean something to a person ----------------------
+
+@pytest.mark.parametrize("version,revision", [
+    ("build 128", "9f3c1ab"),
+    ("v1.4.0", "9f3c1ab"),
+    ("dev", ""),
+])
+async def test_the_build_stamp_is_reported_verbatim(rig, monkeypatch, version, revision):
+    """The server passes the stamp through; the dashboard does the wording."""
+    from app import config, main
+    monkeypatch.setattr(config, "APP_VERSION", version)
+    monkeypatch.setattr(config, "APP_REVISION", revision)
+    monkeypatch.setattr(config, "APP_BUILT_AT", "2026-08-30T09:15:00Z")
+
+    d = await main.status()
+    assert d["app"] == {"version": version, "revision": revision,
+                        "built_at": "2026-08-30T09:15:00Z"}
+
+
+async def test_a_long_commit_sha_is_shortened(rig, monkeypatch):
+    from app import config, main
+    monkeypatch.setattr(config, "APP_REVISION", "9f3c1ab7d2e5c4b1a0987654321fedcba9876543")
+    d = await main.status()
+    assert d["app"]["revision"] == "9f3c1ab"
+    assert len(d["app"]["revision"]) == 7

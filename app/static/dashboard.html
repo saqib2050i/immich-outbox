@@ -475,7 +475,7 @@
     <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span>
       <span id="liveBadge" style="opacity:.55">polling</span></span>
   </h1>
-  <p class="build" id="build" title="The image this container was built from"></p>
+  <p class="build" id="build"></p>
 </header>
 
 <div class="banner" id="banner" role="status">
@@ -1970,23 +1970,51 @@ async function renderSyncthing(){
   rowSync.classList.toggle("bad", !!d.error);
 }
 
-// Which image is running. Compare it against the latest tag on GitHub to
-// tell whether a pull is needed -- the container cannot see the registry.
+// Which image is running.
+//
+// The question a person is actually asking is "am I out of date?", so lead
+// with age -- "built yesterday" answers it, "c8f9997" does not. The commit
+// and the exact timestamp stay available on hover for when the answer is
+// "no, and I want to know exactly what I have".
+const buildAge = iso => {
+  const t = new Date(iso);
+  if (isNaN(t)) return "";
+  // Calendar days, not elapsed hours: an image built at 09:00 yesterday is
+  // "yesterday" to a person even though it is only twenty hours old.
+  const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((midnight(new Date()) - midnight(t)) / 86400000);
+  if (days <= 0) return "built today";
+  if (days === 1) return "built yesterday";
+  if (days < 30) return `built ${days} days ago`;
+  if (days < 60) return "built last month";
+  return `built ${Math.floor(days / 30)} months ago`;
+};
+
 function renderBuild(a){
   if (!a){ build.textContent = ""; return; }
-  const bits = [];
-  bits.push(a.version === "dev" ? "running from source" : "version " + a.version);
-  if (a.revision) bits.push(a.revision);
-  if (a.built_at){
-    const d = new Date(a.built_at);
-    if (!isNaN(d)) bits.push("built " + d.toISOString().slice(0, 10));
-  }
+
   build.innerHTML = "";
-  build.append(document.createTextNode(bits[0]));
-  bits.slice(1).forEach(x => {
-    build.append(document.createTextNode(" · "));
-    const b = document.createElement("b"); b.textContent = x; build.append(b);
-  });
+  if (a.version === "dev"){
+    build.textContent = "running from source";
+    build.title = a.revision || "";
+    return;
+  }
+
+  const name = document.createElement("b");
+  // "build 128" already reads as a label; a release tag needs no prefix.
+  name.textContent = a.version;
+  build.append(name);
+
+  const age = buildAge(a.built_at);
+  if (age){
+    build.append(document.createTextNode(" · " + age));
+  }
+
+  // Everything precise, one hover away.
+  const exact = [];
+  if (a.revision) exact.push("commit " + a.revision);
+  if (a.built_at) exact.push(a.built_at.replace("T", " ").replace("Z", " UTC"));
+  build.title = exact.join("  ·  ");
 }
 
 function renderAlerts(d){
