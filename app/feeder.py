@@ -19,12 +19,39 @@ The service never deletes a file from the outbox. Only the phone does.
 import asyncio
 import os
 import tempfile
+import time
 
 from . import alerts, backup, config, db, immich, settings
 
 # Held while a cycle runs, so a reset from the dashboard cannot land halfway
 # through a download and leave the ledger disagreeing with the outbox.
 CYCLE_LOCK = asyncio.Lock()
+
+# Byte-level progress for the file being fetched right now.
+#
+# Deliberately in memory and NOT in the ledger. Every ledger write bumps the
+# revision and pushes an event to every open dashboard, so recording progress
+# there would turn one download into hundreds of broadcasts and redraws. This
+# is read by a cheap polling endpoint instead, and costs nothing when nobody
+# is looking.
+TRANSFER: dict | None = None
+
+
+def transfer_snapshot() -> dict | None:
+    """What is moving right now, or None when the feeder is idle."""
+    t = TRANSFER
+    if not t:
+        return None
+    snap = dict(t)
+    elapsed = max(time.monotonic() - snap.pop("started", 0.0), 0.001)
+    snap["seconds"] = round(elapsed, 1)
+    snap["bytes_per_second"] = snap["bytes"] / elapsed
+    if snap["size"] and snap["bytes_per_second"] > 0:
+        remaining = max(snap["size"] - snap["bytes"], 0)
+        snap["eta_seconds"] = round(remaining / snap["bytes_per_second"])
+    else:
+        snap["eta_seconds"] = None
+    return snap
 
 # Proof that the outbox we are looking at is the real one. See outbox_ready().
 MOUNT_MARKER = ".immich-outbox-mounted"
@@ -217,12 +244,23 @@ async def top_up(used: int) -> int:
         return 0
 
     written = []
+    global TRANSFER
+    batch_bytes = sum(r["size"] or 0 for r in rows)
+    batch_done_bytes = 0
 
     for index, row in enumerate(rows, 1):
         asset_id, filename = row["id"], row["filename"]
         # Published before the bytes move, so the dashboard can name the file
         # it is working on instead of going quiet for the length of a batch.
         db.set_progress(filename=filename, done=index - 1, total=len(rows))
+        TRANSFER = {
+            "filename": filename, "asset_id": asset_id,
+            "done": index - 1, "total": len(rows),
+            "bytes": 0, "size": row["size"] or 0,
+            "batch_bytes": batch_bytes,
+            "batch_done_bytes": batch_done_bytes,
+            "started": time.monotonic(),
+        }
         # Reserve the name first, so a collision is resolved before any bytes
         # move and the ledger always knows what is on disk.
         dest = os.path.join(config.OUTBOX_DIR,
@@ -247,6 +285,11 @@ async def top_up(used: int) -> int:
                 with os.fdopen(fd, "wb") as fh:
                     async for chunk in resp.aiter_bytes(1024 * 512):
                         fh.write(chunk)
+                        # A plain dict assignment: no lock, no database, no
+                        # event. Readers take a snapshot and tolerate it
+                        # being a chunk out of date.
+                        if TRANSFER is not None:
+                            TRANSFER["bytes"] += len(chunk)
             finally:
                 await resp.aclose()
                 await client.aclose()
@@ -259,6 +302,7 @@ async def top_up(used: int) -> int:
             os.chmod(dest, 0o664)
             tmp = None
             written.append(asset_id)
+            batch_done_bytes += size
             # Marked the moment the file lands, not once the whole batch is
             # done. Batching the update meant a queue of 40 appeared to the
             # dashboard as nothing at all for minutes and then a jump of 40;
@@ -277,6 +321,7 @@ async def top_up(used: int) -> int:
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)
 
+    TRANSFER = None
     db.clear_progress()
     if written:
         # One log line for the batch: the per-file signal is the state change

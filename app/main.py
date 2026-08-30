@@ -164,6 +164,9 @@ async def status():
         "alerts": alerts.evaluate(),
         "last_backup": db.get_meta("last_backup"),
         "revision": db.revision(),
+        "app": {"version": config.APP_VERSION,
+                "revision": config.APP_REVISION[:7],
+                "built_at": config.APP_BUILT_AT},
         "auth": {"must_change": auth.must_change(),
                  "default_password": auth.is_default_password()},
     }
@@ -238,6 +241,18 @@ async def events():
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     })
+
+
+@app.get("/api/progress")
+async def progress():
+    """The file being fetched right now, byte by byte.
+
+    Its own endpoint, and its own polling loop in the dashboard, because
+    this is the one thing that changes continuously. Routing it through the
+    ledger would push an event per chunk to every open browser; reading it
+    here touches no database at all.
+    """
+    return {"transfer": feeder.transfer_snapshot()}
 
 
 @app.get("/api/queue")
@@ -629,7 +644,12 @@ async def refresh():
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "immich": await immich.ping()}
+    # Version is here too so a deploy can be checked with curl, without a
+    # session: this endpoint is deliberately outside the auth gate.
+    return {"ok": True, "immich": await immich.ping(),
+            "version": config.APP_VERSION,
+            "revision": config.APP_REVISION[:7],
+            "built_at": config.APP_BUILT_AT}
 
 
 @app.get("/")
