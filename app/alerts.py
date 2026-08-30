@@ -95,12 +95,28 @@ def evaluate() -> list[dict]:
     else:
         db.set_meta("outbox_full_since", "")
 
-    # 5. Failures piling up.
+    # 5. Failures piling up. Say what kind, because the fix is different:
+    #    a 404 lives in Immich's storage, not in this service's plumbing.
     if counts["failed"] >= cfg.alert_failed_count:
+        kinds = {b["kind"]: b["total"] for b in db.failure_breakdown()}
+        advice = []
+        if kinds.get("missing"):
+            advice.append(f"{kinds['missing']} originals are missing from "
+                          "Immich itself (404) — check for an offline or "
+                          "moved external library in Immich; no retry here "
+                          "can fix those")
+        if kinds.get("unreachable"):
+            advice.append(f"{kinds['unreachable']} failed reaching Immich — "
+                          "check the address and that the server is up")
+        if kinds.get("truncated"):
+            advice.append(f"{kinds['truncated']} arrived truncated — check "
+                          "disk space on the outbox volume")
+        if kinds.get("other"):
+            advice.append(f"{kinds['other']} failed for other reasons — see "
+                          "the file list for details")
         out.append({"key": "failures",
                     "title": f"{counts['failed']} downloads failed",
-                    "message": "Check the Immich connection and the outbox "
-                               "folder permissions."})
+                    "message": ". ".join(advice) + "."})
     return out
 
 

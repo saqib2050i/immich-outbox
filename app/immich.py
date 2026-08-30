@@ -238,6 +238,15 @@ async def list_assets(taken_after: str | None = None) -> AsyncIterator[list[dict
             page = int(nxt)
 
 
+class OriginalMissing(RuntimeError):
+    """Immich knows the asset but cannot produce its file.
+
+    Search returns the asset, the original route 404s. In practice this is
+    an external library whose files moved or went offline, or storage that
+    lost the original. No number of retries fixes it, so the caller should
+    record it as permanent rather than burning the retry budget."""
+
+
 async def stream_original(asset_id: str):
     """Open a streaming response for the untouched original file.
 
@@ -250,9 +259,14 @@ async def stream_original(asset_id: str):
     resp = await client.send(req, stream=True)
     if resp.status_code >= 400:
         await resp.aread()
+        status = resp.status_code
         msg = describe_error(resp)
         await resp.aclose()
         await client.aclose()
+        if status == 404:
+            raise OriginalMissing(
+                "original missing from Immich storage (HTTP 404) — the file "
+                "is likely offline or moved out of an external library")
         raise RuntimeError(msg)
     return resp, client
 

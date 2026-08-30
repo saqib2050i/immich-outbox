@@ -265,6 +265,11 @@ async def top_up(used: int) -> int:
             # every write bumps the ledger revision, which is what the event
             # stream watches.
             db.mark_queued([asset_id])
+        except immich.OriginalMissing as exc:
+            # Retrying cannot conjure the file back; spend the whole retry
+            # budget now instead of failing identically five times.
+            db.mark_failed(asset_id, str(exc), permanent=True)
+            db.log("error", f"{filename}: {exc}")
         except Exception as exc:  # noqa: BLE001
             db.mark_failed(asset_id, str(exc))
             db.log("error", f"{filename}: {exc}")
