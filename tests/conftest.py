@@ -35,15 +35,28 @@ def rig(tmp_path, monkeypatch):
     auth._failures.clear()
     db.connect()
 
-    yield Rig(tmp_path, outbox)
+    yield Rig(tmp_path, outbox, monkeypatch)
 
     db.close()
 
 
 class Rig:
-    def __init__(self, root, outbox):
+    def __init__(self, root, outbox, monkeypatch):
         self.root = root
         self.outbox = outbox
+        self._monkeypatch = monkeypatch
+
+    def cap(self, nbytes: int) -> None:
+        """Set the outbox cap in bytes.
+
+        The setting is whole gigabytes, which a test cannot use to fence in
+        a handful of hundred-byte files. The cap is the flow control, so a
+        test that wants to constrain a fill has to be able to set it.
+        """
+        from app import settings
+        self._monkeypatch.setattr(
+            settings.Settings, "outbox_max_bytes",
+            property(lambda self: nbytes))
 
     def files(self) -> set[str]:
         """Delivered files in the outbox, ignoring markers and partials."""

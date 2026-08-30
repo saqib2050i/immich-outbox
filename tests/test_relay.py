@@ -21,7 +21,9 @@ async def cycle(monkeypatch, budget_files=None):
 async def test_fill_drain_refill_never_resends(rig, monkeypatch):
     from app import db, settings
 
-    settings.save({"outbox_max_gb": 1, "max_batch_files": 3})
+    # Three 100-byte files fit; the cap is what stops the fourth.
+    rig.cap(300)
+    settings.save({"max_batch_files": 3})
     db.upsert_assets([asset(i, size=100) for i in range(9)])
 
     added = await cycle(monkeypatch)
@@ -177,3 +179,84 @@ async def test_legacy_prefixed_names_still_resolve(rig, monkeypatch):
     (rig.outbox / f"{uuid}__IMG_0000.jpg").unlink()
     feeder.reconcile()
     assert db.counts()["confirmed"] == 1
+
+
+async def test_the_cap_fills_the_outbox_not_the_batch_size(rig, monkeypatch):
+    """max_batch_files bounds a claim, not a cycle.
+
+    With a 16 GB outbox and 4 MB photos, a hard limit of forty files put
+    160 MB in it and left the rest idle until the next cycle ten minutes
+    later. The cap is the flow control; it decides when to stop.
+    """
+    from app import db, feeder, immich, settings
+
+    rig.cap(1000)                       # ten 100-byte files
+    settings.save({"max_batch_files": 3})
+    db.upsert_assets([asset(i, size=100) for i in range(25)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    _, used = feeder.reconcile()
+    added = await feeder.top_up(used)
+
+    assert added == 10, "stopped at the batch size instead of filling the cap"
+    assert rig.used() <= 1000
+    assert len(rig.files()) == 10
+
+
+async def test_filling_still_never_exceeds_the_cap(rig, monkeypatch):
+    from app import db, feeder, immich, settings
+
+    rig.cap(1000)
+    settings.save({"max_batch_files": 4})
+    db.upsert_assets([asset(i, size=300) for i in range(20)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 3        # 3 x 300 = 900, a fourth would be 1200
+    assert rig.used() <= 1000
+
+
+async def test_pausing_stops_a_long_fill_between_files(rig, monkeypatch):
+    """A fill can now run for a whole outbox, so pause must land inside it
+    rather than at the end."""
+    from app import db, feeder, immich, settings
+
+    rig.cap(10_000)
+    settings.save({"max_batch_files": 50})
+    db.upsert_assets([asset(i, size=100) for i in range(40)])
+
+    real = fake_download()
+    seen = {"n": 0}
+
+    async def pause_after_three(asset_id):
+        seen["n"] += 1
+        if seen["n"] == 3:
+            settings.save({"paused": True})
+        return await real(asset_id)
+
+    monkeypatch.setattr(immich, "stream_original", pause_after_three)
+    _, used = feeder.reconcile()
+    added = await feeder.top_up(used)
+
+    assert added == 3, f"pause was not honoured mid-fill (wrote {added})"
+    assert db.counts()["queued"] == 3
+
+
+async def test_a_batch_that_writes_nothing_does_not_spin(rig, monkeypatch):
+    """If every claim fails, keep claiming and it would loop forever."""
+    from app import db, feeder, immich, settings
+
+    rig.cap(10_000)
+    settings.save({"max_batch_files": 5})
+    db.upsert_assets([asset(i, size=100) for i in range(30)])
+
+    calls = {"n": 0}
+
+    async def always_fails(asset_id):
+        calls["n"] += 1
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(immich, "stream_original", always_fails)
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 0
+    assert calls["n"] == 5, "kept claiming after a claim that wrote nothing"
