@@ -304,6 +304,10 @@
   .qpname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;
           min-width:0}
   .qprate{color:var(--dim);flex:none;font-variant-numeric:tabular-nums}
+  .qpfile + .qpfile{margin-top:8px}
+  .qpkind{flex:none;font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+          color:var(--dim);border:1px solid var(--rule);border-radius:3px;
+          padding:0 5px}
   .qpsub{margin-top:9px;color:var(--dim);font-size:12px}
   .qpsub span:first-child{flex:1 1 auto}
   .qpbar{height:6px;background:var(--rule);border-radius:3px;overflow:hidden;
@@ -542,12 +546,7 @@
   </div>
 
   <div class="qprogress" id="qProgress" hidden>
-    <div class="qpline">
-      <span class="spin"></span>
-      <span class="qpname" id="qProgressText">—</span>
-      <span class="qprate" id="qProgressRate"></span>
-    </div>
-    <div class="qpbar"><i id="qpFile" style="width:0%"></i></div>
+    <div id="qpFiles"></div>
     <div class="qpline qpsub">
       <span id="qpBatchText">—</span>
       <span class="qprate" id="qpBatchBytes"></span>
@@ -571,7 +570,8 @@
      and anything dismissed can be restored below.</p>
 
   <div class="pbar">
-    <button id="btnDismissBacklog" class="danger" hidden>Dismiss everything waiting</button>
+    <button id="btnDismissBacklog" class="danger" hidden>Dismiss what is queued to send</button>
+    <button id="btnDismissAllWaiting" class="danger" hidden>Dismiss everything waiting</button>
     <span class="psummary" id="blSummary"></span>
   </div>
 
@@ -670,8 +670,18 @@
       <input type="number" id="s_max_asset_mb" min="1">
     </div>
     <div class="field">
-      <label for="s_max_batch_files">Files per cycle</label>
+      <label for="s_max_batch_files">Files claimed at a time</label>
       <input type="number" id="s_max_batch_files" min="1" max="200">
+      <small>How many the feeder picks up per query. It keeps going until the
+        outbox is full, so this is not a limit on how much a cycle sends.</small>
+
+      <label for="s_photo_workers">Photos at once</label>
+      <input type="number" id="s_photo_workers" min="1" max="16">
+
+      <label for="s_video_workers">Videos at once</label>
+      <input type="number" id="s_video_workers" min="1" max="8">
+      <small>Separate lanes, so one large video cannot hold up the photos
+        behind it.</small>
     </div>
     <div class="field">
       <label for="s_include_video">Include videos</label>
@@ -1575,17 +1585,7 @@ async function renderQueue(){
   btnPause.textContent = q.paused ? "Resume sending" : "Pause sending";
   qPaused.hidden = !q.paused;
 
-  // The bars are driven by pollTransfer(), which runs far more often than
-  // this does. Only fall back to the coarse per-file state when there is no
-  // live transfer to show.
-  if (!lastTransfer && q.progress){
-    paintTransfer({filename: q.progress.filename, done: q.progress.done,
-                   total: q.progress.total, bytes: 0, size: 0,
-                   batch_bytes: 0, batch_done_bytes: 0});
-  } else if (!lastTransfer && !q.progress){
-    qProgress.hidden = true;
-  }
-
+  // The bars belong to pollTransfer(), which runs far more often than this.
   qSummary.textContent = q.count
     ? `${fmtNum(q.count)} file(s) \u00b7 ${fmtBytes(q.bytes)}`
     : "";
@@ -1765,32 +1765,64 @@ const fmtEta = s => {
   return (s / 3600).toFixed(1) + " h left";
 };
 
-function paintTransfer(t){
-  qProgress.hidden = false;
+function paintTransfer(state){
+  const list = state.transfers || [];
+  const batch = state.batch;
+  qProgress.hidden = list.length === 0 && !batch;
+  if (qProgress.hidden) return;
 
-  const pct = t.size ? Math.min(100, (t.bytes / t.size) * 100) : 0;
-  qpFile.style.width = pct + "%";
-  qProgressText.textContent = t.filename;
+  // One row per file in flight. Photos and videos run in separate lanes, so
+  // there is usually more than one, and a slow video must not look like the
+  // only thing happening.
+  qpFiles.innerHTML = "";
+  list.forEach(t => {
+    const row = document.createElement("div");
+    row.className = "qpfile";
 
-  const bits = [];
-  if (t.size) bits.push(fmtBytes(t.bytes) + " of " + fmtBytes(t.size)
-                        + " · " + Math.round(pct) + "%");
-  const rate = fmtRate(t.bytes_per_second);
-  if (rate) bits.push(rate);
-  const eta = fmtEta(t.eta_seconds);
-  if (eta) bits.push(eta);
-  qProgressRate.textContent = bits.join(" · ");
+    const line = document.createElement("div");
+    line.className = "qpline";
+    const spin = document.createElement("span"); spin.className = "spin";
+    const kind = document.createElement("span");
+    kind.className = "qpkind"; kind.textContent = t.kind === "VIDEO" ? "video" : "photo";
+    const name = document.createElement("span");
+    name.className = "qpname"; name.textContent = t.filename; name.title = t.filename;
+    const rate = document.createElement("span");
+    rate.className = "qprate";
 
-  qpBatchText.textContent = t.total
-    ? `File ${Math.min((t.done || 0) + 1, t.total)} of ${t.total} in this batch`
-    : "Fetching";
+    const pct = t.size ? Math.min(100, (t.bytes / t.size) * 100) : 0;
+    const bits = [];
+    if (t.size) bits.push(fmtBytes(t.bytes) + " of " + fmtBytes(t.size)
+                          + " · " + Math.round(pct) + "%");
+    const r = fmtRate(t.bytes_per_second);
+    if (r) bits.push(r);
+    const eta = fmtEta(t.eta_seconds);
+    if (eta) bits.push(eta);
+    rate.textContent = bits.join(" · ");
 
-  const bBytes = t.batch_bytes || 0;
-  const bDone = (t.batch_done_bytes || 0) + (t.bytes || 0);
-  qpBatch.style.width = (bBytes ? Math.min(100, (bDone / bBytes) * 100) : 0) + "%";
-  qpBatchBytes.textContent = bBytes
-    ? fmtBytes(bDone) + " of " + fmtBytes(bBytes)
-    : "";
+    line.append(spin, kind, name, rate);
+    const bar = document.createElement("div");
+    bar.className = "qpbar";
+    const fill = document.createElement("i");
+    fill.style.width = pct + "%";
+    bar.appendChild(fill);
+
+    row.append(line, bar);
+    qpFiles.appendChild(row);
+  });
+
+  if (batch){
+    qpBatchText.textContent =
+      `${fmtNum(batch.files_done)} of ${fmtNum(batch.files_total)} files in this batch`;
+    const pct = batch.bytes_total
+      ? Math.min(100, (batch.bytes_done / batch.bytes_total) * 100) : 0;
+    qpBatch.style.width = pct + "%";
+    qpBatchBytes.textContent =
+      fmtBytes(batch.bytes_done) + " of " + fmtBytes(batch.bytes_total);
+  } else {
+    qpBatchText.textContent = "";
+    qpBatchBytes.textContent = "";
+    qpBatch.style.width = "0%";
+  }
 }
 
 async function pollTransfer(){
@@ -1798,10 +1830,10 @@ async function pollTransfer(){
   let d;
   try { d = await (await fetch("/api/progress")).json(); } catch { return; }
 
-  const t = d.transfer;
-  if (t){
-    lastTransfer = t;
-    paintTransfer(t);
+  const busy = (d.transfers && d.transfers.length) || d.batch;
+  if (busy){
+    lastTransfer = d;
+    paintTransfer(d);
   } else if (lastTransfer){
     // Just finished: clear the bars and let the queue list catch up.
     lastTransfer = null;
@@ -1825,6 +1857,11 @@ async function renderBacklog(){
   const toSend = b.asked + b.eligible;
   btnDismissBacklog.hidden = toSend === 0;
   btnDismissBacklog.textContent = `Dismiss what is queued to send (${fmtNum(toSend)})`;
+  // With a recent ongoing_from almost everything is "resting", so scoping
+  // the only button to what is queued to send hid it entirely and left no
+  // way to clear the rest. This one always covers the whole waiting list.
+  btnDismissAllWaiting.hidden = b.total === 0;
+  btnDismissAllWaiting.textContent = `Dismiss everything waiting (${fmtNum(b.total)})`;
   blSummary.textContent = toSend || b.resting
     ? `${fmtNum(toSend)} on the way · ${fmtBytes(b.to_send_bytes)}`
       + (b.failed ? ` · ${fmtNum(b.failed)} failed` : "")
@@ -1946,6 +1983,21 @@ btnRestoreAll.onclick = async () => {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({all: true})});
   } finally { btnRestoreAll.disabled = false; tick(); }
+};
+
+btnDismissAllWaiting.onclick = async () => {
+  if (!confirm(
+      "Dismiss every file waiting to be sent?\n\nThat includes files outside " +
+      "your date windows — the whole waiting list, not just what is queued " +
+      "to go.\n\nNothing is sent, nothing is deleted, and files already in " +
+      "the outbox are untouched. They move to the Dismissed list below, " +
+      "where you can restore them at any time.")) return;
+  btnDismissAllWaiting.disabled = true;
+  try {
+    await fetch("/api/backlog/dismiss", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({all: true, scope: "all"})});
+  } finally { btnDismissAllWaiting.disabled = false; tick(); }
 };
 
 btnDismissBacklog.onclick = async () => {

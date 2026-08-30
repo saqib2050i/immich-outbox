@@ -27,31 +27,40 @@ from . import alerts, backup, config, db, immich, settings
 # through a download and leave the ledger disagreeing with the outbox.
 CYCLE_LOCK = asyncio.Lock()
 
-# Byte-level progress for the file being fetched right now.
+# Byte-level progress for the files being fetched right now.
 #
 # Deliberately in memory and NOT in the ledger. Every ledger write bumps the
 # revision and pushes an event to every open dashboard, so recording progress
 # there would turn one download into hundreds of broadcasts and redraws. This
 # is read by a cheap polling endpoint instead, and costs nothing when nobody
 # is looking.
-TRANSFER: dict | None = None
+TRANSFERS: dict = {}
+BATCH: dict | None = None
 
 
-def transfer_snapshot() -> dict | None:
-    """What is moving right now, or None when the feeder is idle."""
-    t = TRANSFER
-    if not t:
-        return None
-    snap = dict(t)
-    elapsed = max(time.monotonic() - snap.pop("started", 0.0), 0.001)
-    snap["seconds"] = round(elapsed, 1)
-    snap["bytes_per_second"] = snap["bytes"] / elapsed
-    if snap["size"] and snap["bytes_per_second"] > 0:
-        remaining = max(snap["size"] - snap["bytes"], 0)
-        snap["eta_seconds"] = round(remaining / snap["bytes_per_second"])
-    else:
-        snap["eta_seconds"] = None
-    return snap
+def transfer_snapshot() -> dict:
+    """Everything moving right now, plus how the whole claim is going."""
+    out = []
+    for t in list(TRANSFERS.values()):
+        snap = dict(t)
+        elapsed = max(time.monotonic() - snap.pop("started", 0.0), 0.001)
+        snap["seconds"] = round(elapsed, 1)
+        snap["bytes_per_second"] = snap["bytes"] / elapsed
+        if snap["size"] and snap["bytes_per_second"] > 0:
+            remaining = max(snap["size"] - snap["bytes"], 0)
+            snap["eta_seconds"] = round(remaining / snap["bytes_per_second"])
+        else:
+            snap["eta_seconds"] = None
+        out.append(snap)
+    out.sort(key=lambda s: (s["kind"] != "VIDEO", s["filename"]))
+
+    batch = None
+    if BATCH:
+        batch = dict(BATCH)
+        batch["bytes_done"] = batch["bytes_done"] + sum(
+            t["bytes"] for t in TRANSFERS.values())
+    return {"transfers": out, "batch": batch}
+
 
 # Proof that the outbox we are looking at is the real one. See outbox_ready().
 MOUNT_MARKER = ".immich-outbox-mounted"
@@ -275,93 +284,126 @@ async def top_up(used: int) -> int:
 
 
 async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
-    """Download one claim's worth. Returns bytes written and what happened."""
-    global TRANSFER
+    """Download one claim's worth, several at a time.
+
+    Photos and videos get separate lanes. One 4 GB video used to occupy the
+    whole feeder while forty photos waited behind it; with its own lane it
+    proceeds without blocking them.
+
+    Concurrency is safe against the cap because claim_batch already picked a
+    set that fits the remaining budget -- the whole claim fits, so the order
+    it is fetched in cannot exceed it. A new claim is only made once this one
+    has finished.
+    """
+    global BATCH
+
+    cfg = settings.load()
+    lanes = cfg.lanes
+    sems = {kind: asyncio.Semaphore(n) for kind, n in lanes.items()}
 
     written: list[str] = []
     spent = 0
     paused = False
-    batch_bytes = sum(r["size"] or 0 for r in rows)
-    batch_done_bytes = 0
+    guard = asyncio.Lock()
 
-    for index, row in enumerate(rows, 1):
-        if settings.load().paused:
-            paused = True
-            break
+    BATCH = {"files_total": len(rows), "files_done": 0,
+             "bytes_total": sum(r["size"] or 0 for r in rows),
+             "bytes_done": 0}
 
-        asset_id, filename = row["id"], row["filename"]
-        # Published before the bytes move, so the dashboard can name the file
-        # it is working on instead of going quiet for the length of a batch.
-        db.set_progress(filename=filename, done=index - 1, total=len(rows))
-        TRANSFER = {
-            "filename": filename, "asset_id": asset_id,
-            "done": index - 1, "total": len(rows),
-            "bytes": 0, "size": row["size"] or 0,
-            "batch_bytes": batch_bytes,
-            "batch_done_bytes": batch_done_bytes,
-            "started": time.monotonic(),
-        }
-        # Reserve the name first, so a collision is resolved before any bytes
-        # move and the ledger always knows what is on disk.
-        dest = os.path.join(config.OUTBOX_DIR,
-                            db.reserve_outbox_name(asset_id, filename))
-        if os.path.exists(dest):
-            written.append(asset_id)
-            continue
+    async def fetch_one(row) -> None:
+        nonlocal spent, paused
+        kind = (row["kind"] or "IMAGE").upper()
+        async with sems.get(kind, sems["IMAGE"]):
+            # Read inside the lane: a long fill should stop soon after the
+            # button is pressed, not when the whole claim is done.
+            if settings.load().paused:
+                paused = True
+                return
 
-        tmp = None
-        try:
-            # The temp file goes INSIDE the outbox, hidden and .part-suffixed.
-            # A rename within one directory is atomic, so Syncthing never sees
-            # a half-written file; the outbox listing skips dotfiles anyway.
-            #
-            # It cannot live in a separate folder: on Unraid /mnt/user is a
-            # FUSE overlay, so two directories in the same share may sit on
-            # different disks and rename() fails with EXDEV.
-            resp, client = await immich.stream_original(asset_id)
-            try:
-                fd, tmp = tempfile.mkstemp(dir=config.OUTBOX_DIR,
-                                           prefix=".partial-", suffix=".part")
-                with os.fdopen(fd, "wb") as fh:
-                    async for chunk in resp.aiter_bytes(1024 * 512):
-                        fh.write(chunk)
-                        # A plain dict assignment: no lock, no database, no
-                        # event. Readers take a snapshot and tolerate it
-                        # being a chunk out of date.
-                        if TRANSFER is not None:
-                            TRANSFER["bytes"] += len(chunk)
-            finally:
-                await resp.aclose()
-                await client.aclose()
+            asset_id, filename = row["id"], row["filename"]
+            # Reserve the name first, so a collision is resolved before any
+            # bytes move and the ledger always knows what is on disk.
+            dest = os.path.join(config.OUTBOX_DIR,
+                                db.reserve_outbox_name(asset_id, filename))
+            if os.path.exists(dest):
+                # Already on disk from an earlier run. The ledger has to be
+                # told, or the row stays pending and the next claim hands it
+                # straight back -- which with a fill loop is forever.
+                db.mark_queued([asset_id])
+                try:
+                    existing = os.path.getsize(dest)
+                except OSError:
+                    existing = row["size"] or 0
+                async with guard:
+                    written.append(asset_id)
+                    spent += existing
+                    if BATCH:
+                        BATCH["files_done"] += 1
+                        BATCH["bytes_done"] += existing
+                return
 
-            size = os.path.getsize(tmp)
-            if row["size"] and abs(size - row["size"]) > 1024:
-                raise IOError(f"size mismatch: got {size}, expected {row['size']}")
-
-            os.replace(tmp, dest)
-            os.chmod(dest, 0o664)
+            TRANSFERS[asset_id] = {
+                "filename": filename, "asset_id": asset_id, "kind": kind,
+                "bytes": 0, "size": row["size"] or 0,
+                "started": time.monotonic(),
+            }
             tmp = None
-            written.append(asset_id)
-            # Marked the moment the file lands, not once the whole batch is
-            # done. Batching the update meant a queue of 40 appeared to the
-            # dashboard as nothing at all for minutes and then a jump of 40.
-            db.mark_queued([asset_id])
-            batch_done_bytes += size
-            spent += size
-        except immich.OriginalMissing as exc:
-            # Retrying cannot conjure the file back; spend the whole retry
-            # budget now instead of failing identically five times.
-            db.mark_failed(asset_id, str(exc), permanent=True)
-            db.log("error", f"{filename}: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            db.mark_failed(asset_id, str(exc))
-            db.log("error", f"{filename}: {exc}")
-        finally:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
+            try:
+                # The temp file goes INSIDE the outbox, hidden and
+                # .part-suffixed. A rename within one directory is atomic, so
+                # Syncthing never sees a half-written file; the outbox listing
+                # skips dotfiles anyway.
+                #
+                # It cannot live in a separate folder: on Unraid /mnt/user is
+                # a FUSE overlay, so two directories in the same share may sit
+                # on different disks and rename() fails with EXDEV.
+                resp, client = await immich.stream_original(asset_id)
+                try:
+                    fd, tmp = tempfile.mkstemp(dir=config.OUTBOX_DIR,
+                                               prefix=".partial-", suffix=".part")
+                    with os.fdopen(fd, "wb") as fh:
+                        async for chunk in resp.aiter_bytes(1024 * 512):
+                            fh.write(chunk)
+                            entry = TRANSFERS.get(asset_id)
+                            if entry is not None:
+                                entry["bytes"] += len(chunk)
+                finally:
+                    await resp.aclose()
+                    await client.aclose()
 
-    TRANSFER = None
-    db.clear_progress()
+                size = os.path.getsize(tmp)
+                if row["size"] and abs(size - row["size"]) > 1024:
+                    raise IOError(
+                        f"size mismatch: got {size}, expected {row['size']}")
+
+                os.replace(tmp, dest)
+                os.chmod(dest, 0o664)
+                tmp = None
+                # Marked the moment the file lands, not once the whole batch
+                # is done, so the queue grows a file at a time on screen.
+                db.mark_queued([asset_id])
+                async with guard:
+                    written.append(asset_id)
+                    spent += size
+                    if BATCH:
+                        BATCH["files_done"] += 1
+                        BATCH["bytes_done"] += size
+            except immich.OriginalMissing as exc:
+                # Retrying cannot conjure the file back; spend the whole retry
+                # budget now instead of failing identically five times.
+                db.mark_failed(asset_id, str(exc), permanent=True)
+                db.log("error", f"{filename}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                db.mark_failed(asset_id, str(exc))
+                db.log("error", f"{filename}: {exc}")
+            finally:
+                TRANSFERS.pop(asset_id, None)
+                if tmp and os.path.exists(tmp):
+                    os.remove(tmp)
+
+    await asyncio.gather(*(fetch_one(r) for r in rows))
+
+    BATCH = None
     return spent, {"written": written, "paused": paused,
                    "progressed": bool(written)}
 

@@ -252,7 +252,7 @@ async def progress():
     ledger would push an event per chunk to every open browser; reading it
     here touches no database at all.
     """
-    return {"transfer": feeder.transfer_snapshot()}
+    return feeder.transfer_snapshot()
 
 
 @app.get("/api/queue")
@@ -278,7 +278,7 @@ async def queue():
         "count": len(items),
         "bytes": sum(i["size"] or 0 for i in items),
         "paused": cfg.paused,
-        "progress": db.progress(),
+        "lanes": settings.load().lanes,
         "outbox": {
             "used_bytes": int(db.get_meta("outbox_used", "0")),
             "cap_bytes": cfg.outbox_max_bytes,
