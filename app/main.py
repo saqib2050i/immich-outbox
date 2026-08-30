@@ -19,7 +19,9 @@ async def lifespan(app: FastAPI):
     db.connect()
     auth.ensure_initialised()
     db.log("start", "outbox feeder started")
-    tasks = [asyncio.create_task(worker.run()), asyncio.create_task(feeder.run())]
+    tasks = [asyncio.create_task(worker.run()),
+             asyncio.create_task(feeder.run()),
+             asyncio.create_task(feeder.watch())]
     yield
     for t in tasks:
         t.cancel()
@@ -232,6 +234,78 @@ async def events():
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     })
+
+
+@app.get("/api/queue")
+async def queue():
+    """The live queue: what is in the outbox waiting on the phone."""
+    cfg = settings.load()
+    items = db.queue_contents()
+    present = set()
+    ready, problem = feeder.outbox_ready()
+    if ready:
+        present = set(feeder._real_names())
+
+    for item in items:
+        # A row can say 'queued' while the file is already gone -- the phone
+        # cleared it and the next reconcile has not run yet. Showing that
+        # honestly is better than showing a file that is not there.
+        name = item.get("outbox_name")
+        item["on_disk"] = bool(name and name in present) or any(
+            n.startswith(f"{item['id']}__") for n in present)
+
+    return {
+        "items": items,
+        "count": len(items),
+        "bytes": sum(i["size"] or 0 for i in items),
+        "paused": cfg.paused,
+        "progress": db.progress(),
+        "outbox": {
+            "used_bytes": int(db.get_meta("outbox_used", "0")),
+            "cap_bytes": cfg.outbox_max_bytes,
+            "problem": problem if not ready else "",
+        },
+        "last_cycle": db.get_meta("last_cycle"),
+    }
+
+
+@app.post("/api/queue/cancel")
+async def queue_cancel(payload: dict):
+    """Take files back out of the outbox and return them to pending."""
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(status_code=400, detail="ids must be a list of strings")
+    if not ids:
+        return {"ok": True, "cancelled": 0, "removed": 0}
+
+    # Under the lock: cancelling mid-download would race the writer.
+    async with feeder.CYCLE_LOCK:
+        result = feeder.cancel(ids)
+        _, used = feeder.reconcile()
+    return {"ok": True, "outbox_used": used, **result}
+
+
+@app.post("/api/pause")
+async def pause(payload: dict | None = None):
+    """Stop or resume filling the outbox.
+
+    Pausing only stops new files being added. Anything already in the outbox
+    stays there and still goes to the phone -- the service cannot recall it,
+    and deleting it would be read as a backup.
+    """
+    want = (payload or {}).get("paused")
+    cfg = settings.load()
+    paused = (not cfg.paused) if want is None else bool(want)
+    cfg = settings.save({"paused": paused})
+    db.log("pause", "sending paused" if paused else "sending resumed")
+
+    added = 0
+    if not paused:
+        # Resume means resume now, not at the next cycle.
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            added = await feeder.top_up(used)
+    return {"ok": True, "paused": paused, "added": added}
 
 
 @app.get("/api/timeline")
