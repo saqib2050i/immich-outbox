@@ -535,10 +535,12 @@
   <ol class="qlist" id="qList"></ol>
 
   <h2 class="blhead">Waiting to be sent</h2>
-  <p class="qnote">The backlog behind the queue. This is where the next batch
-     comes from, so cancelling the queue alone will not stop it refilling —
-     dismiss a month here to take it out of the running. Dismissing sends
-     nothing and deletes nothing; you can send a month again later.</p>
+  <p class="qnote">Where the next batch comes from, so cancelling the queue
+     alone will not stop it refilling. <strong>Asked for</strong> is what you
+     queued by hand; <strong>in window</strong> is what your date settings let
+     through automatically; <strong>resting</strong> is the rest of the library,
+     which is not going anywhere. Dismissing sends nothing and deletes nothing,
+     and anything dismissed can be restored below.</p>
 
   <div class="pbar">
     <button id="btnDismissBacklog" class="danger" hidden>Dismiss everything waiting</button>
@@ -546,6 +548,18 @@
   </div>
 
   <ol class="bllist" id="blList"></ol>
+
+  <h2 class="blhead" id="dsHead" hidden>Dismissed</h2>
+  <p class="qnote" id="dsNote" hidden>Taken out of the running by hand. Nothing
+     here is sent, and nothing has been deleted from Immich or the ledger —
+     restore a month to put it back in the waiting list.</p>
+
+  <div class="pbar" id="dsBar" hidden>
+    <button id="btnRestoreAll">Restore everything dismissed</button>
+    <span class="psummary" id="dsSummary"></span>
+  </div>
+
+  <ol class="bllist" id="dsList"></ol>
 </section>
 
 <section class="attention" id="nav-attention" data-tab="problems">
@@ -868,6 +882,7 @@ async function render(){
   renderSyncthing();
   renderQueue();
   renderBacklog();
+  renderDismissed();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
@@ -1209,6 +1224,7 @@ async function renderTimeline(){
     const conf = list.reduce((a, m) => a + m.confirmed, 0);
     const byt  = list.reduce((a, m) => a + m.bytes, 0);
     const gain = list.reduce((a, m) => a + m.gain_bytes, 0);
+    const dism = list.reduce((a, m) => a + (m.dismissed || 0), 0);
 
     const yd = document.createElement("details");
     yd.className = "tl-yr";
@@ -1222,6 +1238,7 @@ async function renderTimeline(){
     yf.className = "yf";
     yf.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
                    + Math.round(tot ? (conf / tot) * 100 : 0) + "% done"
+                   + (dism ? " · " + fmtNum(dism) + " dismissed" : "")
                    + (gain ? " · " + fmtBytes(gain) + " worth upgrading" : "");
     const yb = document.createElement("span");
     yb.className = "yb";
@@ -1650,10 +1667,13 @@ async function renderBacklog(){
   let b;
   try { b = await (await fetch("/api/backlog")).json(); } catch { return; }
 
-  btnDismissBacklog.hidden = b.total === 0;
-  blSummary.textContent = b.total
-    ? `${fmtNum(b.total)} waiting · ${fmtBytes(b.bytes)}`
+  const toSend = b.asked + b.eligible;
+  btnDismissBacklog.hidden = toSend === 0;
+  btnDismissBacklog.textContent = `Dismiss what is queued to send (${fmtNum(toSend)})`;
+  blSummary.textContent = toSend || b.resting
+    ? `${fmtNum(toSend)} on the way · ${fmtBytes(b.to_send_bytes)}`
       + (b.failed ? ` · ${fmtNum(b.failed)} failed` : "")
+      + (b.resting ? ` · ${fmtNum(b.resting)} outside your windows` : "")
     : "";
 
   blList.innerHTML = "";
@@ -1674,14 +1694,18 @@ async function renderBacklog(){
 
     const cnt = document.createElement("span");
     cnt.className = "blcount";
-    cnt.textContent = `${fmtNum(m.total)} file(s) · ${fmtBytes(m.bytes)}`;
+    const bits = [];
+    if (m.asked)    bits.push(`${fmtNum(m.asked)} asked for`);
+    if (m.eligible) bits.push(`${fmtNum(m.eligible)} in window`);
+    if (m.resting)  bits.push(`${fmtNum(m.resting)} resting`);
+    cnt.textContent = bits.join(" · ") + ` · ${fmtBytes(m.bytes)}`;
 
     li.append(mon, cnt);
 
-    if (m.forced){
+    if (m.asked){
       const f = document.createElement("span");
       f.className = "blforced";
-      f.textContent = `${fmtNum(m.forced)} queue-jumping`;
+      f.textContent = "queue-jumping";
       li.append(f);
     }
     if (m.failed){
@@ -1708,8 +1732,9 @@ async function renderBacklog(){
       if (!confirm(
           `Dismiss all ${fmtNum(m.total)} waiting files from ${m.month}?\n\n` +
           "Nothing is sent and nothing is deleted. They stop being picked up " +
-          "by the feeder, so the queue will not refill from this month. You " +
-          "can send the month again later with \"Send next\".")) return;
+          "by the feeder, so the queue will not refill from this month.\n\n" +
+          "The month moves to the Dismissed list below, where you can " +
+          "restore it at any time.")) return;
       dis.disabled = true;
       await fetch("/api/backlog/dismiss", {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -1723,17 +1748,63 @@ async function renderBacklog(){
   });
 }
 
+// Dismissing was documented as reversible but nothing in the UI could find
+// the rows again -- every other view filters 'skipped' out, and a rescan
+// cannot help because scans never touch an existing row. This is the way back.
+async function renderDismissed(){
+  let d;
+  try { d = await (await fetch("/api/dismissed")).json(); } catch { return; }
+
+  const any = d.total > 0;
+  dsHead.hidden = dsNote.hidden = dsBar.hidden = !any;
+  dsList.innerHTML = "";
+  if (!any) return;
+
+  dsSummary.textContent = `${fmtNum(d.total)} dismissed · ${fmtBytes(d.bytes)}`;
+
+  d.months.forEach(m => {
+    const li = document.createElement("li");
+    const mon = document.createElement("span");
+    mon.className = "blmonth"; mon.textContent = m.month;
+    const cnt = document.createElement("span");
+    cnt.className = "blcount";
+    cnt.textContent = `${fmtNum(m.total)} file(s) · ${fmtBytes(m.bytes)}`;
+
+    const btn = document.createElement("button");
+    btn.textContent = "Restore";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetch("/api/dismissed/restore", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month: m.month})});
+      tick();
+    };
+    li.append(mon, cnt, btn);
+    dsList.appendChild(li);
+  });
+}
+
+btnRestoreAll.onclick = async () => {
+  btnRestoreAll.disabled = true;
+  try {
+    await fetch("/api/dismissed/restore", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({all: true})});
+  } finally { btnRestoreAll.disabled = false; tick(); }
+};
+
 btnDismissBacklog.onclick = async () => {
   if (!confirm(
-      "Dismiss the entire backlog?\n\nEvery file waiting to be sent stops " +
-      "being picked up. Nothing is sent, nothing is deleted, and files " +
-      "already in the outbox are untouched. You can send any month again " +
-      "afterwards.")) return;
+      "Dismiss everything queued to send?\n\nThat means the files you asked " +
+      "for by hand plus anything your date windows let through. The rest of " +
+      "the library is left alone.\n\nNothing is sent, nothing is deleted, and " +
+      "files already in the outbox are untouched. They move to the Dismissed " +
+      "list below, where you can restore them at any time.")) return;
   btnDismissBacklog.disabled = true;
   try {
     await fetch("/api/backlog/dismiss", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({all: true})});
+      body: JSON.stringify({all: true, scope: "to_send"})});
   } finally { btnDismissBacklog.disabled = false; tick(); }
 };
 
@@ -1775,7 +1846,9 @@ const RECON = {
   failed:         ["Failed to download", "retry it from Needs attention"],
   too_big:        ["Over the size limit", "raise the limit, or send it by hand"],
   video_off:      ["Videos are switched off", "turn videos on in Settings"],
-  skipped:        ["Motion-photo clips", "carried inside the still image, never sent alone"],
+  motion_part:    ["Motion-photo clips", "carried inside the still image, never sent alone"],
+  dismissed:      ["Dismissed by hand", "taken out of the running — restore them from the Queue tab"],
+  skipped:        ["Skipped", "not being sent"],
 };
 
 async function renderRecon(){

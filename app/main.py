@@ -313,6 +313,12 @@ async def backlog():
         "total": sum(m["total"] for m in months),
         "bytes": sum(m["bytes"] for m in months),
         "failed": sum(m["failed"] for m in months),
+        # The numbers that matter: what is actually on its way out, as
+        # against what merely exists in the ledger and is going nowhere.
+        "asked": sum(m["asked"] for m in months),
+        "eligible": sum(m["eligible"] for m in months),
+        "resting": sum(m["resting"] for m in months),
+        "to_send_bytes": sum(m["to_send_bytes"] for m in months),
     }
 
 
@@ -333,13 +339,52 @@ async def backlog_dismiss(payload: dict):
         raise HTTPException(status_code=400,
                             detail="pass a month, some ids, or all=true")
 
-    n = db.dismiss_waiting(month=month, ids=ids, everything=everything)
+    scope = payload.get("scope", "to_send")
+    if scope not in ("to_send", "asked", "all"):
+        raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
+
+    n = db.dismiss_waiting(month=month, ids=ids, everything=everything,
+                           scope=scope)
     if n:
-        what = f"{month}" if month else ("the whole backlog" if everything
-                                         else f"{len(ids or [])} file(s)")
+        what = f"{month}" if month else (
+            {"to_send": "everything queued to send",
+             "asked": "everything asked for by hand",
+             "all": "the entire waiting list"}[scope] if everything
+            else f"{len(ids or [])} file(s)")
         db.log("dismiss", f"{n} waiting file(s) dismissed from {what} — they "
                           "will not be sent unless asked for again")
     return {"ok": True, "dismissed": n}
+
+
+@app.get("/api/dismissed")
+async def dismissed():
+    """What has been dismissed by hand, and can be put back."""
+    months = db.dismissed_breakdown()
+    return {"months": months,
+            "total": sum(m["total"] for m in months),
+            "bytes": sum(m["bytes"] for m in months)}
+
+
+@app.post("/api/dismissed/restore")
+async def dismissed_restore(payload: dict):
+    """Undo a dismissal: one month, some ids, or everything."""
+    month = payload.get("month")
+    ids = payload.get("ids")
+    everything = bool(payload.get("all"))
+    if ids is not None and (not isinstance(ids, list)
+                            or not all(isinstance(i, str) for i in ids)):
+        raise HTTPException(status_code=400, detail="ids must be a list of strings")
+    if not month and not ids and not everything:
+        raise HTTPException(status_code=400,
+                            detail="pass a month, some ids, or all=true")
+
+    n = db.restore_dismissed(month=month, ids=ids, everything=everything)
+    if n:
+        what = month or ("everything dismissed" if everything
+                         else f"{len(ids or [])} file(s)")
+        db.log("restore", f"{n} dismissed file(s) restored from {what} — "
+                          "they are back in the waiting list")
+    return {"ok": True, "restored": n}
 
 
 @app.post("/api/failed/dismiss")

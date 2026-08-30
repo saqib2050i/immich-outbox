@@ -314,3 +314,198 @@ async def test_backlog_dismiss_needs_a_scope(rig):
     with pytest.raises(HTTPException) as exc:
         await main.backlog_dismiss({})
     assert exc.value.status_code == 400
+
+
+# ---- undoing a dismissal --------------------------------------------------
+
+async def test_dismissed_assets_are_findable_again(rig):
+    """The trap: every view filters 'skipped' out, so dismissing the whole
+    backlog hid 12,000 files with no way to see or restore them."""
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(4)]
+                     + [asset(10 + i, size=100, taken="2026-02-01") for i in range(2)])
+    await main.backlog_dismiss({"all": True})
+    assert (await main.backlog())["total"] == 0
+
+    d = await main.dismissed()
+    assert d["total"] == 6
+    assert {m["month"]: m["total"] for m in d["months"]} == {"2025-11": 4, "2026-02": 2}
+
+
+async def test_restoring_a_month_puts_it_back_in_the_backlog(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(4)]
+                     + [asset(10 + i, size=100, taken="2026-02-01") for i in range(2)])
+    await main.backlog_dismiss({"all": True})
+
+    r = await main.dismissed_restore({"month": "2025-11"})
+    assert r["restored"] == 4
+    assert (await main.backlog())["total"] == 4
+    assert (await main.dismissed())["total"] == 2
+
+
+async def test_restoring_everything(rig, monkeypatch):
+    from app import db, feeder, immich, main
+
+    db.upsert_assets([asset(i, size=100) for i in range(5)])
+    await main.backlog_dismiss({"all": True})
+    assert db.counts()["skipped"] == 5
+
+    assert (await main.dismissed_restore({"all": True}))["restored"] == 5
+    assert db.counts()["pending"] == 5
+
+    # And they actually send again.
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 5
+
+
+async def test_restore_never_resurrects_motion_components(rig):
+    """They are skipped because of what they are, not by choice."""
+    from app import db, main
+
+    db.upsert_assets([asset(0, size=100), asset(1, size=50, kind="VIDEO")])
+    db.mark_motion_parts(["asset-1"])
+    await main.backlog_dismiss({"all": True})
+
+    assert (await main.dismissed())["total"] == 1, "a motion clip was offered for restore"
+    assert (await main.dismissed_restore({"all": True}))["restored"] == 1
+    row = db.connect().execute("SELECT state FROM assets WHERE id='asset-1'").fetchone()
+    assert row["state"] == "skipped"
+
+
+async def test_reconciliation_separates_dismissed_from_motion_clips(rig):
+    """It reported 12,000 hand-dismissed photos as 'motion-photo clips'."""
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100) for i in range(4)])
+    db.mark_motion_parts(["asset-3"])
+    await main.backlog_dismiss({"all": True})
+
+    groups = {g["reason"]: g["total"] for g in db.reconciliation()}
+    assert groups["dismissed"] == 3
+    assert groups["motion_part"] == 1
+
+
+async def test_a_rescan_does_not_undo_a_dismissal(rig):
+    """Documenting why restore has to exist: scans are INSERT OR IGNORE, so
+    they never touch an existing row."""
+    from app import db, main
+    from conftest import asset as mk
+
+    db.upsert_assets([mk(0, size=100)])
+    await main.backlog_dismiss({"all": True})
+    db.upsert_assets([mk(0, size=100)])          # the rescan
+    assert db.counts()["skipped"] == 1
+    assert db.counts()["pending"] == 0
+
+
+# ---- the library must not read as finished ------------------------------
+
+async def test_dismissed_files_do_not_make_a_month_look_backed_up(rig):
+    """Reported as "everything is being considered backed up": the timeline
+    filtered skipped rows out, so a month whose files had been dismissed
+    showed confirmed == total and read as done."""
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(10)])
+    db.mark_queued(["asset-0", "asset-1"])
+    db.confirm_absent([])
+    await main.backlog_dismiss({"all": True, "scope": "all"})
+
+    row = next(m for m in db.timeline() if m["month"] == "2025-11")
+    assert row["total"] == 10, "dismissed files vanished from the timeline"
+    assert row["confirmed"] == 2
+    assert row["dismissed"] == 8
+    assert row["confirmed"] != row["total"], "the month still reads as done"
+
+
+async def test_a_wholly_dismissed_month_still_appears(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(i, size=100, taken="2024-07-01") for i in range(5)])
+    await main.backlog_dismiss({"all": True, "scope": "all"})
+
+    assert any(m["month"] == "2024-07" for m in db.timeline())
+    assert any(m["month"] == "2024-07" for m in db.monthly_breakdown())
+    assert db.month_detail("2024-07")["groups"], "the month detail went empty"
+
+
+async def test_motion_clips_stay_out_of_the_library_views(rig):
+    """They are not photos; only hand-dismissed rows come back into view."""
+    from app import db
+
+    db.upsert_assets([asset(0, size=100, taken="2026-03-01"),
+                      asset(1, size=50, kind="VIDEO", taken="2026-03-01")])
+    db.mark_motion_parts(["asset-1"])
+    row = next(m for m in db.timeline() if m["month"] == "2026-03")
+    assert row["total"] == 1
+
+
+# ---- the backlog is what you asked for, not the whole library ------------
+
+async def test_the_backlog_separates_asked_from_the_rest_of_the_library(rig):
+    """Reported as "backlog should not contain the whole library, just the
+    files i asked to send"."""
+    from app import db, main, settings
+
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-01-01",
+                   "backfill_enabled": False})
+    db.upsert_assets(
+        [asset(i, size=100, taken="2026-02-01") for i in range(3)] +      # eligible
+        [asset(10 + i, size=100, taken="2015-06-01") for i in range(50)])  # resting
+    db.force_send(ids=["asset-10", "asset-11"])                           # asked
+
+    b = await main.backlog()
+    assert b["asked"] == 2
+    assert b["eligible"] == 3
+    assert b["resting"] == 48
+    assert b["total"] == 53
+
+
+async def test_dismiss_everything_spares_the_resting_library(rig):
+    """The one-click mistake: 12,000 files that were never queued for
+    anything got dismissed because they happened to be 'pending'."""
+    from app import db, main, settings
+
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-01-01",
+                   "backfill_enabled": False})
+    db.upsert_assets(
+        [asset(i, size=100, taken="2026-02-01") for i in range(3)] +
+        [asset(10 + i, size=100, taken="2015-06-01") for i in range(50)])
+    db.force_send(ids=["asset-10"])
+
+    r = await main.backlog_dismiss({"all": True})       # default scope
+    assert r["dismissed"] == 4, "the resting library was dismissed too"
+
+    b = await main.backlog()
+    assert b["total"] == 49 and b["resting"] == 49
+    assert b["asked"] == 0 and b["eligible"] == 0
+
+
+async def test_dismiss_scope_all_is_still_available(rig, monkeypatch):
+    from app import db, main, settings
+
+    settings.save({"ongoing_enabled": False, "backfill_enabled": False})
+    db.upsert_assets([asset(i, size=100, taken="2015-06-01") for i in range(5)])
+    assert (await main.backlog_dismiss({"all": True}))["dismissed"] == 0
+    assert (await main.backlog_dismiss({"all": True, "scope": "all"}))["dismissed"] == 5
+
+
+async def test_dismissing_a_named_month_ignores_scope(rig):
+    """Clicking Dismiss on a month means that month, window or not."""
+    from app import db, main, settings
+
+    settings.save({"ongoing_enabled": False, "backfill_enabled": False})
+    db.upsert_assets([asset(i, size=100, taken="2015-06-01") for i in range(4)])
+    assert (await main.backlog_dismiss({"month": "2015-06"}))["dismissed"] == 4
+
+
+async def test_an_unknown_scope_is_rejected(rig):
+    from fastapi import HTTPException
+    from app import main
+    with pytest.raises(HTTPException) as exc:
+        await main.backlog_dismiss({"all": True, "scope": "everything-please"})
+    assert exc.value.status_code == 400
