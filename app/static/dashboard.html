@@ -260,6 +260,21 @@
   .dlgrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
   .dlgrow .spacer{flex:1}
 
+  /* ---- backlog ---- */
+  .blhead{margin:26px 0 0;font-size:13px;letter-spacing:.08em;
+          text-transform:uppercase}
+  .bllist{list-style:none;margin:12px 0 0;padding:0;
+          border-top:1px solid var(--rule)}
+  .bllist li{display:flex;align-items:center;gap:10px;padding:7px 6px;
+             border-bottom:1px solid var(--rule);font-size:13px}
+  .bllist .blmonth{font-family:var(--mono);flex:0 0 7rem}
+  .bllist .blcount{color:var(--dim);flex:1 1 auto;
+                   font-variant-numeric:tabular-nums}
+  .bllist .blfail{color:var(--alarm);flex:none;font-size:12px}
+  .bllist .blforced{color:var(--transit);flex:none;font-size:12px}
+  .bllist button{flex:none;padding:2px 8px;font-size:12px}
+  .bllist li.empty{color:var(--dim);border-bottom:none}
+
   /* ---- problems toolbar ---- */
   .pbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;
         padding:8px 10px;background:var(--panel);border:1px solid var(--rule);
@@ -518,6 +533,19 @@
   </div>
 
   <ol class="qlist" id="qList"></ol>
+
+  <h2 class="blhead">Waiting to be sent</h2>
+  <p class="qnote">The backlog behind the queue. This is where the next batch
+     comes from, so cancelling the queue alone will not stop it refilling —
+     dismiss a month here to take it out of the running. Dismissing sends
+     nothing and deletes nothing; you can send a month again later.</p>
+
+  <div class="pbar">
+    <button id="btnDismissBacklog" class="danger" hidden>Dismiss everything waiting</button>
+    <span class="psummary" id="blSummary"></span>
+  </div>
+
+  <ol class="bllist" id="blList"></ol>
 </section>
 
 <section class="attention" id="nav-attention" data-tab="problems">
@@ -839,6 +867,7 @@ async function render(){
   oProblem.textContent = d.outbox.problem || "";
   renderSyncthing();
   renderQueue();
+  renderBacklog();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
@@ -1612,6 +1641,100 @@ btnPause.onclick = async () => {
   } finally {
     await tick();
   }
+};
+
+// ---- backlog --------------------------------------------------------
+// The queue shows the ~40 files in the outbox. This shows the thousands
+// behind them, which is where the next batch comes from.
+async function renderBacklog(){
+  let b;
+  try { b = await (await fetch("/api/backlog")).json(); } catch { return; }
+
+  btnDismissBacklog.hidden = b.total === 0;
+  blSummary.textContent = b.total
+    ? `${fmtNum(b.total)} waiting · ${fmtBytes(b.bytes)}`
+      + (b.failed ? ` · ${fmtNum(b.failed)} failed` : "")
+    : "";
+
+  blList.innerHTML = "";
+  if (!b.months.length){
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Nothing waiting. Every asset has been sent, dismissed "
+                   + "or falls outside your date windows.";
+    blList.appendChild(li);
+    return;
+  }
+
+  b.months.forEach(m => {
+    const li = document.createElement("li");
+
+    const mon = document.createElement("span");
+    mon.className = "blmonth"; mon.textContent = m.month;
+
+    const cnt = document.createElement("span");
+    cnt.className = "blcount";
+    cnt.textContent = `${fmtNum(m.total)} file(s) · ${fmtBytes(m.bytes)}`;
+
+    li.append(mon, cnt);
+
+    if (m.forced){
+      const f = document.createElement("span");
+      f.className = "blforced";
+      f.textContent = `${fmtNum(m.forced)} queue-jumping`;
+      li.append(f);
+    }
+    if (m.failed){
+      const f = document.createElement("span");
+      f.className = "blfail";
+      f.textContent = `${fmtNum(m.failed)} failed`;
+      li.append(f);
+    }
+
+    const send = document.createElement("button");
+    send.textContent = "Send next";
+    send.onclick = async () => {
+      send.disabled = true;
+      await fetch("/api/month/send", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month: m.month})});
+      tick();
+    };
+
+    const dis = document.createElement("button");
+    dis.textContent = "Dismiss";
+    dis.className = "danger";
+    dis.onclick = async () => {
+      if (!confirm(
+          `Dismiss all ${fmtNum(m.total)} waiting files from ${m.month}?\n\n` +
+          "Nothing is sent and nothing is deleted. They stop being picked up " +
+          "by the feeder, so the queue will not refill from this month. You " +
+          "can send the month again later with \"Send next\".")) return;
+      dis.disabled = true;
+      await fetch("/api/backlog/dismiss", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month: m.month})});
+      tick();
+    };
+
+    if (m.month !== "undated") li.append(send);
+    li.append(dis);
+    blList.appendChild(li);
+  });
+}
+
+btnDismissBacklog.onclick = async () => {
+  if (!confirm(
+      "Dismiss the entire backlog?\n\nEvery file waiting to be sent stops " +
+      "being picked up. Nothing is sent, nothing is deleted, and files " +
+      "already in the outbox are untouched. You can send any month again " +
+      "afterwards.")) return;
+  btnDismissBacklog.disabled = true;
+  try {
+    await fetch("/api/backlog/dismiss", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({all: true})});
+  } finally { btnDismissBacklog.disabled = false; tick(); }
 };
 
 let syncAt = 0;

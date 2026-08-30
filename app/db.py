@@ -253,6 +253,63 @@ def cancel_queued(ids: list[str], skip: bool = False) -> int:
     return cur.rowcount
 
 
+def waiting_breakdown() -> list[dict]:
+    """The backlog: everything waiting to be sent, by month.
+
+    The queue view only shows the forty-odd files currently in the outbox,
+    so a backlog of thousands was invisible -- cancel the queue, press
+    refresh, and the next forty arrive from a pile you cannot see. This is
+    that pile.
+    """
+    rows = connect().execute("""
+        SELECT COALESCE(NULLIF(substr(taken_at, 1, 7), ''), 'undated') AS month,
+               COUNT(*)                                               AS total,
+               COALESCE(SUM(size), 0)                                 AS bytes,
+               SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END)      AS failed,
+               SUM(CASE WHEN forced = 1 THEN 1 ELSE 0 END)            AS forced
+        FROM assets
+        WHERE state IN ('pending','failed')
+          AND id NOT IN (SELECT id FROM motion_parts)
+        GROUP BY month
+        ORDER BY month DESC
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def dismiss_waiting(month: str | None = None, ids: list[str] | None = None,
+                    everything: bool = False) -> int:
+    """Take waiting assets out of the running without sending them.
+
+    For the case this was written for: a month was force-sent, then the
+    originals were deleted from Immich, so every attempt 404s and the
+    backlog re-queues forty at a time forever. 'skipped' is the only state
+    claim_batch will not touch.
+
+    Reversible -- force_send and force_send_month both accept skipped rows
+    -- so after re-uploading to Immich and rescanning, the month can be
+    sent again deliberately.
+    """
+    where = ["state IN ('pending','failed')"]
+    params: list = []
+    if month:
+        where.append("COALESCE(NULLIF(substr(taken_at,1,7),''),'undated') = ?")
+        params.append(month)
+    elif ids:
+        where.append("id IN (%s)" % ",".join("?" * len(ids)))
+        params.extend(ids)
+    elif not everything:
+        return 0
+
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"UPDATE assets SET state='skipped', forced=0 WHERE {' AND '.join(where)}",
+            params)
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
 def dismiss_failed(ids: list[str] | None = None) -> int:
     """Retire failed assets without resending them.
 
@@ -873,7 +930,11 @@ def month_detail(month: str) -> dict:
 
 def force_send_month(month: str, group: str | None = None) -> int:
     """Queue a month, or one of its four categories, ahead of everything else."""
-    where = ["substr(taken_at,1,7) = ?", "state IN ('pending','failed')",
+    # 'skipped' is included so a dismissed month can be brought back after
+    # the originals are restored in Immich -- dismissing is an exclusion,
+    # not a tombstone.
+    where = ["substr(taken_at,1,7) = ?",
+             "state IN ('pending','failed','skipped')",
              "id NOT IN (SELECT id FROM motion_parts)"]
     params: list = [month]
     if group:

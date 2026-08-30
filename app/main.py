@@ -304,6 +304,44 @@ async def queue_cancel(payload: dict):
             **result}
 
 
+@app.get("/api/backlog")
+async def backlog():
+    """Everything waiting to be sent, by month — the pile behind the queue."""
+    months = db.waiting_breakdown()
+    return {
+        "months": months,
+        "total": sum(m["total"] for m in months),
+        "bytes": sum(m["bytes"] for m in months),
+        "failed": sum(m["failed"] for m in months),
+    }
+
+
+@app.post("/api/backlog/dismiss")
+async def backlog_dismiss(payload: dict):
+    """Skip waiting assets: one month, some ids, or the whole backlog.
+
+    Nothing is deleted and nothing is sent. Dismissed assets can be brought
+    back with 'send this month' or by id once they exist in Immich again.
+    """
+    month = payload.get("month")
+    ids = payload.get("ids")
+    everything = bool(payload.get("all"))
+    if ids is not None and (not isinstance(ids, list)
+                            or not all(isinstance(i, str) for i in ids)):
+        raise HTTPException(status_code=400, detail="ids must be a list of strings")
+    if not month and not ids and not everything:
+        raise HTTPException(status_code=400,
+                            detail="pass a month, some ids, or all=true")
+
+    n = db.dismiss_waiting(month=month, ids=ids, everything=everything)
+    if n:
+        what = f"{month}" if month else ("the whole backlog" if everything
+                                         else f"{len(ids or [])} file(s)")
+        db.log("dismiss", f"{n} waiting file(s) dismissed from {what} — they "
+                          "will not be sent unless asked for again")
+    return {"ok": True, "dismissed": n}
+
+
 @app.post("/api/failed/dismiss")
 async def failed_dismiss(payload: dict | None = None):
     """Clear failures without resending. They move to 'skipped' — out of
