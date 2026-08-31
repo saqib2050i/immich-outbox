@@ -476,6 +476,34 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
     return after - before
 
 
+def smallest_sendable(filt: dict) -> int | None:
+    """The smallest file currently eligible to go out.
+
+    "The outbox is full" is not free space reaching zero -- it is the next
+    file no longer fitting. With 51 MB free and nothing smaller than 60 MB
+    waiting, the queue is stopped even though the gauge is not at the top.
+    """
+    params = dict(filt)
+    params["include_video"] = 1 if filt["include_video"] else 0
+    params["ongoing"] = 1 if filt["ongoing"] else 0
+    params["backfill"] = 1 if filt["backfill"] else 0
+    params["max_attempts"] = MAX_ATTEMPTS
+    row = connect().execute(
+        """SELECT MIN(size) m FROM assets
+            WHERE state IN ('pending','failed') AND attempts < :max_attempts
+              AND missing_at IS NULL
+              AND id NOT IN (SELECT id FROM motion_parts)
+              AND (kind = 'IMAGE' OR :include_video = 1)
+              AND (size = 0 OR size <= :max_asset_bytes)
+              AND (
+                   forced = 1
+                OR (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
+                OR (:backfill = 1 AND substr(taken_at,1,10)
+                      BETWEEN :backfill_start AND :backfill_end)
+              )""", params).fetchone()
+    return row["m"] if row and row["m"] is not None else None
+
+
 def mark_missing(seen_ids: set) -> int:
     """Reconcile the ledger against a complete pass over Immich.
 

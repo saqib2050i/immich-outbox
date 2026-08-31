@@ -237,3 +237,75 @@ async def test_the_watcher_survives_an_error(rig, monkeypatch):
     finally:
         task.cancel()
     assert boom["n"] > 1, "the watcher died on the first error"
+
+
+# ---- saying why nothing is moving ---------------------------------------
+
+async def status_of(rig):
+    from app import main
+    return (await main.queue())["status"]
+
+
+async def test_status_says_the_outbox_is_full(rig, monkeypatch):
+    """The normal steady state of this system, and the one thing the
+    dashboard never said out loud. Full is not free space reaching zero --
+    it is the next file no longer fitting."""
+    from app import db, feeder, immich, settings
+
+    rig.cap(1000)
+    db.upsert_assets([asset(i, size=300) for i in range(3)]
+                     + [asset(50 + i, size=300) for i in range(5)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    feeder.reconcile()          # the cycle's second pass, which records usage
+
+    s = await status_of(rig)
+    assert s["state"] == "full", s
+    assert "full" in s["detail"] and "phone" in s["detail"]
+    assert s["free_bytes"] < 300, "free space alone was used, not whether it fits"
+
+
+async def test_status_says_paused(rig):
+    from app import db, settings
+    settings.save({"paused": True})
+    db.upsert_assets([asset(0, size=100)])
+    s = await status_of(rig)
+    assert s["state"] == "paused" and "paused" in s["detail"].lower()
+
+
+async def test_status_says_idle_when_nothing_waits(rig):
+    s = await status_of(rig)
+    assert s["state"] == "idle"
+    assert s["waiting"] == 0
+
+
+async def test_status_says_waiting_when_there_is_room(rig):
+    from app import db
+    db.upsert_assets([asset(i, size=100) for i in range(3)])
+    s = await status_of(rig)
+    assert s["state"] == "waiting"
+    assert s["waiting"] == 3
+    assert "next check" in s["detail"]
+
+
+async def test_status_reports_a_missing_outbox(rig):
+    from app import config, db
+    db.upsert_assets([asset(0, size=100)])
+    db.mark_queued(["asset-0"])
+    config.OUTBOX_DIR = str(rig.root / "not-mounted")
+    s = await status_of(rig)
+    assert s["state"] == "blocked"
+    assert "refusing" in s["detail"]
+
+
+async def test_waiting_count_excludes_the_resting_library(rig):
+    """Files outside every window are not waiting for anything."""
+    from app import db, settings
+
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-28",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(0, size=100, taken="2026-08-30")]
+                     + [asset(10 + i, size=100, taken="2015-01-01") for i in range(20)])
+    s = await status_of(rig)
+    assert s["waiting"] == 1, "the resting library was counted as queued"
