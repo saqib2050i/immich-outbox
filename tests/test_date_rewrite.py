@@ -185,3 +185,34 @@ async def test_the_size_check_runs_before_any_edit(rig, monkeypatch):
     assert await feeder.top_up(used) == 0
     assert calls == [], "a truncated file was edited"
     assert db.counts()["failed"] == 1
+
+
+async def test_an_interrupted_rewrite_leaves_nothing_behind(rig):
+    """exiftool writes a whole new file beside the target and renames it
+    over, so an interruption leaves a copy the outbox listing cannot see --
+    a dotfile, and therefore never swept."""
+    import time
+    from app import feeder
+
+    stale = rig.outbox / ".partial-abc123.part_exiftool_tmp"
+    stale.write_bytes(b"half a photo")
+    old = time.time() - 7 * 3600
+    os.utime(stale, (old, old))
+
+    fresh = rig.outbox / ".partial-def456.part_exiftool_tmp"
+    fresh.write_bytes(b"still being written")
+
+    assert feeder.sweep_partials() == 1
+    assert not stale.exists(), "an orphaned exiftool copy was left in the outbox"
+    assert fresh.exists(), "a rewrite in progress was swept out from under itself"
+
+
+async def test_the_exiftool_copy_is_never_counted_as_a_photo(rig):
+    """It lives in the outbox while the rewrite runs, so it must not be
+    read as a delivered file or counted against the cap."""
+    from app import feeder
+
+    (rig.outbox / ".partial-abc.part_exiftool_tmp").write_bytes(b"x" * 1000)
+    assert rig.files() == set()
+    names, used = feeder.list_outbox()
+    assert names == [] and used == 0

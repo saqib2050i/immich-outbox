@@ -256,13 +256,22 @@ def list_outbox() -> tuple[list[str], int]:
 
 
 def sweep_partials(max_age_hours: int = 6) -> int:
-    """Remove temp files orphaned by a crash or restart."""
+    """Remove temp files orphaned by a crash or restart.
+
+    Two kinds: our own download partials, and the copy exiftool makes while
+    rewriting a date. exiftool writes a whole new file beside the target and
+    renames it over, so an interruption mid-rewrite leaves
+    `.partial-XXXX.part_exiftool_tmp` behind -- invisible to the outbox
+    listing because it is a dotfile, and therefore never cleaned up.
+    """
     import time
     cutoff = time.time() - max_age_hours * 3600
     removed = 0
     try:
         for name in os.listdir(config.OUTBOX_DIR):
-            if not (name.startswith(".partial-") and name.endswith(".part")):
+            ours = name.startswith(".partial-") and name.endswith(".part")
+            exif_leftover = name.startswith(".partial-") and name.endswith("_exiftool_tmp")
+            if not (ours or exif_leftover):
                 continue
             path = os.path.join(config.OUTBOX_DIR, name)
             try:
