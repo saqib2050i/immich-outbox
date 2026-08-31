@@ -1768,8 +1768,27 @@ const fmtEta = s => {
 function paintTransfer(state){
   const list = state.transfers || [];
   const batch = state.batch;
-  qProgress.hidden = list.length === 0 && !batch;
-  if (qProgress.hidden) return;
+  const last = state.last_fill;
+
+  // Nothing moving. On a fast network that is the normal state -- a whole
+  // batch lands in under a second -- so report what the last fill did
+  // rather than hiding and looking idle.
+  if (!list.length && !batch){
+    if (!last){ qProgress.hidden = true; return; }
+    qProgress.hidden = false;
+    qpFiles.innerHTML = "";
+    const line = document.createElement("div");
+    line.className = "qpline qpsub";
+    line.textContent = "Last fill: " + fmtNum(last.files) + " file(s) · "
+                     + fmtBytes(last.bytes) + " · " + ago(last.at);
+    qpFiles.appendChild(line);
+    qpBatchText.textContent = "";
+    qpBatchBytes.textContent = "";
+    qpBatch.style.width = "0%";
+    return;
+  }
+
+  qProgress.hidden = false;
 
   // One row per file in flight. Photos and videos run in separate lanes, so
   // there is usually more than one, and a slow video must not look like the
@@ -1831,13 +1850,12 @@ async function pollTransfer(){
   try { d = await (await fetch("/api/progress")).json(); } catch { return; }
 
   const busy = (d.transfers && d.transfers.length) || d.batch;
+  paintTransfer(d);
   if (busy){
     lastTransfer = d;
-    paintTransfer(d);
   } else if (lastTransfer){
-    // Just finished: clear the bars and let the queue list catch up.
+    // Just finished: let the queue list catch up with what landed.
     lastTransfer = null;
-    qProgress.hidden = true;
     tick();
   }
 }

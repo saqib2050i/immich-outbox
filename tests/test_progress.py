@@ -109,7 +109,8 @@ async def test_progress_is_cleared_when_the_batch_ends(rig, monkeypatch):
 
 async def test_progress_is_none_when_idle(rig):
     from app import feeder
-    assert feeder.transfer_snapshot() == {"transfers": [], "batch": None}
+    assert feeder.transfer_snapshot() == {"transfers": [], "batch": None,
+                                          "last_fill": None}
 
 
 async def test_the_snapshot_carries_rate_and_eta(rig):
@@ -147,7 +148,39 @@ async def test_progress_does_not_touch_the_ledger(rig):
 
 async def test_the_progress_endpoint_is_shaped_for_the_dashboard(rig):
     from app import main
-    assert await main.progress() == {"transfers": [], "batch": None}
+    assert await main.progress() == {"transfers": [], "batch": None,
+                                     "last_fill": None}
+
+
+async def test_a_finished_fill_is_still_reported(rig, monkeypatch):
+    """On a fast network a whole batch lands in under a second, so live bars
+    are a blink. The panel must still be able to say what just happened
+    instead of looking idle."""
+    from app import db, feeder, immich
+
+    db.upsert_assets([asset(i, size=1000) for i in range(3)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 3
+
+    snap = feeder.transfer_snapshot()
+    assert snap["transfers"] == [] and snap["batch"] is None
+    assert snap["last_fill"]["files"] == 3
+    assert snap["last_fill"]["bytes"] == 3000
+    assert snap["last_fill"]["at"]
+
+
+async def test_a_fill_that_wrote_nothing_leaves_the_summary_alone(rig, monkeypatch):
+    from app import db, feeder, immich
+
+    db.upsert_assets([asset(0, size=100)])
+
+    async def boom(asset_id):
+        raise RuntimeError("nope")
+    monkeypatch.setattr(immich, "stream_original", boom)
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 0
+    assert feeder.transfer_snapshot()["last_fill"] is None
 
 
 async def test_status_reports_the_running_build(rig):
