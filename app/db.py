@@ -180,28 +180,6 @@ def set_meta(k: str, v: str) -> None:
         _bump()
 
 
-def set_progress(filename: str, done: int, total: int) -> None:
-    """What the feeder is working on right now, for the dashboard."""
-    import json
-    set_meta("feed_progress", json.dumps(
-        {"filename": filename, "done": done, "total": total, "at": now()}))
-
-
-def clear_progress() -> None:
-    set_meta("feed_progress", "")
-
-
-def progress() -> dict | None:
-    import json
-    raw = get_meta("feed_progress")
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except ValueError:
-        return None
-
-
 def queue_contents(limit: int = 500) -> list[dict]:
     """What is in the outbox right now, oldest first.
 

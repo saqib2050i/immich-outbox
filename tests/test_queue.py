@@ -49,31 +49,6 @@ async def test_each_file_is_marked_as_it_lands(rig, monkeypatch):
         "the event stream had nothing to push between files"
 
 
-async def test_progress_names_the_file_being_fetched(rig, monkeypatch):
-    from app import db, feeder, immich, settings
-
-    settings.save({"max_batch_files": 40})
-    db.upsert_assets([asset(i, size=100) for i in range(3)])
-
-    snapshots = []
-    real = fake_download()
-
-    async def watched(asset_id):
-        snapshots.append(db.progress())
-        return await real(asset_id)
-
-    monkeypatch.setattr(immich, "stream_original", watched)
-    _, used = feeder.reconcile()
-    await feeder.top_up(used)
-
-    assert [s["filename"] for s in snapshots] == \
-        ["IMG_0000.jpg", "IMG_0001.jpg", "IMG_0002.jpg"]
-    assert [s["done"] for s in snapshots] == [0, 1, 2]
-    assert all(s["total"] == 3 for s in snapshots)
-    # Cleared when the batch ends, so the UI does not show a stale file.
-    assert db.progress() is None
-
-
 async def test_the_queue_lists_what_is_in_the_outbox(rig, monkeypatch):
     from app import db, main
 
