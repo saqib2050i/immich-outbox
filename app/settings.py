@@ -41,7 +41,7 @@ SPEC: dict[str, tuple[type, object]] = {
     # Write a date corrected in Immich into the file itself. The only case
     # where this service alters an original, and only when the file's own
     # date disagrees with Immich's.
-    "fix_dates": (bool, True),
+    "fix_dates": (bool, False),
     "max_asset_mb": (int, config.MAX_ASSET_BYTES // (1024 * 1024)),
     "ongoing_enabled": (bool, True),
     "ongoing_from": (str, config.MIN_TAKEN_AT),

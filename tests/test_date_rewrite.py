@@ -103,8 +103,9 @@ async def test_an_unreadable_date_is_not_written(rig):
 # --- how it fits into delivery -------------------------------------------
 
 async def test_a_corrected_asset_is_rewritten_before_it_lands(rig, monkeypatch):
-    from app import db, feeder, immich
+    from app import db, feeder, immich, settings
 
+    settings.save({"fix_dates": True})
     db.upsert_assets([asset(0, size=100, taken="2019-06-04T14:30:00Z",
                             exif_taken="2016-12-11T09:00:00Z")])
     seen = {}
@@ -158,8 +159,9 @@ async def test_the_setting_turns_it_off(rig, monkeypatch):
 
 async def test_a_failed_rewrite_still_delivers_the_file(rig, monkeypatch):
     """A missing exiftool must not stop the relay."""
-    from app import db, feeder, immich
+    from app import db, feeder, immich, settings
 
+    settings.save({"fix_dates": True})
     db.upsert_assets([asset(0, size=100, taken="2019-06-04T14:30:00Z",
                             exif_taken="2016-12-11T09:00:00Z")])
     monkeypatch.setattr(feeder, "rewrite_capture_date", lambda p, t: False)
@@ -172,8 +174,9 @@ async def test_a_failed_rewrite_still_delivers_the_file(rig, monkeypatch):
 async def test_the_size_check_runs_before_any_edit(rig, monkeypatch):
     """Integrity is verified against Immich first; a truncated download is
     rejected rather than rewritten and delivered."""
-    from app import db, feeder, immich
+    from app import db, feeder, immich, settings
 
+    settings.save({"fix_dates": True})
     db.upsert_assets([asset(0, size=500_000, taken="2019-06-04T14:30:00Z",
                             exif_taken="2016-12-11T09:00:00Z")])
     calls = []
@@ -216,3 +219,98 @@ async def test_the_exiftool_copy_is_never_counted_as_a_photo(rig):
     assert rig.files() == set()
     names, used = feeder.list_outbox()
     assert names == [] and used == 0
+
+
+# --- held back until you decide ------------------------------------------
+
+async def test_rewriting_is_off_by_default(rig):
+    from app import settings
+    assert settings.load().fix_dates is False
+
+
+async def test_a_corrected_file_is_held_back_while_rewriting_is_off(rig, monkeypatch):
+    """Sending it now would put the old date in Google Photos permanently,
+    and Google keeps whatever it is first given."""
+    from app import db, feeder, immich
+
+    db.upsert_assets([asset(0, size=100, taken="2019-06-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z"),
+                      asset(1, size=100, taken="2019-06-04T14:30:00Z",
+                            exif_taken="2019-06-04T14:30:00Z")])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+
+    assert await feeder.top_up(used) == 1, "the mismatched file went out anyway"
+    assert db.queue_contents()[0]["id"] == "asset-1"
+
+
+async def test_the_category_lists_them_with_examples(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(0, size=100, taken="2019-06-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z", name="a.jpg"),
+                      asset(1, size=200, taken="2019-07-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z", name="b.jpg"),
+                      asset(2, size=100, taken="2019-06-04T14:30:00Z")])
+
+    d = await main.date_mismatch()
+    assert d["total"] == 2
+    assert d["bytes"] == 300
+    assert d["rewriting_enabled"] is False
+    assert {m["month"] for m in d["months"]} == {"2019-06", "2019-07"}
+    # The examples show the disagreement, so the decision is informed.
+    ex = d["examples"][0]
+    assert ex["taken_at"] and ex["exif_taken_at"]
+    assert ex["taken_at"] != ex["exif_taken_at"]
+
+
+async def test_sending_the_batch_turns_rewriting_on(rig, monkeypatch):
+    from app import db, feeder, immich, main, settings
+
+    db.upsert_assets([asset(i, size=100, taken="2019-06-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z") for i in range(3)])
+    assert (await main.date_mismatch())["total"] == 3
+
+    r = await main.date_mismatch_send({})
+    assert r["queued"] == 3 and r["rewriting_enabled"] is True
+    assert settings.load().fix_dates is True
+
+    monkeypatch.setattr(feeder, "rewrite_capture_date", lambda p, t: True)
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 3
+
+
+async def test_one_month_can_be_sent_at_a_time(rig):
+    from app import db, main
+
+    db.upsert_assets([asset(0, size=100, taken="2019-06-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z"),
+                      asset(1, size=100, taken="2020-01-04T14:30:00Z",
+                            exif_taken="2016-12-11T09:00:00Z")])
+    r = await main.date_mismatch_send({"month": "2019-06"})
+    assert r["queued"] == 1
+
+    # Only that month was released; the other is still waiting on a decision.
+    forced = {row["id"]: row["forced"] for row in db.connect().execute(
+        "SELECT id, forced FROM assets")}
+    assert forced == {"asset-0": 1, "asset-1": 0}
+
+
+async def test_a_rescan_notices_a_date_corrected_later(rig, monkeypatch):
+    """The correction usually happens after the asset was first scanned."""
+    from app import db, immich, main, worker
+
+    db.upsert_assets([asset(0, size=100, taken="2016-12-11T09:00:00Z",
+                            exif_taken="2016-12-11T09:00:00Z")])
+    assert (await main.date_mismatch())["total"] == 0
+
+    corrected = asset(0, size=100, taken="2019-06-04T14:30:00Z",
+                      exif_taken="2016-12-11T09:00:00Z")
+
+    async def page(taken_after=None):
+        yield [corrected]
+    monkeypatch.setattr(immich, "list_assets", page)
+    await worker.full_scan()
+
+    assert (await main.date_mismatch())["total"] == 1

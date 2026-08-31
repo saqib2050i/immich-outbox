@@ -138,39 +138,9 @@ def outbox_ready() -> tuple[bool, str]:
     return True, ""
 
 
-def capture_time(taken_at: str | None) -> float | None:
-    """The capture date as a POSIX timestamp, or None if unreadable."""
-    if not taken_at:
-        return None
-    text = str(taken_at).strip().replace("Z", "+00:00")
-    for candidate in (text, text[:10]):
-        try:
-            dt = datetime.fromisoformat(candidate)
-        except ValueError:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    return None
-
-
-def needs_date_fix(taken_at: str | None, exif_taken_at: str | None) -> bool:
-    """Does the file's own date disagree with Immich's?
-
-    True only when the file *has* a date of its own and Immich holds a
-    different one -- which is exactly the shape of a date corrected in
-    Immich, since that edit lives in Immich's database while /original
-    keeps serving the untouched file.
-
-    A file with no date of its own is deliberately left alone: there is no
-    correction to apply, and its modification time already carries the date
-    for Google Photos to fall back on.
-    """
-    want = capture_time(taken_at)
-    have = capture_time(exif_taken_at)
-    if want is None or have is None:
-        return False
-    return abs(want - have) > 60
+# Defined in db so the ledger can flag rows as it scans them.
+capture_time = db.capture_time
+needs_date_fix = db.needs_date_fix
 
 
 def rewrite_capture_date(path: str, taken_at: str) -> bool:
@@ -379,6 +349,7 @@ async def top_up(used: int) -> int:
         "backfill": cfg.backfill_enabled,
         "backfill_start": cfg.backfill_start,
         "backfill_end": cfg.backfill_end,
+        "fix_dates": cfg.fix_dates,
     }
 
     written: list[str] = []

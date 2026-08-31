@@ -89,6 +89,7 @@ MIGRATIONS = (
     ("outbox_name", "TEXT"),
     ("missing_at", "TEXT"),
     ("exif_taken_at", "TEXT"),
+    ("date_mismatch", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -100,6 +101,41 @@ CREATE INDEX IF NOT EXISTS idx_assets_state  ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken  ON assets(taken_at);
 CREATE INDEX IF NOT EXISTS idx_assets_outbox ON assets(outbox_name);
 """
+
+
+def capture_time(taken_at: str | None) -> float | None:
+    """The capture date as a POSIX timestamp, or None if unreadable."""
+    if not taken_at:
+        return None
+    text = str(taken_at).strip().replace("Z", "+00:00")
+    for candidate in (text, text[:10]):
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    return None
+
+
+def needs_date_fix(taken_at: str | None, exif_taken_at: str | None) -> bool:
+    """Does the file's own date disagree with Immich's?
+
+    True only when the file *has* a date of its own and Immich holds a
+    different one -- which is exactly the shape of a date corrected in
+    Immich, since that edit lives in Immich's database while /original
+    keeps serving the untouched file.
+
+    A file with no date of its own is deliberately left alone: there is no
+    correction to apply, and its modification time already carries the date
+    for Google Photos to fall back on.
+    """
+    want = capture_time(taken_at)
+    have = capture_time(exif_taken_at)
+    if want is None or have is None:
+        return False
+    return abs(want - have) > 60
 
 
 def now() -> str:
@@ -444,15 +480,22 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
     """
     if not rows:
         return 0
+    # Flagged as they are scanned, so the ledger can group them without
+    # re-parsing dates on every query.
+    for r in rows:
+        r["date_mismatch"] = 1 if needs_date_fix(
+            r.get("taken_at"), r.get("exif_taken_at")) else 0
+
     c = connect()
     with _lock:
         before = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
         c.executemany(
             """INSERT OR IGNORE INTO assets
                (id, filename, size, checksum, taken_at, kind, state, queued_at,
-                width, height, duration, exif_taken_at)
+                width, height, duration, exif_taken_at, date_mismatch)
                VALUES (:id, :filename, :size, :checksum, :taken_at, :kind, :state,
-                       :queued_at, :width, :height, :duration, :exif_taken_at)""",
+                       :queued_at, :width, :height, :duration, :exif_taken_at,
+                       :date_mismatch)""",
             rows,
         )
         # Rows written by an older version carry no dimensions. Backfill them
@@ -474,7 +517,8 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
                           width    = COALESCE(:width, width),
                           height   = COALESCE(:height, height),
                           duration = COALESCE(:duration, duration),
-                          exif_taken_at = :exif_taken_at
+                          exif_taken_at = :exif_taken_at,
+                          date_mismatch = :date_mismatch
                     WHERE id = :id""",
                 rows,
             )
@@ -486,6 +530,40 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
         _bump()
         after = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
     return after - before
+
+
+def date_mismatch_breakdown() -> dict:
+    """Assets whose date was corrected in Immich after they were imported.
+
+    The file still carries the old date, and Google Photos keeps whatever it
+    is first given -- so sending one now means a wrong date there for good.
+    They are held back until date rewriting is turned on, and grouped here
+    so the decision can be made deliberately rather than discovered later.
+    """
+    rows = connect().execute("""
+        SELECT COALESCE(NULLIF(substr(taken_at, 1, 7), ''), 'undated') AS month,
+               COUNT(*)                                               AS total,
+               COALESCE(SUM(size), 0)                                 AS bytes
+        FROM assets
+        WHERE date_mismatch = 1
+          AND state IN ('pending','failed')
+          AND missing_at IS NULL
+          AND id NOT IN (SELECT id FROM motion_parts)
+        GROUP BY month ORDER BY month DESC
+    """).fetchall()
+    months = [dict(r) for r in rows]
+
+    sample = connect().execute("""
+        SELECT filename, taken_at, exif_taken_at FROM assets
+         WHERE date_mismatch = 1 AND state IN ('pending','failed')
+           AND missing_at IS NULL
+         ORDER BY taken_at DESC LIMIT 5
+    """).fetchall()
+
+    return {"months": months,
+            "total": sum(m["total"] for m in months),
+            "bytes": sum(m["bytes"] for m in months),
+            "examples": [dict(r) for r in sample]}
 
 
 def smallest_sendable(filt: dict) -> int | None:
@@ -500,10 +578,12 @@ def smallest_sendable(filt: dict) -> int | None:
     params["ongoing"] = 1 if filt["ongoing"] else 0
     params["backfill"] = 1 if filt["backfill"] else 0
     params["max_attempts"] = MAX_ATTEMPTS
+    params["fix_dates"] = 1 if filt.get("fix_dates") else 0
     row = connect().execute(
         """SELECT MIN(size) m FROM assets
             WHERE state IN ('pending','failed') AND attempts < :max_attempts
               AND missing_at IS NULL
+              AND (date_mismatch = 0 OR :fix_dates = 1)
               AND id NOT IN (SELECT id FROM motion_parts)
               AND (kind = 'IMAGE' OR :include_video = 1)
               AND (size = 0 OR size <= :max_asset_bytes)
@@ -571,6 +651,10 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     sql = """SELECT * FROM assets
              WHERE state IN ('pending','failed') AND attempts < :max_attempts
                AND missing_at IS NULL
+               -- Held back while date rewriting is off. Sending these would
+               -- put a date in Google Photos that was already corrected in
+               -- Immich, and Google keeps whatever it is first given.
+               AND (date_mismatch = 0 OR :fix_dates = 1)
                AND id NOT IN (SELECT id FROM motion_parts)
                AND (kind = 'IMAGE' OR :include_video = 1)
                AND (size = 0 OR size <= :max_asset_bytes)
@@ -588,6 +672,7 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     params["backfill"] = 1 if filt["backfill"] else 0
     params["scan_limit"] = max_files * 4
     params["max_attempts"] = MAX_ATTEMPTS
+    params["fix_dates"] = 1 if filt.get("fix_dates") else 0
 
     rows = connect().execute(sql, params).fetchall()
 
