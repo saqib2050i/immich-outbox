@@ -255,6 +255,14 @@ async def progress():
     return feeder.transfer_snapshot()
 
 
+def fmt_bytes_free(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
 @app.get("/api/queue")
 async def queue():
     """The live queue: what is in the outbox waiting on the phone."""
@@ -273,11 +281,49 @@ async def queue():
         item["on_disk"] = bool(name and name in present) or any(
             n.startswith(f"{item['id']}__") for n in present)
 
+    # Why nothing appears to be happening. "The outbox is full" is the
+    # normal steady state of this system -- the phone empties it on Google's
+    # schedule, not ours -- and it was the one thing the dashboard never
+    # said out loud.
+    used = int(db.get_meta("outbox_used", "0"))
+    free = max(cfg.outbox_max_bytes - used, 0)
+    waiting = db.waiting_breakdown()
+    waiting_total = sum(m["asked"] + m["eligible"] for m in waiting)
+    moving = bool(feeder.transfer_snapshot()["transfers"])
+    smallest = db.smallest_sendable({
+        "include_video": cfg.include_video,
+        "max_asset_bytes": cfg.max_asset_bytes,
+        "ongoing": cfg.ongoing_enabled, "ongoing_from": cfg.ongoing_from,
+        "backfill": cfg.backfill_enabled,
+        "backfill_start": cfg.backfill_start,
+        "backfill_end": cfg.backfill_end,
+    })
+
+    if cfg.paused:
+        status = ("paused", "Sending is paused. Nothing new goes to the outbox.")
+    elif not ready:
+        status = ("blocked", problem)
+    elif moving:
+        status = ("sending", "Copying files into the outbox now.")
+    elif waiting_total == 0:
+        status = ("idle", "Nothing is waiting to be sent.")
+    elif smallest is not None and free < smallest:
+        status = ("full", f"Waiting — the outbox is full. The next file needs "
+                          f"{fmt_bytes_free(smallest)} and only "
+                          f"{fmt_bytes_free(free)} is free. Files leave it when "
+                          f"the phone has uploaded them to Google Photos.")
+    else:
+        status = ("waiting", f"Waiting for the next check, up to "
+                             f"{config.FEED_INTERVAL_MIN} minutes away. "
+                             f"{fmt_bytes_free(free)} free in the outbox.")
+
     return {
         "items": items,
         "count": len(items),
         "bytes": sum(i["size"] or 0 for i in items),
         "paused": cfg.paused,
+        "status": {"state": status[0], "detail": status[1],
+                   "waiting": waiting_total, "free_bytes": free},
         "lanes": settings.load().lanes,
         "outbox": {
             "used_bytes": int(db.get_meta("outbox_used", "0")),

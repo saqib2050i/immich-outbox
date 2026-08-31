@@ -264,6 +264,18 @@
   .dlgrow{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
   .dlgrow .spacer{flex:1}
 
+  /* ---- queue status ---- */
+  .qstatus{display:flex;align-items:center;gap:9px;margin:12px 0 0;
+           padding:9px 12px;border:1px solid var(--rule);border-radius:6px;
+           background:var(--panel);font-size:13px}
+  .qsdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dim)}
+  .qstatus.sending .qsdot{background:var(--transit);
+                          animation:pulse 1.1s ease-in-out infinite}
+  .qstatus.full .qsdot,
+  .qstatus.paused .qsdot{background:var(--alarm)}
+  .qstatus.blocked .qsdot{background:var(--alarm)}
+  .qstatus.idle .qsdot{background:var(--done)}
+
   /* ---- backlog ---- */
   .blhead{margin:26px 0 0;font-size:13px;letter-spacing:.08em;
           text-transform:uppercase}
@@ -529,22 +541,23 @@
 
 <section class="queue" id="nav-queue" data-tab="queue">
   <h2>Queue</h2>
-  <p class="qnote" id="qNote">Files written to the outbox, waiting for the phone
-    to take them. They leave on their own when Google Photos has them.
-    Cancelling asks whether they should be sent later or not at all —
-    "send later" means the feeder will refill from the backlog.</p>
+  <p class="qnote">Files waiting to go to the outbox. They move a batch at a
+     time, as fast as the outbox empties — which happens when the phone has
+     uploaded them to Google Photos and Smart Storage clears them.</p>
 
-  <div class="qbar" id="qBar">
-    <label class="qall" title="Select every file in the list">
-      <input type="checkbox" id="qSelectAll" aria-label="Select all queued files">
-      <span>All</span>
-    </label>
-    <button id="btnCancelSel" class="danger" disabled>Cancel selected</button>
-    <button id="btnCancelAll" class="danger" hidden>Cancel all</button>
-    <span class="qsummary" id="qSummary"></span>
-    <button id="btnPause">Pause sending</button>
+  <div class="qstatus" id="qStatus">
+    <span class="qsdot" id="qsDot"></span><span id="qsText">—</span>
   </div>
 
+  <div class="qbar">
+    <button id="btnPause">Pause sending</button>
+    <button id="btnDismissBacklog" class="danger" hidden>Dismiss what is queued to send</button>
+    <button id="btnDismissAllWaiting" class="danger" hidden>Dismiss everything waiting</button>
+    <span class="qsummary" id="blSummary"></span>
+  </div>
+
+  <!-- Live transfers: only present while bytes are moving, otherwise a
+       summary of what the last fill did. -->
   <div class="qprogress" id="qProgress" hidden>
     <div id="qpFiles"></div>
     <div class="qpline qpsub">
@@ -559,28 +572,37 @@
     they cannot be recalled, and removing them would be read as a backup.
   </div>
 
-  <ol class="qlist" id="qList"></ol>
-
-  <h2 class="blhead">Waiting to be sent</h2>
-  <p class="qnote">Where the next batch comes from, so cancelling the queue
-     alone will not stop it refilling. <strong>Asked for</strong> is what you
-     queued by hand; <strong>in window</strong> is what your date settings let
-     through automatically; <strong>resting</strong> is the rest of the library,
-     which is not going anywhere. Dismissing sends nothing and deletes nothing,
-     and anything dismissed can be restored below.</p>
-
-  <div class="pbar">
-    <button id="btnDismissBacklog" class="danger" hidden>Dismiss what is queued to send</button>
-    <button id="btnDismissAllWaiting" class="danger" hidden>Dismiss everything waiting</button>
-    <span class="psummary" id="blSummary"></span>
-  </div>
+  <p class="qnote" style="margin-top:14px"><strong>Asked for</strong> is what
+     you queued by hand; <strong>in window</strong> is what your date settings
+     let through automatically; <strong>resting</strong> is the rest of the
+     library, which is not going anywhere. Dismissing sends nothing and deletes
+     nothing, and anything dismissed can be restored below.</p>
 
   <ol class="bllist" id="blList"></ol>
+
+  <h2 class="blhead">In the outbox</h2>
+  <p class="qnote">Already copied out and mirrored to the phone by Syncthing.
+     These are out of our hands: they disappear on their own once Google Photos
+     has them, and that disappearing is the only proof of backup there is.
+     Cancelling pulls one back — "send later" returns it to the queue, "don't
+     send" takes it out of the running.</p>
+
+  <div class="qbar">
+    <label class="qall" title="Select every file in the outbox">
+      <input type="checkbox" id="qSelectAll" aria-label="Select all files in the outbox">
+      <span>All</span>
+    </label>
+    <button id="btnCancelSel" class="danger" disabled>Cancel selected</button>
+    <button id="btnCancelAll" class="danger" hidden>Cancel all</button>
+    <span class="qsummary" id="qSummary"></span>
+  </div>
+
+  <ol class="qlist" id="qList"></ol>
 
   <h2 class="blhead" id="dsHead" hidden>Dismissed</h2>
   <p class="qnote" id="dsNote" hidden>Taken out of the running by hand. Nothing
      here is sent, and nothing has been deleted from Immich or the ledger —
-     restore a month to put it back in the waiting list.</p>
+     restore a month to put it back in the queue.</p>
 
   <div class="pbar" id="dsBar" hidden>
     <button id="btnRestoreAll">Restore everything dismissed</button>
@@ -930,8 +952,10 @@ async function render(){
 
   if (d.auth && d.auth.must_change && pwSheet.hidden) openPasswordSheet(true);
   const problems = (d.stuck || []).length + (d.problems || []).length;
-  badgeQueue.hidden = !c.queued;
-  badgeQueue.textContent = fmtNum(c.queued);
+  // The badge counts what the tab is now named for: files waiting to go to
+  // the outbox. renderQueue() refines it once the status has been fetched.
+  badgeQueue.hidden = !(c.pending + c.failed);
+  badgeQueue.textContent = fmtNum(c.pending + c.failed);
   badgeProblems.hidden = !problems;
   badgeProblems.textContent = fmtNum(problems);
 
@@ -1585,9 +1609,20 @@ async function renderQueue(){
   btnPause.textContent = q.paused ? "Resume sending" : "Pause sending";
   qPaused.hidden = !q.paused;
 
+  // Why nothing appears to be happening. "The outbox is full" is the normal
+  // steady state of this system and was never said out loud.
+  if (q.status){
+    qStatus.className = "qstatus " + q.status.state;
+    qsText.textContent = q.status.detail;
+    // Only what is actually going out -- the resting library is not queued
+    // for anything and would make the badge meaningless.
+    badgeQueue.hidden = !q.status.waiting;
+    badgeQueue.textContent = fmtNum(q.status.waiting);
+  }
+
   // The bars belong to pollTransfer(), which runs far more often than this.
   qSummary.textContent = q.count
-    ? `${fmtNum(q.count)} file(s) \u00b7 ${fmtBytes(q.bytes)}`
+    ? `${fmtNum(q.count)} file(s) in the outbox \u00b7 ${fmtBytes(q.bytes)}`
     : "";
   btnCancelAll.hidden = q.count === 0;
   btnCancelAll.textContent = `Cancel all (${fmtNum(q.count)})`;
@@ -1602,7 +1637,7 @@ async function renderQueue(){
     li.className = "empty";
     li.textContent = q.paused
       ? "Nothing in the outbox. Sending is paused."
-      : "Nothing in the outbox right now \u2014 the feeder refills it as files become eligible.";
+      : "Nothing in the outbox right now.";
     qList.appendChild(li);
     qRefreshBar();
     qSetBusyOff();
@@ -1768,8 +1803,27 @@ const fmtEta = s => {
 function paintTransfer(state){
   const list = state.transfers || [];
   const batch = state.batch;
-  qProgress.hidden = list.length === 0 && !batch;
-  if (qProgress.hidden) return;
+  const last = state.last_fill;
+
+  // Nothing moving. On a fast network that is the normal state -- a whole
+  // batch lands in under a second -- so report what the last fill did
+  // rather than hiding and looking idle.
+  if (!list.length && !batch){
+    if (!last){ qProgress.hidden = true; return; }
+    qProgress.hidden = false;
+    qpFiles.innerHTML = "";
+    const line = document.createElement("div");
+    line.className = "qpline qpsub";
+    line.textContent = "Last fill: " + fmtNum(last.files) + " file(s) · "
+                     + fmtBytes(last.bytes) + " · " + ago(last.at);
+    qpFiles.appendChild(line);
+    qpBatchText.textContent = "";
+    qpBatchBytes.textContent = "";
+    qpBatch.style.width = "0%";
+    return;
+  }
+
+  qProgress.hidden = false;
 
   // One row per file in flight. Photos and videos run in separate lanes, so
   // there is usually more than one, and a slow video must not look like the
@@ -1831,13 +1885,12 @@ async function pollTransfer(){
   try { d = await (await fetch("/api/progress")).json(); } catch { return; }
 
   const busy = (d.transfers && d.transfers.length) || d.batch;
+  paintTransfer(d);
   if (busy){
     lastTransfer = d;
-    paintTransfer(d);
   } else if (lastTransfer){
-    // Just finished: clear the bars and let the queue list catch up.
+    // Just finished: let the queue list catch up with what landed.
     lastTransfer = null;
-    qProgress.hidden = true;
     tick();
   }
 }
@@ -1863,7 +1916,7 @@ async function renderBacklog(){
   btnDismissAllWaiting.hidden = b.total === 0;
   btnDismissAllWaiting.textContent = `Dismiss everything waiting (${fmtNum(b.total)})`;
   blSummary.textContent = toSend || b.resting
-    ? `${fmtNum(toSend)} on the way · ${fmtBytes(b.to_send_bytes)}`
+    ? `${fmtNum(toSend)} queued · ${fmtBytes(b.to_send_bytes)}`
       + (b.failed ? ` · ${fmtNum(b.failed)} failed` : "")
       + (b.resting ? ` · ${fmtNum(b.resting)} outside your windows` : "")
     : "";

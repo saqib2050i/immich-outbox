@@ -87,6 +87,7 @@ MIGRATIONS = (
     ("duration", "REAL"),
     ("forced", "INTEGER NOT NULL DEFAULT 0"),
     ("outbox_name", "TEXT"),
+    ("missing_at", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -279,6 +280,7 @@ def waiting_breakdown() -> list[dict]:
                                  THEN size ELSE 0 END), 0)            AS to_send_bytes
         FROM assets
         WHERE state IN ('pending','failed')
+          AND missing_at IS NULL
           AND id NOT IN (SELECT id FROM motion_parts)
         GROUP BY month
         ORDER BY month DESC
@@ -414,9 +416,21 @@ def dismiss_failed(ids: list[str] | None = None) -> int:
     return cur.rowcount
 
 
-def upsert_assets(rows: list[dict]) -> int:
-    """Insert newly discovered Immich assets. Never touches existing rows,
-    so a confirmed asset is never re-queued."""
+def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
+    """Insert newly discovered Immich assets.
+
+    State is never touched, so a confirmed asset is never re-queued.
+
+    refresh=True also brings the *description* of an existing asset up to
+    date: capture date, name, size, checksum, dimensions. Without it a
+    correction made in Immich never reached the ledger -- fix a wrong
+    capture date on an import and the timeline kept showing the photos
+    under the old month forever, because INSERT OR IGNORE ignores the row
+    it already has and a rescan changed nothing.
+
+    outbox_name is deliberately left alone: it is the name on disk, and
+    renaming an asset in Immich must not orphan a file already delivered.
+    """
     if not rows:
         return 0
     c = connect()
@@ -438,6 +452,21 @@ def upsert_assets(rows: list[dict]) -> int:
                WHERE id=:id AND width IS NULL AND :width IS NOT NULL""",
             rows,
         )
+        if refresh:
+            c.executemany(
+                """UPDATE assets
+                      SET filename = :filename,
+                          size     = :size,
+                          checksum = COALESCE(:checksum, checksum),
+                          taken_at = :taken_at,
+                          kind     = :kind,
+                          width    = COALESCE(:width, width),
+                          height   = COALESCE(:height, height),
+                          duration = COALESCE(:duration, duration)
+                    WHERE id = :id""",
+                rows,
+            )
+
         c.execute("""UPDATE assets SET state='skipped'
                      WHERE state='pending'
                        AND id IN (SELECT id FROM motion_parts)""")
@@ -445,6 +474,70 @@ def upsert_assets(rows: list[dict]) -> int:
         _bump()
         after = c.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
     return after - before
+
+
+def smallest_sendable(filt: dict) -> int | None:
+    """The smallest file currently eligible to go out.
+
+    "The outbox is full" is not free space reaching zero -- it is the next
+    file no longer fitting. With 51 MB free and nothing smaller than 60 MB
+    waiting, the queue is stopped even though the gauge is not at the top.
+    """
+    params = dict(filt)
+    params["include_video"] = 1 if filt["include_video"] else 0
+    params["ongoing"] = 1 if filt["ongoing"] else 0
+    params["backfill"] = 1 if filt["backfill"] else 0
+    params["max_attempts"] = MAX_ATTEMPTS
+    row = connect().execute(
+        """SELECT MIN(size) m FROM assets
+            WHERE state IN ('pending','failed') AND attempts < :max_attempts
+              AND missing_at IS NULL
+              AND id NOT IN (SELECT id FROM motion_parts)
+              AND (kind = 'IMAGE' OR :include_video = 1)
+              AND (size = 0 OR size <= :max_asset_bytes)
+              AND (
+                   forced = 1
+                OR (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
+                OR (:backfill = 1 AND substr(taken_at,1,10)
+                      BETWEEN :backfill_start AND :backfill_end)
+              )""", params).fetchone()
+    return row["m"] if row and row["m"] is not None else None
+
+
+def mark_missing(seen_ids: set) -> int:
+    """Reconcile the ledger against a complete pass over Immich.
+
+    Anything Immich no longer returns is flagged rather than deleted, and
+    the flag is cleared the moment it is seen again. That makes a truncated
+    or half-failed scan self-correcting: the worst it can do is hide some
+    rows until the next good scan, instead of destroying the record that
+    they were backed up.
+
+    Nothing is ever re-sent as a result of this -- state is untouched.
+    """
+    if not seen_ids:
+        return 0
+    c = connect()
+    with _lock:
+        c.execute("CREATE TEMP TABLE IF NOT EXISTS _seen (id TEXT PRIMARY KEY)")
+        c.execute("DELETE FROM _seen")
+        c.executemany("INSERT OR IGNORE INTO _seen (id) VALUES (?)",
+                      [(i,) for i in seen_ids])
+        c.execute("""UPDATE assets SET missing_at = NULL
+                      WHERE missing_at IS NOT NULL
+                        AND id IN (SELECT id FROM _seen)""")
+        cur = c.execute("""UPDATE assets SET missing_at = ?
+                            WHERE missing_at IS NULL
+                              AND id NOT IN (SELECT id FROM _seen)""", (now(),))
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
+def missing_count() -> int:
+    return connect().execute(
+        "SELECT COUNT(*) n FROM assets WHERE missing_at IS NOT NULL"
+    ).fetchone()["n"]
 
 
 def claim_batch(budget_bytes: int, max_files: int, filt: dict,
@@ -465,6 +558,7 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     """
     sql = """SELECT * FROM assets
              WHERE state IN ('pending','failed') AND attempts < :max_attempts
+               AND missing_at IS NULL
                AND id NOT IN (SELECT id FROM motion_parts)
                AND (kind = 'IMAGE' OR :include_video = 1)
                AND (size = 0 OR size <= :max_asset_bytes)
@@ -940,7 +1034,7 @@ def media_breakdown() -> list[dict]:
                                                                      AS remaining,
                COALESCE(SUM(duration), 0)                            AS seconds
         FROM assets
-        WHERE id NOT IN (SELECT id FROM motion_parts)
+        WHERE id NOT IN (SELECT id FROM motion_parts) AND missing_at IS NULL
         GROUP BY bucket, kind
         ORDER BY bytes DESC
     """).fetchall()
@@ -987,6 +1081,7 @@ def month_detail(month: str) -> dict:
                MAX(CASE WHEN width>0 AND height>0 THEN MAX(width,height) END) AS max_side
         FROM assets
         WHERE id NOT IN (SELECT id FROM motion_parts)
+          AND missing_at IS NULL
           AND substr(taken_at, 1, 7) = ?
         GROUP BY kind, gains
     """, (month,)).fetchall()
@@ -1116,6 +1211,7 @@ def timeline() -> list[dict]:
         -- photos. Dismissed assets are NOT: hiding them made a month whose
         -- files had all been dismissed read as fully backed up.
         WHERE a.id NOT IN (SELECT id FROM motion_parts)
+          AND a.missing_at IS NULL
           AND a.taken_at IS NOT NULL AND a.taken_at != ''
         GROUP BY substr(a.taken_at, 1, 7)
         ORDER BY substr(a.taken_at, 1, 7) DESC
@@ -1141,6 +1237,7 @@ def monthly_breakdown() -> list[dict]:
                SUM(CASE WHEN state = 'skipped'    THEN 1 ELSE 0 END)  AS dismissed
         FROM assets
         WHERE id NOT IN (SELECT id FROM motion_parts)
+          AND missing_at IS NULL
           AND taken_at IS NOT NULL AND taken_at != ''
         GROUP BY month
         ORDER BY month DESC

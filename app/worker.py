@@ -19,13 +19,34 @@ from . import config, db, immich
 
 
 async def _scan(taken_after: str | None, label: str) -> None:
+    """One pass over Immich.
+
+    A full pass also refreshes what it already knows and reconciles against
+    what Immich still holds. An incremental pass only looks at a recent
+    window, so it can neither refresh the rest nor conclude anything about
+    what is absent from it.
+    """
+    full = label == "full"
     added = 0
+    seen: set[str] = set()
     try:
         async for page in immich.list_assets(taken_after=taken_after):
-            added += db.upsert_assets(page)
+            added += db.upsert_assets(page, refresh=full)
+            if full:
+                seen.update(row["id"] for row in page)
     except Exception as exc:  # noqa: BLE001
+        # Deliberately no reconciliation on a failed scan: a half-finished
+        # pass would look exactly like a library that had lost everything
+        # it had not reached yet.
         db.log("error", f"{label} scan failed: {exc}")
         return
+
+    if full and seen:
+        gone = db.mark_missing(seen)
+        if gone:
+            db.log("scan", f"{gone} asset(s) are no longer in Immich — they are "
+                           "kept in the ledger but no longer counted or sent")
+
     db.set_meta(f"last_{label}_scan", db.now())
     if added:
         db.log("scan", f"{label} scan queued {added} new asset(s)")

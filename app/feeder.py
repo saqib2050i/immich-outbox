@@ -37,6 +37,12 @@ CYCLE_LOCK = asyncio.Lock()
 TRANSFERS: dict = {}
 BATCH: dict | None = None
 
+# What the last fill actually did. On a fast network a batch finishes in
+# under a second, so live bars are a blink and the panel would otherwise sit
+# empty between cycles -- which reads as "nothing is happening" when the
+# truth is "it already happened". This keeps the answer on screen.
+LAST_FILL: dict | None = None
+
 
 def transfer_snapshot() -> dict:
     """Everything moving right now, plus how the whole claim is going."""
@@ -59,7 +65,7 @@ def transfer_snapshot() -> dict:
         batch = dict(BATCH)
         batch["bytes_done"] = batch["bytes_done"] + sum(
             t["bytes"] for t in TRANSFERS.values())
-    return {"transfers": out, "batch": batch}
+    return {"transfers": out, "batch": batch, "last_fill": LAST_FILL}
 
 
 # Proof that the outbox we are looking at is the real one. See outbox_ready().
@@ -261,6 +267,7 @@ async def top_up(used: int) -> int:
 
     written: list[str] = []
     started_empty = used == 0
+    filled = 0
 
     while budget > 0:
         rows = db.claim_batch(budget, cfg.max_batch_files, filt,
@@ -270,6 +277,7 @@ async def top_up(used: int) -> int:
 
         spent, stopped = await _fetch_batch(rows, budget)
         budget -= spent
+        filled += spent
         written.extend(stopped["written"])
         if stopped["paused"] or not stopped["progressed"]:
             # Either the user pressed pause, or nothing in that claim could
@@ -277,6 +285,9 @@ async def top_up(used: int) -> int:
             break
 
     if written:
+        global LAST_FILL
+        LAST_FILL = {"files": len(written), "bytes": filled,
+                     "at": db.now()}
         # One log line per cycle: the per-file signal is the state change
         # itself, and forty lines an hour would bury everything else.
         db.log("queue", f"added {len(written)} file(s) to the outbox")

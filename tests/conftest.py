@@ -44,6 +44,7 @@ def rig(tmp_path, monkeypatch):
     feeder.CYCLE_LOCK = asyncio.Lock()
     feeder.TRANSFERS.clear()
     feeder.BATCH = None
+    feeder.LAST_FILL = None
 
     db.connect()
 
