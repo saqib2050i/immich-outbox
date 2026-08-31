@@ -20,6 +20,7 @@ import asyncio
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 
 from . import alerts, backup, config, db, immich, settings
 
@@ -131,6 +132,47 @@ def outbox_ready() -> tuple[bool, str]:
     except OSError as exc:
         return False, f"cannot write to {config.OUTBOX_DIR}: {exc}"
     return True, ""
+
+
+def capture_time(taken_at: str | None) -> float | None:
+    """The capture date as a POSIX timestamp, or None if unreadable."""
+    if not taken_at:
+        return None
+    text = str(taken_at).strip().replace("Z", "+00:00")
+    for candidate in (text, text[:10]):
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    return None
+
+
+def stamp_capture_time(path: str, taken_at: str | None) -> bool:
+    """Set a delivered file's modification time to when it was taken.
+
+    Google Photos dates a file by its embedded capture date, and falls back
+    to the file's modification time when there is none -- which is the case
+    for a lot of video, screenshots, and anything that has had its EXIF
+    stripped on the way through a messaging app. Left alone, that
+    modification time is the moment this service downloaded the file, so
+    those land in Google Photos dated today and sit at the wrong end of the
+    timeline.
+
+    Syncthing preserves modification times, so setting it here carries all
+    the way to the phone. The file's contents are still passed through byte
+    for byte; only the timestamp is touched.
+    """
+    stamp = capture_time(taken_at)
+    if stamp is None:
+        return False
+    try:
+        os.utime(path, (stamp, stamp))
+        return True
+    except OSError:
+        return False
 
 
 def list_outbox() -> tuple[list[str], int]:
@@ -389,6 +431,7 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
 
                 os.replace(tmp, dest)
                 os.chmod(dest, 0o664)
+                stamp_capture_time(dest, row["taken_at"])
                 tmp = None
                 # Marked the moment the file lands, not once the whole batch
                 # is done, so the queue grows a file at a time on screen.
@@ -486,6 +529,34 @@ async def watch() -> None:
             db.log("error", f"outbox watch error: {exc}")
 
 
+def repair_capture_times(limit: int = 500) -> int:
+    """Correct the modification time of files already delivered.
+
+    Files written before this was done carry the moment they were
+    downloaded, so anything Google Photos has not taken yet would still land
+    dated today. Repairing them in place costs one stat each and Syncthing
+    carries the change to the phone.
+
+    Bounded per pass so a very full outbox does not stall a cycle.
+    """
+    fixed = 0
+    for name, taken_at in db.outbox_capture_times():
+        if fixed >= limit:
+            break
+        path = os.path.join(config.OUTBOX_DIR, name)
+        want = capture_time(taken_at)
+        if want is None:
+            continue
+        try:
+            if abs(os.path.getmtime(path) - want) < 2:
+                continue            # already right
+        except OSError:
+            continue                # gone, or not ours to touch
+        if stamp_capture_time(path, taken_at):
+            fixed += 1
+    return fixed
+
+
 async def housekeeping() -> None:
     """The chores that have to happen whether or not anyone is looking.
 
@@ -495,6 +566,15 @@ async def housekeeping() -> None:
     An alert that only fires while you are watching is not an alert, and a
     backup that only happens when you remember is not a backup.
     """
+    try:
+        fixed = repair_capture_times()
+        if fixed:
+            db.log("info", f"corrected the capture date on {fixed} file(s) in "
+                           "the outbox — Google Photos dates undated media by "
+                           "the file's timestamp")
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"capture-time repair failed: {exc}")
+
     try:
         await alerts.check_and_notify()
     except Exception as exc:  # noqa: BLE001
