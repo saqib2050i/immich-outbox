@@ -18,14 +18,19 @@ The service never deletes a file from the outbox. Only the phone does.
 
 import asyncio
 import os
+import subprocess
 import tempfile
 import time
+from datetime import datetime, timezone
 
 from . import alerts, backup, config, db, immich, settings
 
 # Held while a cycle runs, so a reset from the dashboard cannot land halfway
 # through a download and leave the ledger disagreeing with the outbox.
 CYCLE_LOCK = asyncio.Lock()
+
+# Reported once, not per file, when exiftool is unavailable.
+_EXIFTOOL_MISSING = False
 
 # Byte-level progress for the files being fetched right now.
 #
@@ -131,6 +136,108 @@ def outbox_ready() -> tuple[bool, str]:
     except OSError as exc:
         return False, f"cannot write to {config.OUTBOX_DIR}: {exc}"
     return True, ""
+
+
+def capture_time(taken_at: str | None) -> float | None:
+    """The capture date as a POSIX timestamp, or None if unreadable."""
+    if not taken_at:
+        return None
+    text = str(taken_at).strip().replace("Z", "+00:00")
+    for candidate in (text, text[:10]):
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    return None
+
+
+def needs_date_fix(taken_at: str | None, exif_taken_at: str | None) -> bool:
+    """Does the file's own date disagree with Immich's?
+
+    True only when the file *has* a date of its own and Immich holds a
+    different one -- which is exactly the shape of a date corrected in
+    Immich, since that edit lives in Immich's database while /original
+    keeps serving the untouched file.
+
+    A file with no date of its own is deliberately left alone: there is no
+    correction to apply, and its modification time already carries the date
+    for Google Photos to fall back on.
+    """
+    want = capture_time(taken_at)
+    have = capture_time(exif_taken_at)
+    if want is None or have is None:
+        return False
+    return abs(want - have) > 60
+
+
+def rewrite_capture_date(path: str, taken_at: str) -> bool:
+    """Write Immich's date into the file itself.
+
+    The only place this service alters an original, and only ever the date.
+    It runs against the temporary file, before the rename into the outbox,
+    so a half-written edit is never visible to Syncthing -- and after the
+    size check, so integrity is verified against Immich before anything is
+    touched.
+    """
+    global _EXIFTOOL_MISSING
+    stamp = capture_time(taken_at)
+    if stamp is None:
+        return False
+    when = datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
+
+    try:
+        result = subprocess.run(
+            ["exiftool", "-overwrite_original", "-P",
+             f"-AllDates={when}",
+             # Video keeps its date somewhere else entirely.
+             f"-QuickTime:CreateDate={when}",
+             f"-QuickTime:ModifyDate={when}",
+             "-q", path],
+            capture_output=True, timeout=120, check=False)
+    except FileNotFoundError:
+        if not _EXIFTOOL_MISSING:
+            _EXIFTOOL_MISSING = True
+            db.log("error", "exiftool is not installed, so dates corrected in "
+                            "Immich cannot be written into files. Everything "
+                            "else is unaffected and files still go out.")
+        return False
+    except (subprocess.SubprocessError, OSError) as exc:
+        db.log("error", f"could not write the corrected date: {exc}")
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or b"").decode(errors="replace").strip()[:160]
+        db.log("error", f"exiftool refused {os.path.basename(path)}: {detail}")
+        return False
+    return True
+
+
+def stamp_capture_time(path: str, taken_at: str | None) -> bool:
+    """Set a delivered file's modification time to when it was taken.
+
+    Google Photos dates a file by its embedded capture date, and falls back
+    to the file's modification time when there is none -- which is the case
+    for a lot of video, screenshots, and anything that has had its EXIF
+    stripped on the way through a messaging app. Left alone, that
+    modification time is the moment this service downloaded the file, so
+    those land in Google Photos dated today and sit at the wrong end of the
+    timeline.
+
+    Syncthing preserves modification times, so setting it here carries all
+    the way to the phone. The file's contents are still passed through byte
+    for byte; only the timestamp is touched.
+    """
+    stamp = capture_time(taken_at)
+    if stamp is None:
+        return False
+    try:
+        os.utime(path, (stamp, stamp))
+        return True
+    except OSError:
+        return False
 
 
 def list_outbox() -> tuple[list[str], int]:
@@ -387,8 +494,19 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                     raise IOError(
                         f"size mismatch: got {size}, expected {row['size']}")
 
+                # Integrity is confirmed against Immich above; only now is
+                # it safe to alter the file, and only its date. Still on the
+                # temporary copy, so Syncthing never sees a partial edit.
+                if cfg.fix_dates and needs_date_fix(row["taken_at"],
+                                                    row["exif_taken_at"]):
+                    if rewrite_capture_date(tmp, row["taken_at"]):
+                        size = os.path.getsize(tmp)
+                        db.log("info", f"{filename}: wrote the corrected date "
+                                       f"from Immich into the file")
+
                 os.replace(tmp, dest)
                 os.chmod(dest, 0o664)
+                stamp_capture_time(dest, row["taken_at"])
                 tmp = None
                 # Marked the moment the file lands, not once the whole batch
                 # is done, so the queue grows a file at a time on screen.
@@ -486,6 +604,34 @@ async def watch() -> None:
             db.log("error", f"outbox watch error: {exc}")
 
 
+def repair_capture_times(limit: int = 500) -> int:
+    """Correct the modification time of files already delivered.
+
+    Files written before this was done carry the moment they were
+    downloaded, so anything Google Photos has not taken yet would still land
+    dated today. Repairing them in place costs one stat each and Syncthing
+    carries the change to the phone.
+
+    Bounded per pass so a very full outbox does not stall a cycle.
+    """
+    fixed = 0
+    for name, taken_at in db.outbox_capture_times():
+        if fixed >= limit:
+            break
+        path = os.path.join(config.OUTBOX_DIR, name)
+        want = capture_time(taken_at)
+        if want is None:
+            continue
+        try:
+            if abs(os.path.getmtime(path) - want) < 2:
+                continue            # already right
+        except OSError:
+            continue                # gone, or not ours to touch
+        if stamp_capture_time(path, taken_at):
+            fixed += 1
+    return fixed
+
+
 async def housekeeping() -> None:
     """The chores that have to happen whether or not anyone is looking.
 
@@ -495,6 +641,15 @@ async def housekeeping() -> None:
     An alert that only fires while you are watching is not an alert, and a
     backup that only happens when you remember is not a backup.
     """
+    try:
+        fixed = repair_capture_times()
+        if fixed:
+            db.log("info", f"corrected the capture date on {fixed} file(s) in "
+                           "the outbox — Google Photos dates undated media by "
+                           "the file's timestamp")
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"capture-time repair failed: {exc}")
+
     try:
         await alerts.check_and_notify()
     except Exception as exc:  # noqa: BLE001

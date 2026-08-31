@@ -34,6 +34,8 @@ jobs:
       # Photos. Nothing gets published without the suite passing.
       - name: Test
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libimage-exiftool-perl
           pip install -q -r requirements-dev.txt
           python -m pytest -q
 

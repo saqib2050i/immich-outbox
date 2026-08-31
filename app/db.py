@@ -88,6 +88,7 @@ MIGRATIONS = (
     ("forced", "INTEGER NOT NULL DEFAULT 0"),
     ("outbox_name", "TEXT"),
     ("missing_at", "TEXT"),
+    ("exif_taken_at", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -179,6 +180,16 @@ def set_meta(k: str, v: str) -> None:
         c.execute("INSERT INTO meta (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=?", (k, v, v))
         c.commit()
         _bump()
+
+
+def outbox_capture_times() -> list[tuple]:
+    """(outbox_name, taken_at) for everything currently in the outbox."""
+    rows = connect().execute(
+        """SELECT outbox_name, taken_at FROM assets
+            WHERE state = 'queued' AND outbox_name IS NOT NULL
+              AND taken_at IS NOT NULL AND taken_at != ''"""
+    ).fetchall()
+    return [(r["outbox_name"], r["taken_at"]) for r in rows]
 
 
 def queue_contents(limit: int = 500) -> list[dict]:
@@ -439,9 +450,9 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
         c.executemany(
             """INSERT OR IGNORE INTO assets
                (id, filename, size, checksum, taken_at, kind, state, queued_at,
-                width, height, duration)
+                width, height, duration, exif_taken_at)
                VALUES (:id, :filename, :size, :checksum, :taken_at, :kind, :state,
-                       :queued_at, :width, :height, :duration)""",
+                       :queued_at, :width, :height, :duration, :exif_taken_at)""",
             rows,
         )
         # Rows written by an older version carry no dimensions. Backfill them
@@ -462,7 +473,8 @@ def upsert_assets(rows: list[dict], refresh: bool = False) -> int:
                           kind     = :kind,
                           width    = COALESCE(:width, width),
                           height   = COALESCE(:height, height),
-                          duration = COALESCE(:duration, duration)
+                          duration = COALESCE(:duration, duration),
+                          exif_taken_at = :exif_taken_at
                     WHERE id = :id""",
                 rows,
             )

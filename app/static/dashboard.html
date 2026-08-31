@@ -708,6 +708,13 @@
     <div class="field">
       <label for="s_include_video">Include videos</label>
       <input type="checkbox" id="s_include_video">
+
+      <label for="s_fix_dates">Write corrected dates into files</label>
+      <input type="checkbox" id="s_fix_dates">
+      <small>When a date has been corrected in Immich, write it into the file
+        so Google Photos uses it. The only case where an original is altered,
+        and only its date — files whose own date already agrees are passed
+        through untouched.</small>
     </div>
     <div class="field">
       <label for="s_paused">Pause sending
@@ -979,7 +986,8 @@ document.addEventListener("input", e => {
 });
 
 const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
-               "backup_enabled"];
+               "backup_enabled",
+               "fix_dates"];
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
 function fillSettings(cfg){

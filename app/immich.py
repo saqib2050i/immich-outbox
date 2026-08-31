@@ -151,9 +151,15 @@ def _normalise(item: dict) -> dict | None:
                 return int(v)
         return None
 
+    # What the file itself claims, as against what Immich says. They differ
+    # exactly when someone has corrected the date in Immich: that edit lives
+    # in Immich's database, and /original still serves the untouched file.
+    exif_taken_at = exif.get("dateTimeOriginal") or None
+
     return {
         "id": item["id"],
         "filename": item.get("originalFileName") or f"{item['id']}.bin",
+        "exif_taken_at": exif_taken_at,
         "size": int(exif.get("fileSizeInByte") or 0),
         "checksum": item.get("checksum"),
         "taken_at": item.get("fileCreatedAt") or item.get("createdAt") or "",

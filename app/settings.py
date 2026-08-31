@@ -38,6 +38,10 @@ SPEC: dict[str, tuple[type, object]] = {
     "photo_workers": (int, 3),
     "video_workers": (int, 1),
     "include_video": (bool, config.INCLUDE_VIDEO),
+    # Write a date corrected in Immich into the file itself. The only case
+    # where this service alters an original, and only when the file's own
+    # date disagrees with Immich's.
+    "fix_dates": (bool, True),
     "max_asset_mb": (int, config.MAX_ASSET_BYTES // (1024 * 1024)),
     "ongoing_enabled": (bool, True),
     "ongoing_from": (str, config.MIN_TAKEN_AT),
@@ -69,6 +73,7 @@ class Settings:
     photo_workers: int
     video_workers: int
     include_video: bool
+    fix_dates: bool
     max_asset_mb: int
     ongoing_enabled: bool
     ongoing_from: str

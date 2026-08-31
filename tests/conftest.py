@@ -88,10 +88,14 @@ class Rig:
 
 
 def asset(i: int, *, size: int = 1000, kind: str = "IMAGE",
-          taken: str = "2026-01-01", name: str | None = None) -> dict:
+          taken: str = "2026-01-01", name: str | None = None,
+          exif_taken: str | None = None) -> dict:
     return {
         "id": f"asset-{i}",
         "filename": name or f"IMG_{i:04d}.jpg",
+        # What the file itself claims. Differs from `taken` exactly when the
+        # date has been corrected in Immich.
+        "exif_taken_at": exif_taken,
         "size": size,
         "checksum": f"sum{i}",
         "taken_at": taken,
