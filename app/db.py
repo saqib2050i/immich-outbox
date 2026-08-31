@@ -181,6 +181,16 @@ def set_meta(k: str, v: str) -> None:
         _bump()
 
 
+def outbox_capture_times() -> list[tuple]:
+    """(outbox_name, taken_at) for everything currently in the outbox."""
+    rows = connect().execute(
+        """SELECT outbox_name, taken_at FROM assets
+            WHERE state = 'queued' AND outbox_name IS NOT NULL
+              AND taken_at IS NOT NULL AND taken_at != ''"""
+    ).fetchall()
+    return [(r["outbox_name"], r["taken_at"]) for r in rows]
+
+
 def queue_contents(limit: int = 500) -> list[dict]:
     """What is in the outbox right now, oldest first.
 
