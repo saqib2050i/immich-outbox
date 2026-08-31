@@ -9,6 +9,12 @@ ENV APP_VERSION=$APP_VERSION \
     APP_REVISION=$APP_REVISION \
     APP_BUILT_AT=$APP_BUILT_AT
 
+# exiftool writes a date corrected in Immich into the file itself. Without
+# it the relay works exactly as before, minus that one correction.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libimage-exiftool-perl \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

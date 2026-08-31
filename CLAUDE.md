@@ -35,6 +35,16 @@ and `reconcile()` must keep returning early while it is missing.
 phone's queue folder, so capping the outbox caps the phone. Never add a code
 path that writes past the cap.
 
+**2a. The file is passed through byte for byte — with one exception.**
+When a date has been corrected in Immich, that correction lives in Immich's
+database and `/original` still serves the untouched file, so Google Photos
+would use the stale embedded date. `rewrite_capture_date()` writes the
+corrected date in, and only then. It runs on the temp file after the size
+check, so integrity is verified against Immich before anything is altered
+and Syncthing never sees a partial edit. A file whose own date agrees with
+Immich, or which carries no date at all, is never touched. Turned off with
+the `fix_dates` setting.
+
 **3. Immich is read-only.** Three permissions: `asset.read`,
 `asset.download`, `server.about`. Never add a write scope.
 

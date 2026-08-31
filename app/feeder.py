@@ -18,6 +18,7 @@ The service never deletes a file from the outbox. Only the phone does.
 
 import asyncio
 import os
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -27,6 +28,9 @@ from . import alerts, backup, config, db, immich, settings
 # Held while a cycle runs, so a reset from the dashboard cannot land halfway
 # through a download and leave the ledger disagreeing with the outbox.
 CYCLE_LOCK = asyncio.Lock()
+
+# Reported once, not per file, when exiftool is unavailable.
+_EXIFTOOL_MISSING = False
 
 # Byte-level progress for the files being fetched right now.
 #
@@ -134,20 +138,51 @@ def outbox_ready() -> tuple[bool, str]:
     return True, ""
 
 
-def capture_time(taken_at: str | None) -> float | None:
-    """The capture date as a POSIX timestamp, or None if unreadable."""
-    if not taken_at:
-        return None
-    text = str(taken_at).strip().replace("Z", "+00:00")
-    for candidate in (text, text[:10]):
-        try:
-            dt = datetime.fromisoformat(candidate)
-        except ValueError:
-            continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    return None
+# Defined in db so the ledger can flag rows as it scans them.
+capture_time = db.capture_time
+needs_date_fix = db.needs_date_fix
+
+
+def rewrite_capture_date(path: str, taken_at: str) -> bool:
+    """Write Immich's date into the file itself.
+
+    The only place this service alters an original, and only ever the date.
+    It runs against the temporary file, before the rename into the outbox,
+    so a half-written edit is never visible to Syncthing -- and after the
+    size check, so integrity is verified against Immich before anything is
+    touched.
+    """
+    global _EXIFTOOL_MISSING
+    stamp = capture_time(taken_at)
+    if stamp is None:
+        return False
+    when = datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y:%m:%d %H:%M:%S")
+
+    try:
+        result = subprocess.run(
+            ["exiftool", "-overwrite_original", "-P",
+             f"-AllDates={when}",
+             # Video keeps its date somewhere else entirely.
+             f"-QuickTime:CreateDate={when}",
+             f"-QuickTime:ModifyDate={when}",
+             "-q", path],
+            capture_output=True, timeout=120, check=False)
+    except FileNotFoundError:
+        if not _EXIFTOOL_MISSING:
+            _EXIFTOOL_MISSING = True
+            db.log("error", "exiftool is not installed, so dates corrected in "
+                            "Immich cannot be written into files. Everything "
+                            "else is unaffected and files still go out.")
+        return False
+    except (subprocess.SubprocessError, OSError) as exc:
+        db.log("error", f"could not write the corrected date: {exc}")
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or b"").decode(errors="replace").strip()[:160]
+        db.log("error", f"exiftool refused {os.path.basename(path)}: {detail}")
+        return False
+    return True
 
 
 def stamp_capture_time(path: str, taken_at: str | None) -> bool:
@@ -191,13 +226,22 @@ def list_outbox() -> tuple[list[str], int]:
 
 
 def sweep_partials(max_age_hours: int = 6) -> int:
-    """Remove temp files orphaned by a crash or restart."""
+    """Remove temp files orphaned by a crash or restart.
+
+    Two kinds: our own download partials, and the copy exiftool makes while
+    rewriting a date. exiftool writes a whole new file beside the target and
+    renames it over, so an interruption mid-rewrite leaves
+    `.partial-XXXX.part_exiftool_tmp` behind -- invisible to the outbox
+    listing because it is a dotfile, and therefore never cleaned up.
+    """
     import time
     cutoff = time.time() - max_age_hours * 3600
     removed = 0
     try:
         for name in os.listdir(config.OUTBOX_DIR):
-            if not (name.startswith(".partial-") and name.endswith(".part")):
+            ours = name.startswith(".partial-") and name.endswith(".part")
+            exif_leftover = name.startswith(".partial-") and name.endswith("_exiftool_tmp")
+            if not (ours or exif_leftover):
                 continue
             path = os.path.join(config.OUTBOX_DIR, name)
             try:
@@ -305,6 +349,7 @@ async def top_up(used: int) -> int:
         "backfill": cfg.backfill_enabled,
         "backfill_start": cfg.backfill_start,
         "backfill_end": cfg.backfill_end,
+        "fix_dates": cfg.fix_dates,
     }
 
     written: list[str] = []
@@ -428,6 +473,16 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                 if row["size"] and abs(size - row["size"]) > 1024:
                     raise IOError(
                         f"size mismatch: got {size}, expected {row['size']}")
+
+                # Integrity is confirmed against Immich above; only now is
+                # it safe to alter the file, and only its date. Still on the
+                # temporary copy, so Syncthing never sees a partial edit.
+                if cfg.fix_dates and needs_date_fix(row["taken_at"],
+                                                    row["exif_taken_at"]):
+                    if rewrite_capture_date(tmp, row["taken_at"]):
+                        size = os.path.getsize(tmp)
+                        db.log("info", f"{filename}: wrote the corrected date "
+                                       f"from Immich into the file")
 
                 os.replace(tmp, dest)
                 os.chmod(dest, 0o664)

@@ -599,6 +599,21 @@
 
   <ol class="qlist" id="qList"></ol>
 
+  <h2 class="blhead" id="dmHead" hidden>Dates corrected in Immich</h2>
+  <p class="qnote" id="dmNote" hidden>These were re-dated in Immich after they
+     were imported, so the file still carries the old date. Google Photos keeps
+     whatever date it is first given, so they are <strong>held back</strong>
+     until you decide. Sending them writes the corrected date into each file as
+     it goes out — the only case where an original is altered, and only its
+     date.</p>
+
+  <div class="pbar" id="dmBar" hidden>
+    <button id="btnSendCorrected">Write dates and send all</button>
+    <span class="psummary" id="dmSummary"></span>
+  </div>
+
+  <ol class="bllist" id="dmList"></ol>
+
   <h2 class="blhead" id="dsHead" hidden>Dismissed</h2>
   <p class="qnote" id="dsNote" hidden>Taken out of the running by hand. Nothing
      here is sent, and nothing has been deleted from Immich or the ledger —
@@ -708,6 +723,13 @@
     <div class="field">
       <label for="s_include_video">Include videos</label>
       <input type="checkbox" id="s_include_video">
+
+      <label for="s_fix_dates">Write corrected dates into files</label>
+      <input type="checkbox" id="s_fix_dates">
+      <small>When a date has been corrected in Immich, write it into the file
+        so Google Photos uses it. The only case where an original is altered,
+        and only its date — files whose own date already agrees are passed
+        through untouched.</small>
     </div>
     <div class="field">
       <label for="s_paused">Pause sending
@@ -942,6 +964,7 @@ async function render(){
   renderSyncthing();
   renderQueue();
   renderBacklog();
+  renderDateMismatch();
   renderDismissed();
 
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
@@ -979,7 +1002,8 @@ document.addEventListener("input", e => {
 });
 
 const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
-               "backup_enabled"];
+               "backup_enabled",
+               "fix_dates"];
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
 function fillSettings(cfg){
@@ -1992,6 +2016,73 @@ async function renderBacklog(){
     blList.appendChild(li);
   });
 }
+
+// Files re-dated in Immich after import. Held back rather than sent with a
+// date that Google Photos would then keep for good.
+async function renderDateMismatch(){
+  let d;
+  try { d = await (await fetch("/api/date-mismatch")).json(); } catch { return; }
+
+  const any = d.total > 0;
+  dmHead.hidden = dmNote.hidden = dmBar.hidden = !any;
+  dmList.innerHTML = "";
+  if (!any) return;
+
+  dmSummary.textContent = `${fmtNum(d.total)} held back · ${fmtBytes(d.bytes)}`
+    + (d.rewriting_enabled ? " · writing dates is on" : "");
+  btnSendCorrected.textContent = d.rewriting_enabled
+    ? `Send all (${fmtNum(d.total)})`
+    : `Write dates and send all (${fmtNum(d.total)})`;
+
+  d.months.forEach(m => {
+    const li = document.createElement("li");
+    const mon = document.createElement("span");
+    mon.className = "blmonth"; mon.textContent = m.month;
+    const cnt = document.createElement("span");
+    cnt.className = "blcount";
+    cnt.textContent = `${fmtNum(m.total)} file(s) · ${fmtBytes(m.bytes)}`;
+
+    const btn = document.createElement("button");
+    btn.textContent = "Send this month";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      await fetch("/api/date-mismatch/send", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({month: m.month})});
+      tick();
+    };
+    li.append(mon, cnt, btn);
+    dmList.appendChild(li);
+  });
+
+  // What the disagreement actually looks like, so the choice is informed.
+  (d.examples || []).slice(0, 3).forEach(ex => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "blmonth"; name.style.flexBasis = "14rem";
+    name.textContent = ex.filename;
+    const detail = document.createElement("span");
+    detail.className = "blcount";
+    detail.textContent = "file says " + (ex.exif_taken_at || "").slice(0, 10)
+                       + " · Immich says " + (ex.taken_at || "").slice(0, 10);
+    li.append(name, detail);
+    dmList.appendChild(li);
+  });
+}
+
+btnSendCorrected.onclick = async () => {
+  if (!confirm(
+      "Write the corrected dates into these files and send them?\n\n" +
+      "Each file's date is rewritten as it goes out. Nothing else in the " +
+      "file changes, and files whose date already agrees are never touched.\n\n" +
+      "This also turns on date writing for future sends.")) return;
+  btnSendCorrected.disabled = true;
+  try {
+    await fetch("/api/date-mismatch/send", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({})});
+  } finally { btnSendCorrected.disabled = false; tick(); }
+};
 
 // Dismissing was documented as reversible but nothing in the UI could find
 // the rows again -- every other view filters 'skipped' out, and a rescan

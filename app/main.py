@@ -297,6 +297,7 @@ async def queue():
         "backfill": cfg.backfill_enabled,
         "backfill_start": cfg.backfill_start,
         "backfill_end": cfg.backfill_end,
+        "fix_dates": cfg.fix_dates,
     })
 
     if cfg.paused:
@@ -415,6 +416,46 @@ async def backlog_dismiss(payload: dict):
         db.log("dismiss", f"{n} waiting file(s) dismissed from {what} — they "
                           "will not be sent unless asked for again")
     return {"ok": True, "dismissed": n}
+
+
+@app.get("/api/date-mismatch")
+async def date_mismatch():
+    """Files whose date was corrected in Immich but not in the file."""
+    out = db.date_mismatch_breakdown()
+    out["rewriting_enabled"] = settings.load().fix_dates
+    return out
+
+
+@app.post("/api/date-mismatch/send")
+async def date_mismatch_send(payload: dict | None = None):
+    """Turn rewriting on and send this batch.
+
+    Deliberately one action: sending them with rewriting still off is the
+    thing the category exists to prevent, and Google Photos keeps whatever
+    date it is first given.
+    """
+    month = (payload or {}).get("month")
+    settings.save({"fix_dates": True})
+
+    where = ["date_mismatch = 1", "state IN ('pending','failed')",
+             "missing_at IS NULL"]
+    params: list = []
+    if month:
+        where.append("COALESCE(NULLIF(substr(taken_at,1,7),''),'undated') = ?")
+        params.append(month)
+
+    c = db.connect()
+    with db._lock:  # noqa: SLF001
+        cur = c.execute(
+            f"""UPDATE assets SET forced=1, attempts=0, last_error=NULL
+                 WHERE {' AND '.join(where)}""", params)
+        c.commit()
+        db._bump()  # noqa: SLF001
+    n = cur.rowcount
+    if n:
+        db.log("send", f"{n} file(s) with a corrected date queued — the date "
+                       "will be written into each file as it goes out")
+    return {"ok": True, "queued": n, "rewriting_enabled": True}
 
 
 @app.get("/api/dismissed")
