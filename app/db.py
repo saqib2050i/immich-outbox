@@ -1246,6 +1246,11 @@ def reconciliation() -> list[dict]:
     rows = connect().execute(f"""
         SELECT
           CASE
+            -- Checked first: an asset Immich no longer returns is going
+            -- nowhere, whatever the date windows say about it. Without this
+            -- it was reported as "waiting its turn" forever, while the queue
+            -- correctly said nothing was waiting and the feeder sat idle.
+            WHEN missing_at IS NOT NULL THEN 'missing'
             WHEN state = 'failed'  THEN 'failed'
             -- 'skipped' holds two unrelated things: motion components,
             -- which are a fact about the library, and assets the user

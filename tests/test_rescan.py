@@ -159,3 +159,46 @@ async def test_an_incremental_scan_refreshes_nothing_and_condemns_nothing(rig, m
     assert db.missing_count() == 0
     row = db.connect().execute("SELECT taken_at FROM assets WHERE id='asset-0'").fetchone()
     assert row["taken_at"] == "2016-12-11", "an incremental scan rewrote history"
+
+
+async def test_reconciliation_does_not_promise_to_send_missing_assets(rig, monkeypatch):
+    """Seen live: 2,705 assets Immich no longer returns were reported as
+    "waiting its turn, will go out as space frees up", while the queue
+    correctly said nothing was waiting and the feeder sat idle. Two screens
+    contradicting each other, and neither wrong on its own terms."""
+    from app import db, immich, main, settings, worker
+
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(4)])
+
+    # Only one survives the next full pass.
+    monkeypatch.setattr(immich, "list_assets",
+                        immich_page([asset(0, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+    assert db.missing_count() == 3
+
+    groups = {g["reason"]: g["total"] for g in db.reconciliation()}
+    assert groups.get("missing") == 3
+    assert groups.get("queued_soon", 0) == 1, \
+        "assets that cannot be sent were counted as about to be sent"
+
+    # And the two views agree.
+    waiting = (await main.backlog())["total"]
+    assert waiting == 1
+    assert groups.get("queued_soon", 0) == waiting
+
+
+async def test_a_missing_asset_that_returns_is_promised_again(rig, monkeypatch):
+    from app import db, immich, worker
+
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(2)])
+    monkeypatch.setattr(immich, "list_assets",
+                        immich_page([asset(0, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+    assert {g["reason"] for g in db.reconciliation()} >= {"missing"}
+
+    monkeypatch.setattr(immich, "list_assets", immich_page(
+        [asset(0, size=100, taken="2026-05-05"), asset(1, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+    assert "missing" not in {g["reason"] for g in db.reconciliation()}
