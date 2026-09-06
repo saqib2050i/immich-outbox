@@ -932,8 +932,26 @@ const clock = iso => iso ? new Date(iso).toTimeString().slice(0,5) : "--:--";
 
 async function render(){
   let d;
-  try { d = await (await fetch("/api/status")).json(); }
-  catch { setStatus(false, "server unreachable"); return; }
+  try {
+    const r = await fetch("/api/status");
+    // A 500 still returns JSON -- FastAPI's {"detail": ...} -- so parsing
+    // succeeds and the page carries on into a payload with no `outbox`,
+    // throwing on the first field it reads. Everything after that line then
+    // never runs, so the dashboard silently freezes on stale numbers with
+    // nothing on screen to say why. Check the status, not just the parse.
+    if (!r.ok){
+      setStatus(false, "server error " + r.status);
+      return;
+    }
+    d = await r.json();
+  } catch {
+    setStatus(false, "server unreachable");
+    return;
+  }
+  if (!d || !d.counts || !d.outbox){
+    setStatus(false, "unexpected reply from the server");
+    return;
+  }
 
   const c = d.counts;
   const fresh = d.outbox.last_cycle &&
@@ -1088,7 +1106,11 @@ let stSignature = "";
 
 async function renderStats(d){
   let st;
-  try { st = await (await fetch("/api/stats")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/stats");
+    if (!r.ok) return;
+    st = await r.json();
+  } catch { return; }
 
   const stSig = JSON.stringify([st.breakdown, st.throughput, st.counts]);
   if (stSig === stSignature) return;
@@ -1312,7 +1334,11 @@ async function renderTimeline(){
 
 async function drawTimeline(){
   let d;
-  try { d = await (await fetch("/api/timeline")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/timeline");
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
   const months = d.months || [];
   if (!months.length){
     tlBody.innerHTML = '<p class="empty">Nothing scanned yet.</p>';
@@ -1628,7 +1654,11 @@ function qToggle(id, on){
 
 async function renderQueue(){
   let q;
-  try { q = await (await fetch("/api/queue")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/queue");
+    if (!r.ok) return;
+    q = await r.json();
+  } catch { return; }
 
   btnPause.textContent = q.paused ? "Resume sending" : "Pause sending";
   qPaused.hidden = !q.paused;
@@ -1906,7 +1936,11 @@ function paintTransfer(state){
 async function pollTransfer(){
   if (document.hidden) return;                 // nothing to show, nobody looking
   let d;
-  try { d = await (await fetch("/api/progress")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/progress");
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
 
   const busy = (d.transfers && d.transfers.length) || d.batch;
   paintTransfer(d);
@@ -1929,7 +1963,11 @@ pollTransfer();
 // behind them, which is where the next batch comes from.
 async function renderBacklog(){
   let b;
-  try { b = await (await fetch("/api/backlog")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/backlog");
+    if (!r.ok) return;
+    b = await r.json();
+  } catch { return; }
 
   const toSend = b.asked + b.eligible;
   btnDismissBacklog.hidden = toSend === 0;
@@ -2021,7 +2059,11 @@ async function renderBacklog(){
 // date that Google Photos would then keep for good.
 async function renderDateMismatch(){
   let d;
-  try { d = await (await fetch("/api/date-mismatch")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/date-mismatch");
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
 
   const any = d.total > 0;
   dmHead.hidden = dmNote.hidden = dmBar.hidden = !any;
@@ -2089,7 +2131,11 @@ btnSendCorrected.onclick = async () => {
 // cannot help because scans never touch an existing row. This is the way back.
 async function renderDismissed(){
   let d;
-  try { d = await (await fetch("/api/dismissed")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/dismissed");
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
 
   const any = d.total > 0;
   dsHead.hidden = dsNote.hidden = dsBar.hidden = !any;
@@ -2254,7 +2300,11 @@ let reconSignature = "";
 
 async function renderRecon(){
   let d;
-  try { d = await (await fetch("/api/reconciliation")).json(); } catch { return; }
+  try {
+    const r = await fetch("/api/reconciliation");
+    if (!r.ok) return;
+    d = await r.json();
+  } catch { return; }
   const reconSig = JSON.stringify(d.groups || []);
   if (reconSig === reconSignature) return;
   reconSignature = reconSig;
