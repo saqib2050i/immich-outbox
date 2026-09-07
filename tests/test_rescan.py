@@ -202,3 +202,51 @@ async def test_a_missing_asset_that_returns_is_promised_again(rig, monkeypatch):
         [asset(0, size=100, taken="2026-05-05"), asset(1, size=100, taken="2026-05-05")]))
     await worker.full_scan()
     assert "missing" not in {g["reason"] for g in db.reconciliation()}
+
+
+async def test_missing_assets_are_counted_apart_from_what_is_waiting(rig, monkeypatch):
+    """Seen live: 2,711 rows for assets Immich no longer has were included
+    in the Waiting figure, so the dashboard showed a number that could never
+    come down."""
+    from app import db, immich, worker
+
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(5)])
+    monkeypatch.setattr(immich, "list_assets",
+                        immich_page([asset(0, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+
+    c = db.counts()
+    assert c["missing"] == 4
+    assert c["pending"] == 5
+    # What the dashboard now shows as waiting.
+    assert c["pending"] + c["failed"] - c["missing"] == 1
+
+
+async def test_clearing_missing_assets_takes_them_out_of_pending(rig, monkeypatch):
+    from app import db, immich, main, worker
+
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(5)])
+    monkeypatch.setattr(immich, "list_assets",
+                        immich_page([asset(0, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+
+    r = await main.missing_dismiss()
+    assert r["dismissed"] == 4
+    c = db.counts()
+    assert c["pending"] == 1 and c["missing"] == 0
+    assert c["skipped"] == 4
+    assert c["confirmed"] == 0, "clearing them was read as a backup"
+
+
+async def test_clearing_missing_leaves_real_work_alone(rig, monkeypatch):
+    from app import db, immich, main, worker
+
+    db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(3)])
+    db.mark_queued(["asset-2"])
+    monkeypatch.setattr(immich, "list_assets",
+                        immich_page([asset(0, size=100, taken="2026-05-05")]))
+    await worker.full_scan()
+
+    await main.missing_dismiss()
+    row = db.connect().execute("SELECT state FROM assets WHERE id='asset-0'").fetchone()
+    assert row["state"] == "pending", "a live asset was cleared"

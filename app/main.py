@@ -489,6 +489,16 @@ async def dismissed_restore(payload: dict):
     return {"ok": True, "restored": n}
 
 
+@app.post("/api/missing/dismiss")
+async def missing_dismiss():
+    """Clear out rows for assets Immich no longer has."""
+    n = db.dismiss_missing()
+    if n:
+        db.log("dismiss", f"{n} file(s) Immich no longer has were taken out of "
+                          "the running — they cannot be fetched")
+    return {"ok": True, "dismissed": n}
+
+
 @app.post("/api/failed/dismiss")
 async def failed_dismiss(payload: dict | None = None):
     """Clear failures without resending. They move to 'skipped' — out of
