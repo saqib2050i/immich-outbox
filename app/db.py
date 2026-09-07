@@ -626,6 +626,23 @@ def mark_missing(seen_ids: set) -> int:
     return cur.rowcount
 
 
+def dismiss_missing() -> int:
+    """Retire rows for assets Immich no longer has.
+
+    They cannot be downloaded, so they sit in `pending` for good, inflating
+    every count of what is left to do. Moving them to `skipped` takes them
+    out of the running without deleting the record.
+    """
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            """UPDATE assets SET state='skipped'
+                WHERE missing_at IS NOT NULL AND state IN ('pending','failed')""")
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
 def missing_count() -> int:
     return connect().execute(
         "SELECT COUNT(*) n FROM assets WHERE missing_at IS NOT NULL"
@@ -1413,6 +1430,15 @@ def counts() -> dict:
     ).fetchone()["b"]
     out["confirmed_bytes"] = c.execute(
         "SELECT COALESCE(SUM(size),0) b FROM assets WHERE state='confirmed'").fetchone()["b"]
+    # Rows still counted as pending that Immich will never serve again. They
+    # are not waiting for anything, so anything showing a "waiting" figure
+    # has to be able to take them back out of it.
+    row = c.execute(
+        """SELECT COUNT(*) n, COALESCE(SUM(size),0) b FROM assets
+            WHERE missing_at IS NOT NULL AND state IN ('pending','failed')"""
+    ).fetchone()
+    out["missing"] = row["n"]
+    out["missing_bytes"] = row["b"]
     return out
 
 

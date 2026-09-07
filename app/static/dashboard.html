@@ -629,6 +629,11 @@
 
 <section class="attention" id="nav-attention" data-tab="problems">
   <h2>Needs attention</h2>
+  <div class="pbar" id="rowMissing" hidden>
+    <span class="psummary" id="missingText" style="margin-left:0;flex:1 1 20rem"></span>
+    <button id="btnDismissMissing" class="danger">Clear these</button>
+  </div>
+
   <div class="pbar">
     <button id="btnRefresh">Check the outbox now</button>
     <button id="btnRetryAll" hidden>Retry all failed</button>
@@ -958,7 +963,11 @@ async function render(){
     (Date.now() - new Date(d.outbox.last_cycle).getTime()) < 45*60*1000;
   setStatus(fresh, fresh ? "feeding" : "idle");
 
-  nQueued.textContent = fmtNum(c.pending + c.failed);
+  // Waiting means "will be sent". Rows for assets Immich no longer has are
+  // pending in the ledger and going nowhere, so counting them here put a
+  // number on screen that could never come down.
+  const stranded = c.missing || 0;
+  nQueued.textContent = fmtNum(Math.max(0, c.pending + c.failed - stranded));
   nPhone.textContent  = fmtNum(c.queued);
   nDone.textContent   = fmtNum(c.confirmed);
 
@@ -995,8 +1004,10 @@ async function render(){
   const problems = (d.stuck || []).length + (d.problems || []).length;
   // The badge counts what the tab is now named for: files waiting to go to
   // the outbox. renderQueue() refines it once the status has been fetched.
-  badgeQueue.hidden = !(c.pending + c.failed);
-  badgeQueue.textContent = fmtNum(c.pending + c.failed);
+  // The queue badge belongs to renderQueue(), which knows what is actually
+  // going out. Setting it here too made the two disagree on every tick --
+  // one writing pending+failed, the other the real waiting count -- so the
+  // tab flickered between "Queue" and "Queue (N)" forever.
   badgeProblems.hidden = !problems;
   badgeProblems.textContent = fmtNum(problems);
 
@@ -2403,6 +2414,17 @@ function renderAttention(d){
   const stuck = d.stuck || [], failed = d.problems || [];
   const kinds = d.failure_kinds || [];
 
+  // Assets Immich will not serve again. Not a failure to retry -- there is
+  // nothing to retry against -- so it gets its own line and its own action.
+  const stranded = (d.counts && d.counts.missing) || 0;
+  rowMissing.hidden = !stranded;
+  if (stranded){
+    missingText.textContent = fmtNum(stranded) + " file(s) are in the ledger but "
+      + "no longer in Immich — deleted, archived or hidden since they were "
+      + "scanned. They cannot be fetched, so they will never be sent.";
+    btnDismissMissing.textContent = "Clear these (" + fmtNum(stranded) + ")";
+  }
+
   btnRetryAll.hidden = btnDismissAll.hidden = !failed.length;
   pSummary.textContent = kinds.length
     ? kinds.map(k => `${fmtNum(k.total)} ${k.kind}`).join(" · ")
@@ -2468,6 +2490,17 @@ function renderAttention(d){
     });
   });
 }
+
+btnDismissMissing.onclick = async () => {
+  if (!confirm(
+      "Clear the files Immich no longer has?\n\nThey are deleted, archived or " +
+      "hidden in Immich, so they cannot be fetched and will never be sent. " +
+      "This takes them out of the running without deleting anything — if one " +
+      "comes back, a full scan notices and you can restore it.")) return;
+  btnDismissMissing.disabled = true;
+  try { await fetch("/api/missing/dismiss", {method:"POST"}); }
+  finally { btnDismissMissing.disabled = false; tick(); }
+};
 
 btnRetryAll.onclick = async () => {
   btnRetryAll.disabled = true;
