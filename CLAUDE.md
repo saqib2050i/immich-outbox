@@ -145,6 +145,19 @@ a body of exactly the size the ledger recorded (`top_up` checks the two
 against each other). `rig.deliver(n)` simulates Smart Storage clearing files
 off the phone.
 
+## Versioning
+
+`VERSION` at the repo root is the only place the number is edited. CI reads
+it, stamps it into the image, and refuses to build if it is not `x.y.z` or
+if a release tag disagrees with it. `config.py` falls back to reading the
+same file, so a source checkout and the image built from it report the same
+number — which means the version no longer distinguishes them, and the
+dashboard uses the absence of a CI build timestamp for that instead.
+
+Bump it in the pull request that makes the change, and add the entry to
+`CHANGELOG.md` in the same commit: `x` for an overhaul, `y` for a feature,
+`z` for a fix. A test asserts the changelog documents the current version.
+
 ## Deployment
 
 Push to `main` → Actions builds and publishes

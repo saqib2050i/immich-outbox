@@ -18,6 +18,9 @@ RUN apt-get update \
 WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Next to app/, where config.py looks for it. An image built by hand,
+# outside CI and so without the build args, still reports its version.
+COPY VERSION ./VERSION
 COPY app ./app
 
 VOLUME ["/data", "/outbox", "/spool"]

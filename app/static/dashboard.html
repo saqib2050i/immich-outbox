@@ -2257,18 +2257,17 @@ function renderBuild(a){
   if (!a){ build.textContent = ""; return; }
 
   build.innerHTML = "";
-  if (a.version === "dev"){
-    build.textContent = "running from source";
-    build.title = a.revision || "";
-    return;
-  }
 
   const name = document.createElement("b");
-  // "build 128" already reads as a label; a release tag needs no prefix.
-  name.textContent = a.version;
+  // A bare "1.4.0" reads as a stray number without the prefix; a tag name
+  // like "v1.4.0" already carries one.
+  name.textContent = /^\d/.test(a.version) ? "v" + a.version : a.version;
   build.append(name);
 
-  const age = buildAge(a.built_at);
+  // Only CI stamps a build time, so its absence is what marks a source
+  // checkout. The version no longer says: a checkout and the image built
+  // from it deliberately report the same number.
+  const age = a.built_at ? buildAge(a.built_at) : "running from source";
   if (age){
     build.append(document.createTextNode(" · " + age));
   }

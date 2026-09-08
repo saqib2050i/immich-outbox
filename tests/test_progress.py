@@ -183,6 +183,12 @@ async def test_a_fill_that_wrote_nothing_leaves_the_summary_alone(rig, monkeypat
     assert feeder.transfer_snapshot()["last_fill"] is None
 
 
+def _version_file():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent
+            / "VERSION").read_text().strip()
+
+
 async def test_status_reports_the_running_build(rig):
     from app import config, main
     d = await main.status()
@@ -203,9 +209,11 @@ async def test_healthz_reports_the_build_without_a_session(rig, monkeypatch):
     assert d["ok"] is True
 
 
-async def test_the_build_stamp_falls_back_to_dev(rig):
+async def test_an_unstamped_build_still_knows_its_version(rig):
+    """A source checkout reads VERSION; only the build time is missing."""
     from app import config
-    assert config.APP_VERSION == "dev", "an unstamped build should say so"
+    assert config.APP_VERSION == _version_file()
+    assert config.APP_BUILT_AT == "", "nothing but CI may claim a build time"
 
 
 # ---- the version has to mean something to a person ----------------------
