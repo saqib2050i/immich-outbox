@@ -3,6 +3,7 @@ package com.immichoutbox.companion
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -34,6 +35,8 @@ class MainActivity : Activity() {
     private lateinit var nameField: EditText
     private lateinit var statusLine: TextView
     private lateinit var accessLine: TextView
+    private lateinit var updateLine: TextView
+    private lateinit var updateBtn: Button
 
     private val ticker = Handler(Looper.getMainLooper())
 
@@ -65,8 +68,46 @@ class MainActivity : Activity() {
         accessLine.setTextColor(if (on) OK_GREEN else WARN_RED)
 
         statusLine.text = prefs.lastStatus.ifEmpty { "Nothing has happened yet." }
+        showUpdate()
         ticker.removeCallbacksAndMessages(null)
         ticker.postDelayed({ refresh() }, 2000)
+    }
+
+    /**
+     * Offer the update; never perform it.
+     *
+     * Installing an APK from inside the app would need
+     * REQUEST_INSTALL_PACKAGES -- the permission that lets an app install
+     * other apps. The whole claim this app makes is that its permission list
+     * is short enough to read and contains nothing dangerous, and that claim
+     * is worth more than saving a tap. So it opens the server's install page
+     * in the browser and lets Android's own installer, and the person
+     * holding the phone, do the rest.
+     */
+    private fun showUpdate() {
+        val latest = prefs.latestVersion
+        val stale = latest.isNotEmpty() && latest != Relay.VERSION
+        updateLine.text = if (stale)
+            "Update available: $latest (this is ${Relay.VERSION})"
+        else
+            "Version ${Relay.VERSION} — up to date"
+        updateLine.setTextColor(if (stale) UPDATE_BLUE else Color.GRAY)
+        updateBtn.visibility = if (stale) View.VISIBLE else View.GONE
+    }
+
+    private fun openInstallPage() {
+        val base = prefs.serverUrl
+        if (base.isEmpty()) {
+            prefs.lastStatus = "Set the relay address first."
+            refresh()
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$base/app")))
+        } catch (e: Exception) {
+            prefs.lastStatus = "No browser to open ${'$'}base/app"
+            refresh()
+        }
     }
 
     private fun save() {
@@ -138,6 +179,13 @@ class MainActivity : Activity() {
         statusLine = body("")
         column.addView(statusLine)
 
+        column.addView(label("App version"))
+        updateLine = body("")
+        column.addView(updateLine)
+        updateBtn = button("Get the new version") { openInstallPage() }
+        updateBtn.visibility = View.GONE
+        column.addView(updateBtn)
+
         column.addView(button("Check in now") {
             val service = FreeSpaceService.instance
             if (service == null) {
@@ -200,5 +248,6 @@ class MainActivity : Activity() {
     private companion object {
         val OK_GREEN = Color.parseColor("#1B7F3B")
         val WARN_RED = Color.parseColor("#B3261E")
+        val UPDATE_BLUE = Color.parseColor("#1B4FD8")
     }
 }

@@ -1,0 +1,3 @@
+# CI drops companion.apk and companion.json here, and the Dockerfile copies
+# this directory into the image. The placeholder keeps the directory in git
+# so that COPY has something to copy even when no app has been built.

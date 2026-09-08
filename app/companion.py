@@ -32,12 +32,14 @@ poll, so the server sets the interval and asks for a fast one exactly when
 there is something worth waking up for.
 """
 
+import hashlib
 import hmac
 import json
+import os
 import secrets
 from datetime import datetime, timezone
 
-from . import db, settings
+from . import config, db, settings
 
 # Substrings, matched case-insensitively against the labels on screen. They
 # are settings rather than constants because Google renames these without
@@ -52,8 +54,68 @@ DEFAULT_CONFIRM = ("free up", "allow", "delete", "ok", "continue")
 RUN_TIMEOUT_MINUTES = 30
 
 
+# The APK, so the phone can be updated from this server rather than from a
+# cable and a laptop. CI builds it and drops it here; the directory sits
+# next to app/ so a source checkout and the image find it the same way the
+# VERSION file works.
+DIST_DIR = os.getenv("DIST_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
+APK_NAME = "companion.apk"
+
+_apk_cache: dict = {}
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def apk_path() -> str:
+    return os.path.join(DIST_DIR, APK_NAME)
+
+
+def apk_info() -> dict:
+    """What is on offer, or why nothing is.
+
+    The checksum is cached against the file's size and mtime: this is read
+    on every dashboard poll, and hashing a few megabytes each time to
+    answer "is there an app?" would be silly.
+    """
+    path = apk_path()
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {"available": False, "version": "", "size": 0,
+                "sha256": "", "signed": "", "built_at": ""}
+
+    stamp = (st.st_size, int(st.st_mtime))
+    if _apk_cache.get("stamp") != stamp:
+        meta = {}
+        try:
+            with open(os.path.join(DIST_DIR, "companion.json")) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            pass
+        if not meta.get("sha256"):
+            h = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            meta["sha256"] = h.hexdigest()
+        _apk_cache.clear()
+        _apk_cache.update(stamp=stamp, info={
+            "available": True,
+            # Built from the same VERSION file as this server, on purpose:
+            # the two speak a protocol, so a pair that disagrees is a pair
+            # nobody has tested together.
+            "version": meta.get("version") or config.APP_VERSION,
+            "size": st.st_size,
+            "sha256": meta["sha256"],
+            # "debug" means CI had no signing key, and Android will refuse
+            # to install it over a copy signed with a different one.
+            "signed": meta.get("signed", ""),
+            "built_at": meta.get("built_at", ""),
+        })
+    return dict(_apk_cache["info"])
 
 
 def _age_minutes(iso: str | None) -> float | None:
@@ -164,6 +226,7 @@ def poll(report: dict) -> dict:
     db.set_meta("companion_seen_at", device["seen_at"])
 
     trigger, confirm = labels(cfg)
+    apk = apk_info()
     answer = {
         "free_space": False,
         "reason": "",
@@ -171,6 +234,11 @@ def poll(report: dict) -> dict:
         "labels": trigger,
         "confirm_labels": confirm,
         "next_poll_seconds": max(60, cfg.companion_idle_poll_minutes * 60),
+        # Told on every check-in, so the phone finds out about a new build
+        # without anyone having to go looking. The app only ever reports
+        # this to its own screen -- installing is the browser's job and the
+        # user's decision, which is why the app needs no install permission.
+        "latest_version": apk["version"] if apk["available"] else "",
     }
 
     if not cfg.companion_enabled:
@@ -275,7 +343,15 @@ def snapshot() -> dict:
     else:
         state, line = "ok", f"Checked in {seen_age:.0f} min ago."
 
+    apk = apk_info()
+    running = (device or {}).get("app_version") or ""
     return {
+        "apk": apk,
+        # A phone on an older build than the server is serving. Only ever a
+        # note: nothing refuses to work across a version gap.
+        "update_available": bool(apk["available"] and running
+                                 and running != apk["version"]),
+        "running_version": running,
         "enabled": cfg.companion_enabled,
         "auto": cfg.companion_auto,
         "state": state,

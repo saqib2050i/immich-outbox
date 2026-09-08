@@ -93,6 +93,8 @@ class FreeSpaceService : AccessibilityService() {
             return 300
         }
 
+        prefs.latestVersion = instruction.latestVersion
+
         if (!instruction.freeSpace) {
             prefs.lastStatus = "Checked in. " + (instruction.reason.ifEmpty { "Nothing to do." })
             return instruction.nextPollSeconds

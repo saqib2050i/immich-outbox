@@ -570,6 +570,38 @@ async def companion_status():
     return companion.snapshot()
 
 
+@app.get("/api/companion/apk")
+async def companion_apk_info():
+    return companion.apk_info()
+
+
+@app.get("/app")
+async def install_page():
+    """The phone's own page: what is on offer and how to install it.
+
+    Behind the session gate like everything else. The phone's browser signs
+    in once, which is no worse than the laptop-and-cable it replaces, and it
+    keeps the number of paths reachable without a password at three.
+    """
+    return FileResponse(STATIC / "install.html",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/app/companion.apk")
+async def companion_apk():
+    info = companion.apk_info()
+    if not info["available"]:
+        raise HTTPException(404, "No app build is bundled with this server.")
+    # Versioned filename so a phone that has downloaded before gets the new
+    # one rather than "companion(1).apk" or a cached copy of the old build.
+    name = f"photo-relay-companion-{info['version']}.apk"
+    return FileResponse(
+        companion.apk_path(),
+        media_type="application/vnd.android.package-archive",
+        filename=name,
+        headers={"Cache-Control": "no-cache"})
+
+
 @app.post("/api/companion/free")
 async def companion_free():
     cfg = settings.load()

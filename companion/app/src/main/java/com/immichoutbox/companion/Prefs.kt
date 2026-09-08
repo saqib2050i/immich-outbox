@@ -34,6 +34,11 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_STATUS, "") ?: ""
         set(v) = sp.edit().putString(KEY_STATUS, v).apply()
 
+    /** The version the relay is serving, learned on a check-in. */
+    var latestVersion: String
+        get() = sp.getString(KEY_LATEST, "") ?: ""
+        set(v) = sp.edit().putString(KEY_LATEST, v).apply()
+
     val configured: Boolean
         get() = serverUrl.isNotEmpty() && token.isNotEmpty()
 
@@ -42,5 +47,6 @@ class Prefs(context: Context) {
         const val KEY_TOKEN = "token"
         const val KEY_NAME = "device_name"
         const val KEY_STATUS = "last_status"
+        const val KEY_LATEST = "latest_version"
     }
 }
