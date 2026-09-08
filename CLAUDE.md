@@ -196,6 +196,13 @@ The button labels the app looks for are a *setting*, not a constant. Google
 renames them, and a rename should be a text field in the dashboard, not a
 new APK.
 
+The app itself is in `companion/` — four Kotlin files, no dependencies, and
+no storage permission, which is what makes "it cannot delete a photo" an
+Android guarantee rather than a claim. `minSdk 29`, because Android 10 was
+the Pixel 1's last update. Lint runs with `NewApi` promoted to an error so
+an API above that floor fails the build rather than crashing on the one
+device that matters.
+
 ## Open items
 
 - Google Photos cannot be read: the Library API was restricted to

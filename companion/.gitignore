@@ -1,0 +1,8 @@
+# Machine-specific: points at wherever the Android SDK happens to live.
+local.properties
+
+.gradle/
+build/
+app/build/
+*.apk
+*.keystore

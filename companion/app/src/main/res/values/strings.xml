@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Photo relay companion</string>
+    <string name="service_name">Free up space</string>
+    <string name="service_description">Presses Google Photos\' “Free up space” when the photo relay asks, so backed-up photos leave the phone without waiting for Smart Storage. It never deletes anything itself, and can only see Google Photos.</string>
+</resources>
