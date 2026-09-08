@@ -45,6 +45,15 @@ and Syncthing never sees a partial edit. A file whose own date agrees with
 Immich, or which carries no date at all, is never touched. Turned off with
 the `fix_dates` setting.
 
+**2b. The companion presses a button; it never deletes.** `companion.py`
+and the phone app exist to make files leave the outbox *sooner*, by tapping
+Google Photos' own "Free up space" instead of waiting ~30 days for Smart
+Storage. Google Photos still decides what has been backed up and is safe to
+remove, so invariant 1 holds unchanged. The phone app declares no storage
+permission at all, which makes that Android's guarantee rather than a
+promise. Nothing the phone reports is ever treated as confirmation —
+`companion.record()` writes a log line and touches no asset row.
+
 **3. Immich is read-only.** Three permissions: `asset.read`,
 `asset.download`, `server.about`. Never add a write scope.
 
@@ -64,6 +73,7 @@ app/alerts.py     silent-failure detection + webhook
 app/backup.py     ledger snapshots; downloads are credential-stripped
 app/auth.py       PBKDF2 passwords, in-memory sessions, host allowlist
 app/syncthing.py  optional read-only status
+app/companion.py  the Pixel companion: pairing, poll, run bookkeeping
 app/static/       dashboard.html, login.html — no build step
 ```
 
@@ -138,12 +148,28 @@ What is covered, by file:
   login throttle
 - `test_cycle.py` — the cycle lock, and the housekeeping chores
 - `test_immich.py` — version-aware request shaping and error parsing
+- `test_companion.py` — that the companion confirms nothing and deletes
+  nothing, token gating, when it asks by itself, one run at a time
+- `test_version.py` — VERSION is the single origin of the number
 
 Writing a new test: `conftest.asset()` builds a ledger row and
 `conftest.fake_download()` stands in for `immich.stream_original`, returning
 a body of exactly the size the ledger recorded (`top_up` checks the two
 against each other). `rig.deliver(n)` simulates Smart Storage clearing files
 off the phone.
+
+## Versioning
+
+`VERSION` at the repo root is the only place the number is edited. CI reads
+it, stamps it into the image, and refuses to build if it is not `x.y.z` or
+if a release tag disagrees with it. `config.py` falls back to reading the
+same file, so a source checkout and the image built from it report the same
+number — which means the version no longer distinguishes them, and the
+dashboard uses the absence of a CI build timestamp for that instead.
+
+Bump it in the pull request that makes the change, and add the entry to
+`CHANGELOG.md` in the same commit: `x` for an overhaul, `y` for a feature,
+`z` for a fix. A test asserts the changelog documents the current version.
 
 ## Deployment
 
@@ -152,6 +178,30 @@ Push to `main` → Actions builds and publishes
 `docker compose pull && docker compose up -d --force-recreate`.
 
 The GHCR package must be public, or the server needs `docker login ghcr.io`.
+
+## The Pixel companion
+
+The phone polls; the server never dials out to it. A phone on DHCP has no
+stable address, an inbound listener is a permanently open port on the LAN,
+and Doze is far kinder to a scheduled outbound request than to a held-open
+socket. The cost is that "free up now" takes effect on the phone's next
+check-in, so the server sets the interval and asks for a fast one only when
+there is something worth waking up for.
+
+Two endpoints are the phone's (`/api/companion/poll`, `/api/companion/report`),
+gated in the middleware by a pairing token rather than a session — the phone
+has no browser. Two are the dashboard's, behind the normal session gate.
+
+The button labels the app looks for are a *setting*, not a constant. Google
+renames them, and a rename should be a text field in the dashboard, not a
+new APK.
+
+The app itself is in `companion/` — four Kotlin files, no dependencies, and
+no storage permission, which is what makes "it cannot delete a photo" an
+Android guarantee rather than a claim. `minSdk 29`, because Android 10 was
+the Pixel 1's last update. Lint runs with `NewApi` promoted to an error so
+an API above that floor fails the build rather than crashing on the one
+device that matters.
 
 ## Open items
 

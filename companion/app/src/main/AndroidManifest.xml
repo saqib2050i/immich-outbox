@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      The permission list is the point of this app.
+
+      There is no READ_EXTERNAL_STORAGE, no WRITE_EXTERNAL_STORAGE, no
+      MANAGE_EXTERNAL_STORAGE and no media permission of any kind, so the app
+      is incapable of reading, moving or deleting a single photo. It presses
+      a button in Google Photos and Google Photos decides what is safe to
+      remove. That matters, because on the relay a file disappearing from
+      the outbox is the only evidence that a backup ever happened.
+
+      INTERNET is to talk to the relay on the LAN. That is the whole list.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      Google Photos is the only app this one ever looks at or launches.
+      Declared so the launch intent resolves under package visibility.
+    -->
+    <queries>
+        <package android:name="com.google.android.apps.photos" />
+    </queries>
+
+    <!--
+      allowBackup="false" switches backup off entirely below Android 12, so
+      fullBackupContent would be dead configuration on the Pixel 1. From 12
+      it governs cloud backup only, and data_extraction_rules covers the
+      rest. Between them the pairing code never leaves the phone.
+    -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@android:drawable/ic_menu_gallery"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light"
+        android:usesCleartextTraffic="true">
+        <!--
+          usesCleartextTraffic: the relay is a container on the home LAN
+          served over plain http. There is no certificate to trust and no
+          hostname to pin. The pairing token is the authentication, and the
+          traffic never leaves the house.
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".FreeSpaceService"
+            android:exported="false"
+            android:label="@string/service_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+    </application>
+</manifest>

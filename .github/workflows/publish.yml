@@ -55,15 +55,27 @@ jobs:
       # reported its branch name ("main") and a commit hash, which answers
       # "which commit" but not "am I on the latest?".
       #
-      # A release tag wins when there is one; otherwise the workflow run
-      # number, which only ever goes up.
+      # The VERSION file is the only place the number is edited. A tag does
+      # not override it -- it has to agree with it, or the build fails.
+      # A tag that disagrees would publish two different images claiming the
+      # same version, which is worse than a red build.
       - id: version
         run: |
+          version="$(tr -d ' \t\n\r' < VERSION)"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::VERSION is '$version', expected x.y.z"; exit 1 ;;
+          esac
+
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=build ${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            tag="${{ github.ref_name }}"
+            if [ "${tag#v}" != "$version" ]; then
+              echo "::error::tag ${tag} does not match VERSION ${version}"
+              exit 1
+            fi
           fi
+
+          echo "name=$version" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - id: meta

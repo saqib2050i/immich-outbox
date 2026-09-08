@@ -152,9 +152,11 @@ def export_sanitised(name: str) -> str:
     shutil.copyfile(src, tmp)
     conn = sqlite3.connect(tmp)
     try:
+        # companion_token is the whole of the phone's authority over this
+        # service, so it leaves with the other credentials.
         conn.execute("DELETE FROM meta WHERE k IN "
                      "('cfg_immich_api_key','cfg_syncthing_api_key',"
-                     " 'auth_hash','alert_state')")
+                     " 'auth_hash','alert_state','companion_token')")
         conn.execute("DELETE FROM meta WHERE k LIKE 'cfg_alert_webhook%'")
         conn.commit()
         conn.execute("VACUUM")          # do not leave the values in free pages

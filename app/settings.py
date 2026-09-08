@@ -58,6 +58,23 @@ SPEC: dict[str, tuple[type, object]] = {
     "syncthing_url": (str, ""),
     "syncthing_api_key": (str, ""),
     "syncthing_folder": (str, ""),
+    # The Pixel companion. It presses Google Photos' "Free up space" so the
+    # outbox drains in minutes rather than on Smart Storage's 30-day clock.
+    # It never deletes anything itself -- see companion.py.
+    "companion_enabled": (bool, False),
+    # Ask by itself when the outbox is full with work behind it, which is
+    # the only moment freeing space actually buys anything.
+    "companion_auto": (bool, True),
+    "companion_min_battery": (int, 30),
+    "companion_idle_poll_minutes": (int, 30),
+    # One free-up unblocks roughly one outbox's worth. Asking again before
+    # Google Photos has uploaded the replacements just wakes the phone.
+    "companion_cooldown_minutes": (int, 60),
+    "companion_offline_hours": (int, 12),
+    # Empty means "use the built-in list". Editable because Google renames
+    # these buttons, and a rename should not need a new APK.
+    "companion_labels": (str, ""),
+    "companion_confirm_labels": (str, ""),
     # Housekeeping
     "backup_enabled": (bool, True),
 }
@@ -88,6 +105,14 @@ class Settings:
     syncthing_url: str
     syncthing_api_key: str
     syncthing_folder: str
+    companion_enabled: bool
+    companion_auto: bool
+    companion_min_battery: int
+    companion_idle_poll_minutes: int
+    companion_cooldown_minutes: int
+    companion_offline_hours: int
+    companion_labels: str
+    companion_confirm_labels: str
     backup_enabled: bool
 
     @property
@@ -96,6 +121,23 @@ class Settings:
         zero cannot silently stop that kind moving at all."""
         return {"IMAGE": max(1, self.photo_workers),
                 "VIDEO": max(1, self.video_workers)}
+
+    @property
+    def eligibility(self) -> dict:
+        """What may go out right now, in the shape the ledger's queries
+        take. Three callers were building this dict independently; a window
+        added to one and not the others would silently disagree about what
+        is waiting."""
+        return {
+            "include_video": self.include_video,
+            "max_asset_bytes": self.max_asset_bytes,
+            "ongoing": self.ongoing_enabled,
+            "ongoing_from": self.ongoing_from,
+            "backfill": self.backfill_enabled,
+            "backfill_start": self.backfill_start,
+            "backfill_end": self.backfill_end,
+            "fix_dates": self.fix_dates,
+        }
 
     @property
     def outbox_max_bytes(self) -> int:

@@ -9,7 +9,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
                                StreamingResponse)
 
-from . import alerts, auth, backup, config, db, feeder, immich, settings, syncthing, worker
+from . import (alerts, auth, backup, companion, config, db, feeder, immich,
+               settings, syncthing, worker)
 
 STATIC = Path(__file__).parent / "static"
 
@@ -32,6 +33,10 @@ app = FastAPI(title="Immich outbox feeder", lifespan=lifespan)
 # Paths reachable without a session.
 OPEN_PATHS = {"/login", "/api/login", "/healthz"}
 
+# The phone has no browser and no session. It carries a pairing token
+# instead, checked here so no route below has to remember to.
+COMPANION_PATHS = {"/api/companion/poll", "/api/companion/report"}
+
 
 @app.middleware("http")
 async def gate(request: Request, call_next):
@@ -42,6 +47,12 @@ async def gate(request: Request, call_next):
 
     path = request.url.path
     if path in OPEN_PATHS:
+        return await call_next(request)
+
+    if path in COMPANION_PATHS:
+        if not companion.token_ok(request.headers.get("x-companion-token")):
+            return JSONResponse({"error": "bad or missing companion token"},
+                                status_code=401)
         return await call_next(request)
 
     if not auth.valid_session(request.cookies.get(auth.COOKIE)):
@@ -164,6 +175,7 @@ async def status():
         "alerts": alerts.evaluate(),
         "last_backup": db.get_meta("last_backup"),
         "revision": db.revision(),
+        "companion": companion.snapshot(),
         "app": {"version": config.APP_VERSION,
                 "revision": config.APP_REVISION[:7],
                 "built_at": config.APP_BUILT_AT},
@@ -290,15 +302,7 @@ async def queue():
     waiting = db.waiting_breakdown()
     waiting_total = sum(m["asked"] + m["eligible"] for m in waiting)
     moving = bool(feeder.transfer_snapshot()["transfers"])
-    smallest = db.smallest_sendable({
-        "include_video": cfg.include_video,
-        "max_asset_bytes": cfg.max_asset_bytes,
-        "ongoing": cfg.ongoing_enabled, "ongoing_from": cfg.ongoing_from,
-        "backfill": cfg.backfill_enabled,
-        "backfill_start": cfg.backfill_start,
-        "backfill_end": cfg.backfill_end,
-        "fix_dates": cfg.fix_dates,
-    })
+    smallest = db.smallest_sendable(cfg.eligibility)
 
     if cfg.paused:
         status = ("paused", "Sending is paused. Nothing new goes to the outbox.")
@@ -535,6 +539,58 @@ async def pause(payload: dict | None = None):
             _, used = feeder.reconcile()
             added = await feeder.top_up(used)
     return {"ok": True, "paused": paused, "added": added}
+
+
+# ---- the Pixel companion ------------------------------------------------
+#
+# Two of these are for the phone and two are for the dashboard. None of them
+# confirm anything: the companion only presses Google Photos' own button,
+# and files leaving the outbox is still the only evidence of a backup.
+
+@app.post("/api/companion/poll")
+async def companion_poll(payload: dict | None = None):
+    return companion.poll(payload or {})
+
+
+@app.post("/api/companion/report")
+async def companion_report(payload: dict | None = None):
+    run = companion.record(payload or {})
+    # A successful free-up means files are about to vanish from the outbox.
+    # Reconciling now turns that into confirmations and a refill in seconds
+    # rather than on the next fifteen-second sweep.
+    if run["ok"] and not feeder.CYCLE_LOCK.locked():
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
+    return {"ok": True}
+
+
+@app.get("/api/companion")
+async def companion_status():
+    return companion.snapshot()
+
+
+@app.post("/api/companion/free")
+async def companion_free():
+    cfg = settings.load()
+    if not cfg.companion_enabled:
+        raise HTTPException(400, "The companion is switched off in Settings.")
+    req = companion.request("manual")
+    return {"ok": True, "request": req,
+            "note": "The phone picks this up on its next check-in."}
+
+
+@app.post("/api/companion/pair")
+async def companion_pair(payload: dict | None = None):
+    """Show the pairing token, or issue a new one.
+
+    Deliberately behind the session gate and never included in the status
+    payload: it is the whole of the phone's authority, so it is shown when
+    asked for and not before.
+    """
+    if (payload or {}).get("rotate"):
+        return {"token": companion.rotate_token(), "rotated": True}
+    return {"token": companion.ensure_token(), "rotated": False}
 
 
 @app.get("/api/timeline")

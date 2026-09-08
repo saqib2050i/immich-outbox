@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Nothing leaves this app. The only thing it stores is the pairing code,
+  which is a credential for the relay, so it belongs in neither a cloud
+  backup nor a device-to-device transfer. Pairing a new phone means reading
+  the code off the dashboard again, which takes a few seconds and is the
+  right trade.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -57,11 +57,28 @@ STUCK_AFTER_DAYS = _i("STUCK_AFTER_DAYS", 45)
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 
 # --- Build identity ---
-# Stamped into the image by CI so the dashboard can answer "am I running the
-# latest?" without anyone having to inspect the container. Running from a
-# source checkout leaves these at their defaults.
-APP_VERSION = os.getenv("APP_VERSION", "dev")
+# The number lives in the VERSION file next to this package and is edited in
+# exactly one place. CI reads that file and stamps it into the image, so a
+# container and a source checkout of the same commit always agree, and an
+# image built outside CI still knows what it is.
+#
+# x.y.z, and the parts are meant literally: x an overhaul, y a feature, z a
+# fix. Comparing two numbers should tell you how much moved.
+def _version_file():
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "VERSION")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+# An empty env var counts as unset: a CI step that fails to substitute
+# should fall back to the file, not stamp the image with nothing.
+APP_VERSION = os.getenv("APP_VERSION") or _version_file() or "dev"
 APP_REVISION = os.getenv("APP_REVISION", "")
+# Only CI sets this. Its absence is how the dashboard tells a source
+# checkout from a published image -- the version alone no longer says.
 APP_BUILT_AT = os.getenv("APP_BUILT_AT", "")
 
 # Syncthing's own bookkeeping, never treated as photos.
