@@ -341,16 +341,7 @@ async def top_up(used: int) -> int:
     if budget <= 0:
         return 0
 
-    filt = {
-        "include_video": cfg.include_video,
-        "max_asset_bytes": cfg.max_asset_bytes,
-        "ongoing": cfg.ongoing_enabled,
-        "ongoing_from": cfg.ongoing_from,
-        "backfill": cfg.backfill_enabled,
-        "backfill_start": cfg.backfill_start,
-        "backfill_end": cfg.backfill_end,
-        "fix_dates": cfg.fix_dates,
-    }
+    filt = cfg.eligibility
 
     written: list[str] = []
     started_empty = used == 0

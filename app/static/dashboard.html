@@ -526,6 +526,19 @@
     <div class="row" id="rowSync" hidden><span>Synced to phone</span><span id="oSync">—</span></div>
   </div>
 
+  <div class="card" id="cardPhone" hidden>
+    <h2>Phone</h2>
+    <div class="row"><span>Companion</span><span id="cpState">—</span></div>
+    <div class="row"><span>Last check-in</span><span id="cpSeen">—</span></div>
+    <div class="row"><span>Battery</span><span id="cpBatt">—</span></div>
+    <div class="row"><span>Free on phone</span><span id="cpFree">—</span></div>
+    <div class="row" id="cpRowLast" hidden><span>Last run</span><span id="cpLast">—</span></div>
+    <div class="controls" style="margin:12px 0 0">
+      <button id="btnFreeNow">Free up space now</button>
+    </div>
+    <p class="empty" id="cpNote" style="margin:8px 0 0"></p>
+  </div>
+
   <div class="card">
     <h2>Immich</h2>
     <div class="row"><span>Server</span><span id="iUrl">—</span></div>
@@ -790,6 +803,59 @@
   </fieldset>
 
   <fieldset>
+    <legend>Phone companion</legend>
+    <p class="hint" style="margin:0 0 10px">
+      An app on the Pixel that presses Google Photos' own <b>Free up space</b>,
+      so the outbox drains in minutes instead of waiting about thirty days for
+      Smart Storage. It never deletes a photo itself — Google Photos decides
+      what has been backed up and is safe to remove, exactly as it does today.
+    </p>
+    <div class="field">
+      <label for="s_companion_enabled">Use the companion app</label>
+      <input type="checkbox" id="s_companion_enabled">
+    </div>
+    <div class="field">
+      <label for="s_companion_auto">Free up space automatically
+        <span class="hint">Only when the outbox is full with files waiting behind it — the one moment it buys anything.</span></label>
+      <input type="checkbox" id="s_companion_auto">
+    </div>
+    <div class="field">
+      <label for="s_companion_cooldown_minutes">Minutes between automatic runs
+        <span class="hint">One run clears roughly one outbox. Asking again before Google Photos has uploaded the replacements just wakes the phone.</span></label>
+      <input type="number" id="s_companion_cooldown_minutes" min="5" max="1440">
+    </div>
+    <div class="field">
+      <label for="s_companion_min_battery">Minimum battery %
+        <span class="hint">Ignored while the phone is charging.</span></label>
+      <input type="number" id="s_companion_min_battery" min="0" max="100">
+    </div>
+    <div class="field">
+      <label for="s_companion_idle_poll_minutes">Check-in interval, minutes
+        <span class="hint">How often the phone asks for work when there is none. A manual request waits at most this long.</span></label>
+      <input type="number" id="s_companion_idle_poll_minutes" min="1" max="240">
+    </div>
+    <div class="field">
+      <label for="s_companion_offline_hours">Warn if silent for, hours</label>
+      <input type="number" id="s_companion_offline_hours" min="1" max="168">
+    </div>
+    <div class="field">
+      <label for="s_companion_labels">Button labels
+        <span class="hint">What the app looks for on screen, comma separated. Change this if Google renames the button — no new app needed. Blank uses the built-in list.</span></label>
+      <input type="text" id="s_companion_labels" placeholder="Free up space, Free up device storage">
+    </div>
+    <div class="field">
+      <label for="s_companion_confirm_labels">Confirmation labels
+        <span class="hint">The button on the dialog that follows. Blank uses the built-in list.</span></label>
+      <input type="text" id="s_companion_confirm_labels" placeholder="Free up, Allow, Delete">
+    </div>
+    <div class="controls" style="margin:10px 0 0">
+      <button id="btnPair">Show pairing code</button>
+      <button id="btnRepair" class="ghost">Issue a new one</button>
+    </div>
+    <p class="empty" id="pairOut" style="margin:8px 0 0"></p>
+  </fieldset>
+
+  <fieldset>
     <legend>Housekeeping</legend>
     <div class="field">
       <label for="s_backup_enabled">Back up the ledger daily</label>
@@ -1011,6 +1077,7 @@ async function render(){
   badgeProblems.hidden = !problems;
   badgeProblems.textContent = fmtNum(problems);
 
+  renderPhone(d.companion);
   renderBuild(d.app);
   renderConnection(d);
   renderAlerts(d);
@@ -1032,6 +1099,7 @@ document.addEventListener("input", e => {
 
 const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
                "backup_enabled",
+               "companion_enabled","companion_auto",
                "fix_dates"];
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
@@ -2233,6 +2301,60 @@ async function renderSyncthing(){
   rowSync.classList.toggle("bad", !!d.error);
 }
 
+// The phone companion.
+//
+// Two things matter on a glance: is it still there, and did the last press
+// of the button work. Everything else is detail.
+function renderPhone(cp){
+  if (!cp || !cp.enabled){ cardPhone.hidden = true; return; }
+  cardPhone.hidden = false;
+
+  const WORDS = {
+    ok:      "Connected",
+    running: "Freeing space now",
+    queued:  "Asked — waiting for the phone",
+    waiting: "Waiting for the first check-in",
+    offline: "Not checking in",
+    failed:  "Last attempt failed",
+    off:     "Off",
+  };
+  cpState.textContent = WORDS[cp.state] || cp.state;
+  cardPhone.classList.toggle("bad", cp.state === "offline" || cp.state === "failed");
+
+  const mins = cp.seen_minutes;
+  cpSeen.textContent = mins == null ? "never"
+    : mins < 1   ? "just now"
+    : mins < 60  ? Math.round(mins) + " min ago"
+    : mins < 1440 ? Math.round(mins / 60) + " h ago"
+    : Math.round(mins / 1440) + " days ago";
+
+  const dev = cp.device || {};
+  cpBatt.textContent = dev.battery == null ? "—"
+    : dev.battery + "%" + (dev.charging ? " (charging)" : "");
+  cpFree.textContent = dev.free_bytes ? fmtBytes(dev.free_bytes) : "—";
+
+  const last = cp.last_run;
+  cpRowLast.hidden = !last || !last.at;
+  if (last && last.at){
+    // Short enough to sit on one line in a narrow card, like every other
+    // value in this column.
+    cpLast.textContent = last.ok
+      ? (last.items ? last.items + " cleared" : "done")
+      : "failed";
+  }
+
+  // The phone polls; the server never dials out to it. So a manual request
+  // is picked up on the next check-in, and saying so avoids the button
+  // looking broken for the half-minute before anything happens.
+  btnFreeNow.disabled = cp.running || cp.pending;
+  cpNote.textContent =
+      cp.state === "offline" ? cp.line
+    : cp.pending  ? "Queued — the phone will pick this up on its next check-in."
+    : cp.running  ? "Running now."
+    : cp.state === "failed" ? cp.line
+    : "";
+}
+
 // Which image is running.
 //
 // The question a person is actually asking is "am I out of date?", so lead
@@ -2539,6 +2661,43 @@ btnTest.onclick = async () => {
   btnTest.textContent = "Testing";
   try { await fetch("/api/immich/test", {method:"POST"}); await tick(); }
   finally { btnTest.disabled = false; btnTest.textContent = "Test connection"; }
+};
+
+// ---- phone companion ----
+btnFreeNow.onclick = async () => {
+  btnFreeNow.disabled = true;
+  const was = btnFreeNow.textContent;
+  btnFreeNow.textContent = "Asking";
+  try {
+    const r = await fetch("/api/companion/free", {method:"POST"});
+    const d = await r.json().catch(() => ({}));
+    cpNote.textContent = r.ok ? (d.note || "Queued.")
+                              : (d.detail || "Could not ask the phone.");
+    await tick();
+  } finally {
+    btnFreeNow.textContent = was;
+  }
+};
+
+async function showPairing(rotate){
+  const r = await fetch("/api/companion/pair", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({rotate: !!rotate})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.token){ pairOut.textContent = "Could not read the code."; return; }
+  pairOut.innerHTML = "";
+  const code = document.createElement("code");
+  code.textContent = d.token;
+  code.style.cssText = "user-select:all;word-break:break-all";
+  pairOut.append(document.createTextNode(
+    (rotate ? "New code — the phone must be paired again. " : "") +
+    "Type this into the app, with this server's address: "), code);
+}
+
+btnPair.onclick   = () => showPairing(false);
+btnRepair.onclick = () => {
+  if (confirm("Issue a new pairing code? The phone will stop working until "
+            + "you enter the new one.")) showPairing(true);
 };
 
 // ---- password ----

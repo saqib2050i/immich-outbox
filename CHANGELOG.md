@@ -10,6 +10,30 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.1.0
+
+**The Pixel companion.** An app on the phone presses Google Photos' own
+"Free up space", so the outbox drains in about a minute instead of waiting
+roughly thirty days for Smart Storage. That wait was the pipeline's
+throughput limit: the outbox cap is the only flow control, so nothing new
+goes out until the phone lets go of what it already has.
+
+It never deletes a photo itself. Google Photos still decides what has been
+backed up and is safe to remove, so absence of a file remains honest proof
+of a backup. The app declares no storage permission at all, which makes
+that Android's guarantee rather than a promise — and nothing the phone
+reports is treated as confirmation.
+
+- The relay asks by itself exactly when it is blocked: outbox full, with
+  files waiting behind it. A cooldown stops it asking again before Google
+  Photos has uploaded the replacements.
+- A pairing token, shown once in Settings, and stripped from downloaded
+  backups with the other credentials.
+- The phone going quiet raises an alert — otherwise the symptom is
+  indistinguishable from Google Photos simply being slow.
+- The button labels the app looks for are editable in Settings, so a
+  Google rename does not need a new app.
+
 ## 1.0.0
 
 The first release with a version worth comparing. Previously the image

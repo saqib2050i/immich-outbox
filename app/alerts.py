@@ -95,7 +95,27 @@ def evaluate() -> list[dict]:
     else:
         db.set_meta("outbox_full_since", "")
 
-    # 5. Failures piling up. Say what kind, because the fix is different:
+    # 5. The companion has stopped checking in. Worth saying, because the
+    #    symptom is indistinguishable from Google Photos being slow: the
+    #    outbox just sits full and nothing looks broken.
+    if cfg.companion_enabled:
+        from . import companion
+        snap = companion.snapshot()
+        if snap["state"] == "offline":
+            out.append({"key": "companion_offline",
+                        "title": "Phone companion has gone quiet",
+                        "message": snap["line"] + " Nothing is freeing space "
+                                   "on the phone, so the outbox will stay "
+                                   "full. Check the app is still running and "
+                                   "the phone is on the network."})
+        elif snap["state"] == "failed":
+            out.append({"key": "companion_failed",
+                        "title": "Phone could not free space",
+                        "message": snap["line"] + " Google Photos may have "
+                                   "renamed the button — the labels it looks "
+                                   "for can be changed in Settings."})
+
+    # 6. Failures piling up. Say what kind, because the fix is different:
     #    a 404 lives in Immich's storage, not in this service's plumbing.
     if counts["failed"] >= cfg.alert_failed_count:
         kinds = {b["kind"]: b["total"] for b in db.failure_breakdown()}
