@@ -21,6 +21,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Next to app/, where config.py looks for it. An image built by hand,
 # outside CI and so without the build args, still reports its version.
 COPY VERSION ./VERSION
+# The companion APK, when CI has built one, so the phone can update itself
+# from this server instead of from a cable and a laptop. Usually just a
+# placeholder; the server checks at runtime and says so if it is empty.
+COPY dist ./dist
 COPY app ./app
 
 VOLUME ["/data", "/outbox", "/spool"]

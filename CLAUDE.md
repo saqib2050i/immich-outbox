@@ -196,6 +196,15 @@ The button labels the app looks for are a *setting*, not a constant. Google
 renames them, and a rename should be a text field in the dashboard, not a
 new APK.
 
+CI builds the APK and bundles it into the image at `dist/companion.apk`, so
+the phone updates itself from `/app` rather than from a cable. Two things
+follow. The app's version comes from the same root `VERSION` file as the
+server, deliberately: they speak a protocol, and a pair that disagrees is a
+pair nobody has tested. And Android installs an update only over the same
+signing key, so CI needs a stable one from `ANDROID_KEYSTORE_BASE64`; absent
+it the build is debug-signed and the install page says so, because failing
+the release of a *server* over a phone app would be the wrong trade.
+
 The app itself is in `companion/` — four Kotlin files, no dependencies, and
 no storage permission, which is what makes "it cannot delete a photo" an
 Android guarantee rather than a claim. `minSdk 29`, because Android 10 was

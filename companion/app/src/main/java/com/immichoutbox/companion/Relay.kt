@@ -29,6 +29,10 @@ class Relay(private val context: Context, private val prefs: Prefs) {
         val labels: List<String>,
         val confirmLabels: List<String>,
         val nextPollSeconds: Int,
+        // What the server has on offer at /app. Blank when it carries no
+        // build. Only ever displayed -- see MainActivity for why this app
+        // does not install anything itself.
+        val latestVersion: String,
     )
 
     /** Check in. Returns null if the relay could not be reached. */
@@ -52,6 +56,7 @@ class Relay(private val context: Context, private val prefs: Prefs) {
             // misconfigured interval must not turn into a hot loop on a
             // phone.
             nextPollSeconds = reply.optInt("next_poll_seconds", 1800).coerceAtLeast(60),
+            latestVersion = reply.optString("latest_version", ""),
         )
     }
 

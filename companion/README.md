@@ -79,6 +79,47 @@ Install it on the Pixel over USB:
 ~/Library/Android/sdk/platform-tools/adb install -r companion/app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**Or skip the cable.** CI builds the app and bundles it into the server image,
+so the Pixel can fetch it from the relay itself: open
+`http://<relay>:8099/app` in the phone's browser, sign in, and tap download.
+The app checks on every check-in and offers the link itself when the server is
+serving a newer build than the one installed — it never installs anything, so
+it needs no permission to do so.
+
+## Signing, and why it matters for updates
+
+Android will only install an update over a copy signed with **the same key**.
+The debug keystore is generated per machine, so a CI runner makes a fresh one
+on every build — meaning every "update" would look like a different app and be
+refused.
+
+Without a key configured, CI still builds and the relay still serves the app.
+It is debug-signed, it installs fine the first time, and the install page says
+so. Updating it just means uninstalling the old copy first, which loses the
+pairing code and the accessibility grant.
+
+To make updates one tap, create a key once and give it to CI:
+
+```bash
+keytool -genkeypair -v -keystore companion.jks -alias companion \
+  -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=Photo relay companion, O=Home, C=GB"
+base64 -i companion.jks | pbcopy      # macOS; on Linux use base64 -w0
+```
+
+Then add four repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | the base64 you just copied |
+| `ANDROID_KEYSTORE_PASSWORD` | the store password you chose |
+| `ANDROID_KEY_ALIAS` | `companion` |
+| `ANDROID_KEY_PASSWORD` | the key password (usually the same) |
+
+**Keep `companion.jks` somewhere safe and do not commit it.** Lose it and the
+only way to update the app again is to uninstall it from the phone first. It is
+not in this repository, and `.gitignore` covers `*.keystore`.
+
 ## Setting it up on the phone
 
 1. In the relay dashboard: **Settings → Phone companion**, tick *Use the

@@ -10,6 +10,38 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.3.0
+
+**The relay serves the phone app.** Changing the companion used to mean a
+cable and a laptop. Now CI builds it, bundles it into the image, and the
+Pixel fetches it from `/app` — so an app change ships exactly like a server
+change: push, `docker compose pull`, and the phone offers the update on its
+next check-in.
+
+- The app's version now comes from the same `VERSION` file as the server.
+  It was hardcoded in `build.gradle.kts` and had already gone stale by a
+  release. They speak a protocol to each other, so a pair whose numbers
+  disagree is a pair nobody has tested.
+- The app is told what the server is serving on every check-in, and says so
+  on its own screen. It does not install anything: that would need
+  `REQUEST_INSTALL_PACKAGES` — the permission to install other apps — and
+  the short permission list is worth more than saving a tap. It opens the
+  install page and lets Android's own installer do it.
+- The dashboard shows which build is on the phone and which is on the
+  server, and says when they differ.
+- A server carrying no app build says so plainly rather than serving an
+  empty download, which on a phone mid-install looks identical to a corrupt
+  one.
+- The install page and the download sit behind the session gate, so the
+  open paths stay at three.
+
+**One-time setup for seamless updates:** Android installs an update only
+over the same signing key, and a CI runner generates a fresh debug key every
+build. Add a keystore as a repository secret and updates become one tap —
+see `companion/README.md`. Without it everything still works; the first
+install is fine and the install page warns that updating needs the old copy
+removed. The app build is not allowed to block a server release either way.
+
 ## 1.2.0
 
 **The settings page, rebuilt.** It had grown to eight unlabelled blocks in

@@ -438,6 +438,10 @@
   .cstatus .dot.busy{background:var(--transit)}
   .cstatus .what{font-size:13px;font-weight:700}
   .cstatus .why{font-size:12px;color:var(--dim);margin:6px 0 0;line-height:1.5}
+  .btn-link{font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    text-decoration:none;color:var(--ink);border:1px solid var(--rule);
+    padding:6px 11px;display:inline-block}
+  .btn-link:hover{border-color:var(--ink)}
   .cgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
     gap:10px 18px;margin:11px 0 0}
   .cgrid div{display:flex;flex-direction:column;gap:2px}
@@ -843,9 +847,13 @@
           <div><span>Battery</span><b id="cstBatt">—</b></div>
           <div><span>Free on phone</span><b id="cstFree">—</b></div>
           <div><span>Last run</span><b id="cstLast">—</b></div>
+          <div><span>App on phone</span><b id="cstAppPhone">—</b></div>
+          <div><span>App on server</span><b id="cstAppServer">—</b></div>
         </div>
+        <p class="why" id="cstUpdate" hidden></p>
         <div class="controls" style="margin:12px 0 0">
           <button id="btnFreeNowS">Free up space now</button>
+          <a class="btn-link" id="lnkInstall" href="/app" target="_blank" rel="noopener">Install page</a>
           <button id="btnPair" class="ghost">Show pairing code</button>
           <button id="btnRepair" class="ghost">Issue a new code</button>
         </div>
@@ -2441,6 +2449,21 @@ function renderCompanionSettings(cp){
   cstLast.textContent   = (!last || !last.at) ? "never"
                         : last.ok ? (last.items ? last.items + " cleared" : "done")
                         : "failed";
+
+  // Which build is where. The server serves the app, so these should agree;
+  // when they do not, the phone simply has not been updated yet.
+  const apk = cp.apk || {};
+  cstAppPhone.textContent  = cp.running_version || "—";
+  cstAppServer.textContent = apk.available ? apk.version : "none bundled";
+  if (cp.update_available){
+    cstUpdate.hidden = false;
+    cstUpdate.textContent =
+      `The phone is on ${cp.running_version} and this server has ${apk.version}. `
+      + "Open the install page on the Pixel to update it — the app offers the "
+      + "same link once it has checked in.";
+  } else {
+    cstUpdate.hidden = true;
+  }
 
   let dot, what, why;
   if (seen == null){

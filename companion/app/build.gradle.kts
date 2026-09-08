@@ -2,6 +2,18 @@ plugins {
     id("com.android.application")
 }
 
+// One VERSION file for the whole project, the same one the server reports.
+// The app and the server speak a protocol to each other, so letting their
+// numbers drift apart would mean guessing which pairs are compatible. It
+// was hardcoded here and had already gone stale by a release.
+val declaredVersion: String = rootProject.file("../VERSION").readText().trim()
+
+// Android compares updates by versionCode, an integer that must only ever
+// go up; it never looks at the name. 1.2.0 -> 10200, which stays ordered as
+// long as minor and patch stay below 100.
+val versionInts = declaredVersion.split(".").map { it.toIntOrNull() ?: 0 }
+val declaredCode = versionInts[0] * 10000 + versionInts[1] * 100 + versionInts[2]
+
 android {
     namespace = "com.immichoutbox.companion"
     compileSdk = 36
@@ -12,13 +24,36 @@ android {
         // entire reason this app exists.
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.1.0"
+        versionCode = declaredCode
+        versionName = declaredVersion
+    }
+
+    // Android will only install an update signed with the same key as the
+    // version already on the phone. The debug keystore is generated per
+    // machine, so a CI runner makes a fresh one every build -- every
+    // "update" would be rejected as a different app. A stable key has to
+    // come from outside the build.
+    //
+    // Absent the secrets this stays null and the release build is unsigned,
+    // which the workflow detects and falls back from. Failing here instead
+    // would block the server's release over a phone app.
+    val keystorePath: String? = System.getenv("ANDROID_KEYSTORE_PATH")
+    signingConfigs {
+        if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "companion"
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

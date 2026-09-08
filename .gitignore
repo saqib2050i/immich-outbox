@@ -5,3 +5,12 @@ _outbox/
 _spool/
 .env
 .pytest_cache/
+
+# The built companion app: produced by CI, never committed.
+dist/companion.apk
+dist/companion.json
+
+# Android signing keys, wherever they land.
+*.jks
+*.keystore
+*.p12

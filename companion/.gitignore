@@ -5,4 +5,9 @@ local.properties
 build/
 app/build/
 *.apk
+
+# Signing keys. Committing one to a public repository would let anyone
+# build an update Android accepts as this app.
 *.keystore
+*.jks
+*.p12
