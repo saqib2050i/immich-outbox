@@ -10,6 +10,31 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.2.0
+
+**The settings page, rebuilt.** It had grown to eight unlabelled blocks in
+one column, and the Limits section packed three separate settings into a
+single flex row — which is what made it look, accurately, clustered.
+
+- One setting per row, always. A test now enforces it.
+- A sticky index beside the panels, so you can jump to a section instead of
+  hunting for it.
+- Save follows you down the page rather than sitting past eight sections of
+  scrolling, and says when there is something unsaved.
+- Sections carry a line explaining what they are for.
+
+**You can now tell whether the phone companion works.** Pairing was a code
+you typed into the app and then had no way to check: the only sign of life
+was a card on another tab, hidden unless the companion was switched on — so
+*paired but not enabled*, the one state most needing a diagnosis, showed
+nothing anywhere. Settings now carries a live panel: paired or not, last
+check-in, battery, free space, last run, and a **Free up space now** button.
+It names that state explicitly rather than staying blank.
+
+Also fixed: the settings grid was flattened to a single column by the tab
+switcher's `display:block`, and the section index ignored a reduced-motion
+preference.
+
 ## 1.1.0
 
 **The Pixel companion.** An app on the phone presses Google Photos' own
