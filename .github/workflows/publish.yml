@@ -1,5 +1,12 @@
 name: Build and publish image
 
+# Actions are pinned to a commit, with the version in the comment beside it.
+# A tag like @v4 is a moving pointer that the action's owner can repoint at
+# any time, and this workflow holds the app signing keystore and a token
+# that can push to the registry -- so "whatever v4 means today" is a larger
+# risk than any of the deprecation notices these runs print. Dependabot
+# keeps the pins current; see .github/dependabot.yml.
+
 on:
   push:
     branches: [main]
@@ -22,14 +29,14 @@ jobs:
   companion:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
       # Android installs an update only over the same signing key. The debug
       # keystore is generated per machine, so without a stable key from here
@@ -126,7 +133,7 @@ jobs:
         env:
           KIND: ${{ steps.sign.outputs.kind }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: companion-apk
           path: dist/
@@ -144,17 +151,17 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Lands in dist/, which the Dockerfile copies. Missing is fine: the
       # server reports that no app is bundled.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
           name: companion-apk
           path: dist
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -171,13 +178,13 @@ jobs:
           pip install -q -r requirements-dev.txt
           python -m pytest -q
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # Pull requests build but never publish, so a fork cannot push an image.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -211,7 +218,7 @@ jobs:
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -221,7 +228,7 @@ jobs:
             type=sha,format=short
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           # arm64 included so this also runs on a Pi or an ARM NAS.

@@ -1,0 +1,30 @@
+# Pinning actions to a commit stops the version moving underneath us; this
+# is what stops the pins going stale and unpatched instead. Dependabot
+# reads the "# vX.Y.Z" comment beside each pin and updates both together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # The relay's own dependencies, which is where a vulnerability would
+  # actually reach the running service rather than the build.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: gradle
+    directory: /companion
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps"
