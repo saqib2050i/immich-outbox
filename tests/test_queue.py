@@ -233,7 +233,16 @@ async def test_the_watcher_survives_an_error(rig, monkeypatch):
     monkeypatch.setattr(feeder, "WATCH_INTERVAL_SECONDS", 0.01)
     task = asyncio.create_task(feeder.watch())
     try:
-        await asyncio.sleep(0.1)
+        # Wait for the second pass rather than for a fixed span of wall
+        # clock. Sleeping 0.1s and assuming ten iterations fit is a bet on
+        # the scheduler that a loaded CI runner loses -- and it did, with
+        # "assert 1 > 1", which reads like the watcher dying rather than
+        # the test being impatient. Each pass also writes a log row, so on
+        # a slow disk one pass in 0.1s is entirely reasonable behaviour.
+        for _ in range(500):
+            if boom["n"] > 1:
+                break
+            await asyncio.sleep(0.01)
     finally:
         task.cancel()
     assert boom["n"] > 1, "the watcher died on the first error"
