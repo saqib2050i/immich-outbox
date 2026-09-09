@@ -10,6 +10,44 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.4.0
+
+**The settings page was rendering on every tab.** `.setwrap{display:grid}`
+without `.tab-on` tied `[data-tab]{display:none}` on specificity and beat it
+on source order, so 3,289px of settings form sat between the Overview cards
+and the activity log — on all five other tabs. Scrolling down from Overview
+landed you in *Include videos*. The Overview page is now 1,567px instead of
+4,722px. Introduced in 1.2.0, by the fix that stopped the tab switcher
+flattening that same grid.
+
+**Three figures on the front page were wrong**, all the same way — counting
+rows the ledger holds but Immich will never serve again:
+
+- The pipeline bar was drawn 934 wide while the legend beneath it read 294,
+  so most of the Waiting block stood for assets that are going nowhere. The
+  two are two lines apart; the earlier fix corrected the number and missed
+  the bar.
+- **Still to send** claimed 13.2 GB when 9.9 GB was sendable. `pending_bytes`
+  was the only count without the `missing_at IS NULL` filter the other
+  queries carry. The Library tab's finish estimate reads the same figure, so
+  it was over by the same 3.35 GB.
+- The Queue badge counted 294 while the tab it labels listed 34. It now
+  counts what that tab actually shows.
+
+**The Phone card could not report how much was freed.** It read the item
+count, and the app reports bytes now, so every successful run said "done".
+It says "2.0 GB freed".
+
+**Two additions to Overview**, both answering "why is nothing happening":
+
+- The status sentence the server already writes — *"Waiting for the next
+  check, up to 10 minutes away. 15.7 GB free in the outbox."* — was only
+  ever visible on the Queue tab. It is the best single line the dashboard
+  produces and it now leads the front page.
+- Assets Immich no longer has are stated out loud rather than silently left
+  out of every figure. Their absence was what made 2,700 motionless files
+  look like a bug.
+
 ## 1.3.3
 
 **Release signing never worked.** An unset GitHub secret arrives as an
