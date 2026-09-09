@@ -347,20 +347,33 @@ async def top_up(used: int) -> int:
     started_empty = used == 0
     filled = 0
 
-    while budget > 0:
-        rows = db.claim_batch(budget, cfg.max_batch_files, filt,
-                              allow_oversize=(started_empty and not written))
-        if not rows:
-            break
+    # One progress figure for the whole fill. It used to be created and
+    # destroyed inside _fetch_batch, which runs once per claim -- so a fill
+    # needing five claims showed the bar vanish and restart at zero five
+    # times, and "12 of 40" counted a claim nobody asked about. The totals
+    # grow as claims are made, because how much is left to send is not
+    # knowable until claim_batch stops returning rows.
+    global BATCH
+    BATCH = {"files_total": 0, "files_done": 0,
+             "bytes_total": 0, "bytes_done": 0}
+    try:
+        while budget > 0:
+            rows = db.claim_batch(budget, cfg.max_batch_files, filt,
+                                  allow_oversize=(started_empty and not written))
+            if not rows:
+                break
 
-        spent, stopped = await _fetch_batch(rows, budget)
-        budget -= spent
-        filled += spent
-        written.extend(stopped["written"])
-        if stopped["paused"] or not stopped["progressed"]:
-            # Either the user pressed pause, or nothing in that claim could
-            # be written -- keep claiming and we would spin on the same rows.
-            break
+            spent, stopped = await _fetch_batch(rows, budget)
+            budget -= spent
+            filled += spent
+            written.extend(stopped["written"])
+            if stopped["paused"] or not stopped["progressed"]:
+                # Either the user pressed pause, or nothing in that claim
+                # could be written -- keep claiming and we would spin on the
+                # same rows.
+                break
+    finally:
+        BATCH = None
 
     if written:
         global LAST_FILL
@@ -395,9 +408,13 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
     paused = False
     guard = asyncio.Lock()
 
-    BATCH = {"files_total": len(rows), "files_done": 0,
-             "bytes_total": sum(r["size"] or 0 for r in rows),
-             "bytes_done": 0}
+    # Added to, never replaced: top_up owns this for the length of the fill.
+    # Created here as well so a direct call still reports something.
+    if BATCH is None:
+        BATCH = {"files_total": 0, "files_done": 0,
+                 "bytes_total": 0, "bytes_done": 0}
+    BATCH["files_total"] += len(rows)
+    BATCH["bytes_total"] += sum(r["size"] or 0 for r in rows)
 
     async def fetch_one(row) -> None:
         nonlocal spent, paused
@@ -503,7 +520,6 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
 
     await asyncio.gather(*(fetch_one(r) for r in rows))
 
-    BATCH = None
     return spent, {"written": written, "paused": paused,
                    "progressed": bool(written)}
 

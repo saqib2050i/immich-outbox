@@ -322,10 +322,16 @@ async def queue():
                              f"{config.FEED_INTERVAL_MIN} minutes away. "
                              f"{fmt_bytes_free(free)} free in the outbox.")
 
+    # The list is capped, the figures are not. `len(items)` topped out at
+    # queue_contents()'s 500, so a 16 GB outbox of ordinary photos -- a few
+    # thousand files -- reported "500 in the outbox" while Overview read the
+    # real number off the disk, and the two pages contradicted each other.
+    ledger = db.counts()
     return {
         "items": items,
-        "count": len(items),
-        "bytes": sum(i["size"] or 0 for i in items),
+        "shown": len(items),
+        "count": ledger["queued"],
+        "bytes": ledger["outbox_bytes"],
         "paused": cfg.paused,
         "status": {"state": status[0], "detail": status[1],
                    "waiting": waiting_total, "free_bytes": free},

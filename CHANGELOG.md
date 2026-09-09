@@ -10,6 +10,33 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.4.1
+
+Queue page.
+
+- **The badge is the backlog again.** 1.4.0 changed it to the outbox count
+  on the belief that the outbox was all this tab listed. It is the *second*
+  panel — the tab opens on the waiting backlog — so a badge of 34 sat over a
+  list of 294.
+- **The outbox figures are no longer capped by the list.** `count` and
+  `bytes` were computed from `queue_contents()`, which returns at most 500
+  rows. A 16 GB outbox of ordinary photos is a few thousand files, so Queue
+  reported "500 in the outbox" while Overview read the real number off the
+  disk and the two pages disagreed. The list is still capped — it now says
+  so.
+- **Fill progress no longer restarts partway through.** It was created and
+  destroyed inside `_fetch_batch`, which runs once per claim, so a fill
+  needing five claims showed the bar vanish and start again at zero five
+  times. It now spans the whole fill, and "12 of 40 files in this batch" —
+  counting a claim nobody asked about, in the units you were told were
+  arbitrary — reads "files this cycle".
+- **The tab and its first panel stopped sharing a name.** "Queue" over
+  "Queue" over "In the outbox" is why "why is it called queue?" kept coming
+  back; the first panel is now "Waiting to be sent".
+- **The description matches the design.** It still said files "move a batch
+  at a time", two designs out of date — they move in separate lanes for
+  photos and videos, several at once, filling until the outbox is full.
+
 ## 1.4.0
 
 **The settings page was rendering on every tab.** `.setwrap{display:grid}`
