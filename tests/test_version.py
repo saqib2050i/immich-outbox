@@ -119,3 +119,40 @@ def test_the_app_asks_android_what_is_installed():
     relay = (COMPANION / "Relay.kt").read_text()
     assert "getPackageInfo" in relay, \
         "the reported version must come from the installed package"
+
+
+# ---- the phone has to wake itself up ------------------------------------
+
+def test_the_app_schedules_with_an_alarm_not_a_handler():
+    """The bug this guards: polling was scheduled with Handler.postDelayed,
+    which cannot wake a sleeping CPU. On a phone with its screen off -- the
+    entire intended use -- the callback was deferred until something else
+    woke the device, so the app never checked in. Measured on a Pixel 1: no
+    check-in in over 100 seconds on a 60-second interval, plugged in, with
+    the process alive throughout."""
+    alarm = (COMPANION / "PollAlarm.kt")
+    assert alarm.is_file(), "scheduling must go through AlarmManager"
+    text = alarm.read_text()
+    assert "AndAllowWhileIdle" in text, \
+        "a plain alarm does not fire while the device is idle"
+    assert "ELAPSED_REALTIME_WAKEUP" in text, \
+        "the alarm has to wake the device, and survive a clock change"
+
+    service = (COMPANION / "FreeSpaceService.kt").read_text()
+    assert "postDelayed" not in service, \
+        "Handler.postDelayed cannot wake a sleeping phone"
+
+
+def test_the_poll_holds_the_cpu():
+    """The alarm wakes the phone, but nothing keeps it awake once the
+    broadcast returns -- and the check-in runs on another thread after it."""
+    service = (COMPANION / "FreeSpaceService.kt").read_text()
+    assert "PARTIAL_WAKE_LOCK" in service
+
+
+def test_nothing_is_tapped_by_position():
+    """A positional guess at the account picture tapped whatever else sat in
+    the corner. On the Photos home screen that is the memories carousel, so
+    a run opened a slideshow instead of freeing space."""
+    service = (COMPANION / "FreeSpaceService.kt").read_text()
+    assert "topRightTarget" not in service

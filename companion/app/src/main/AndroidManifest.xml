@@ -61,6 +61,13 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Not exported: only the alarm this app set may fire it.
+        -->
+        <receiver
+            android:name=".PollAlarm"
+            android:exported="false" />
+
         <service
             android:name=".FreeSpaceService"
             android:exported="false"

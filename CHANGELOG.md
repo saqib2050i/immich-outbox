@@ -10,6 +10,37 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.3.2
+
+**The phone never woke up to check in.** Polling was scheduled with
+`Handler.postDelayed`, which cannot wake a sleeping CPU: with the screen off
+— the entire intended use — the callback simply waited until something else
+woke the device. Measured on the Pixel: **no check-in in over 100 seconds on
+a 60-second interval**, plugged in, process alive throughout. That is why it
+only ever worked by picking the phone up and pressing *Check in now*.
+
+Scheduling now goes through `AlarmManager` with a wakeup alarm, and the
+check-in holds a CPU lock so the phone stays up for the run that follows.
+Verified on the device: screen off and untouched, it woke, collected a
+queued request, walked Google Photos, and reported back in 27 seconds.
+
+`setAndAllowWhileIdle` rather than an exact alarm on purpose — exact alarms
+need `SCHEDULE_EXACT_ALARM` from Android 12, and nothing here needs to
+happen at a precise moment. In deep Doze, which needs the phone unplugged,
+the system holds these to about one every nine minutes; a phone on a charger
+never enters that state.
+
+**A run could open a memories slideshow instead.** When the account picture
+had not rendered yet, a positional fallback tapped the rightmost clickable
+thing in the top corner — on the Photos home screen, the last memory card.
+Removed: the picture carries a long, stable description ("Signed in as …
+Account and settings."), and waiting for the real thing beats guessing.
+
+Confirmed against the device that there is no API to use instead. Photos'
+`FreeUpSpaceContentProvider` is exported but rejects every caller before
+dispatching a method — even adb shell — and there is no deep-link activity
+for the storage screen. The UI walk is the only route.
+
 ## 1.3.1
 
 **The app reported the wrong version.** `Relay.kt` carried

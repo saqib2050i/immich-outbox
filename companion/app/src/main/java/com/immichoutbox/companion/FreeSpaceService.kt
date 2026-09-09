@@ -2,8 +2,6 @@ package com.immichoutbox.companion
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
-import android.os.Handler
-import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.Executors
@@ -30,7 +28,6 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class FreeSpaceService : AccessibilityService() {
 
-    private val handler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
 
@@ -48,7 +45,8 @@ class FreeSpaceService : AccessibilityService() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        handler.removeCallbacksAndMessages(null)
+        // The alarm deliberately survives: the system restarts an enabled
+        // accessibility service, and the next firing brings us back with it.
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -62,23 +60,39 @@ class FreeSpaceService : AccessibilityService() {
 
     // ---- the polling loop ----------------------------------------------
 
-    private fun scheduleNextPoll(seconds: Int) {
-        handler.removeCallbacksAndMessages(null)
-        handler.postDelayed({ pollNow() }, seconds * 1000L)
-    }
+    private fun scheduleNextPoll(seconds: Int) = PollAlarm.schedule(this, seconds)
 
-    /** Check in out of band -- the setup screen's "Check in now" button. */
+    /** Check in: on the alarm, or from the setup screen's button. */
     fun pollNow() {
         if (!busy.compareAndSet(false, true)) return
+
+        // Hold the CPU for the whole check-in. The alarm woke the phone, but
+        // nothing keeps it awake once the broadcast returns, and the poll and
+        // any run that follows both happen on another thread afterwards.
+        val cpu = holdCpu()
         worker.execute {
             var next = 1800
             try {
                 next = checkIn()
             } finally {
                 busy.set(false)
-                handler.post { scheduleNextPoll(next) }
+                scheduleNextPoll(next)
+                try {
+                    if (cpu?.isHeld == true) cpu.release()
+                } catch (e: Exception) {
+                    // An already-released lock is not worth failing over.
+                }
             }
         }
+    }
+
+    private fun holdCpu(): android.os.PowerManager.WakeLock? = try {
+        val pm = getSystemService(android.content.Context.POWER_SERVICE)
+                as android.os.PowerManager
+        pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "companion:poll")
+            .apply { acquire(4 * 60 * 1000L) }
+    } catch (e: Exception) {
+        null
     }
 
     private fun checkIn(): Int {
@@ -210,11 +224,15 @@ class FreeSpaceService : AccessibilityService() {
             val entry = match(nodes, triggers)
             if (entry != null && tap(entry)) { sleep(2200); continue }
 
-            // 5. The account picture in the top corner, which is where the
-            //    entry lives. It is an image with no text on some versions,
-            //    so fall back to position.
+            // 5. The account picture, which is where the entry lives. Found
+            //    only by its description, never by position: it carries a
+            //    long one ("Signed in as ... Account and settings."), and
+            //    the previous positional fallback tapped whatever else sat
+            //    in the top corner. On the Photos home screen that is the
+            //    memories carousel, so a run would open a slideshow instead.
+            //    Waiting for the real thing to appear beats guessing.
             if (!openedMenu) {
-                val menu = match(nodes, MENU_LABELS) ?: topRightTarget(nodes)
+                val menu = match(nodes, MENU_LABELS)
                 if (menu != null && tap(menu)) {
                     openedMenu = true
                     sleep(2000)
@@ -320,26 +338,6 @@ class FreeSpaceService : AccessibilityService() {
             if (words.any { label.contains(it.lowercase()) }) return node
         }
         return null
-    }
-
-    /**
-     * The account picture, found by where it is rather than what it says.
-     *
-     * It is an image, and on some versions it carries no description at
-     * all, so there is nothing to match on. It is reliably the last
-     * clickable thing along the top edge.
-     */
-    private fun topRightTarget(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
-        val screen = nodes.firstOrNull()?.let { boundsOf(it) } ?: return null
-        if (screen.width() <= 0) return null
-        val topBand = screen.top + (screen.height() * 0.14).toInt()
-        val rightBand = screen.left + (screen.width() * 0.72).toInt()
-
-        return nodes.filter { node ->
-            val b = boundsOf(node)
-            node.isClickable && b.width() in 1..(screen.width() / 3) &&
-                b.top < topBand && b.centerX() > rightBand
-        }.maxByOrNull { boundsOf(it).centerX() }
     }
 
     /**
