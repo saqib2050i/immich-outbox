@@ -205,6 +205,20 @@ signing key, so CI needs a stable one from `ANDROID_KEYSTORE_BASE64`; absent
 it the build is debug-signed and the install page says so, because failing
 the release of a *server* over a phone app would be the wrong trade.
 
+Scheduling must go through `AlarmManager`, never a `Handler`. A Handler
+callback cannot wake a sleeping CPU, so with the screen off — which is the
+whole point of a phone on a shelf — the app simply never checks in. It also
+must hold a `PARTIAL_WAKE_LOCK` across the check-in, because the alarm wakes
+the phone only for the length of the broadcast and the work happens on
+another thread after that returns.
+
+Nothing may be tapped by position. The account picture is found by its
+description; a positional fallback tapped the memories carousel instead and
+opened a slideshow. There is no API to fall back on either — Photos'
+`FreeUpSpaceContentProvider` is exported but rejects every caller, adb shell
+included, and no deep-link activity reaches the storage screen. Driving the
+UI is the only route there is.
+
 Two things about the app that cost a release each. Its reported version
 must come from the package manager, never a constant — a `const val VERSION`
 sat beside a `versionName` read from the file and the two drifted, so a
