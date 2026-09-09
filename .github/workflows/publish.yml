@@ -39,10 +39,49 @@ jobs:
       - id: sign
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/companion.jks"
-            echo "path=$RUNNER_TEMP/companion.jks" >> "$GITHUB_OUTPUT"
+            KS="$RUNNER_TEMP/companion.jks"
+            # Strip whitespace first: a value pasted into the secrets form can
+            # pick up line breaks, and `base64 -d` answers that with
+            # "invalid input" and nothing else to go on.
+            printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > "$KS" 2>/dev/null || true
+
+            if [ ! -s "$KS" ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 did not decode to anything. \
+                Re-run 'base64 -i your.jks | pbcopy' and paste it again, whole."
+              exit 1
+            fi
+            # A truncated paste can still decode. A keystore starts with a DER
+            # SEQUENCE (PKCS12, 0x30) or JKS's 0xFEEDFEED; anything else means
+            # the value arrived incomplete.
+            MAGIC=$(head -c 4 "$KS" | od -An -tx1 | tr -d ' \n')
+            case "$MAGIC" in
+              30*|feedfeed) ;;
+              *) echo "::error::ANDROID_KEYSTORE_BASE64 decoded to $(stat -c%s "$KS") \
+                   bytes that are not a keystore (starts $MAGIC). The paste was \
+                   probably truncated — copy the whole value and try again."
+                 exit 1 ;;
+            esac
+
+            # Fail here, with a sentence, rather than inside Gradle.
+            if ! keytool -list -keystore "$KS" \
+                   -storepass:env ANDROID_KEYSTORE_PASSWORD \
+                   -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1; then
+              # A truncated paste still begins 0x30, so it reaches here rather
+              # than the magic check. All three causes get named because the
+              # size is the only clue that separates them.
+              echo "::error::Could not open the keystore ($(stat -c%s "$KS") bytes \
+                decoded). Either ANDROID_KEYSTORE_PASSWORD is wrong, \
+                ANDROID_KEY_ALIAS ('$ANDROID_KEY_ALIAS') is not in it, or the \
+                pasted value was truncated — compare that byte count with the \
+                size of your .jks file."
+              exit 1
+            fi
+            echo "Keystore accepted: $(stat -c%s "$KS") bytes, alias $ANDROID_KEY_ALIAS"
+            echo "path=$KS" >> "$GITHUB_OUTPUT"
             echo "kind=release" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — building a \
