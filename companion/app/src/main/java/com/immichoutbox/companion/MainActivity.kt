@@ -86,11 +86,12 @@ class MainActivity : Activity() {
      */
     private fun showUpdate() {
         val latest = prefs.latestVersion
-        val stale = latest.isNotEmpty() && latest != Relay.VERSION
+        val mine = Relay.installedVersion(this)
+        val stale = latest.isNotEmpty() && latest != mine
         updateLine.text = if (stale)
-            "Update available: $latest (this is ${Relay.VERSION})"
+            "Update available: $latest (this is $mine)"
         else
-            "Version ${Relay.VERSION} — up to date"
+            "Version $mine — up to date"
         updateLine.setTextColor(if (stale) UPDATE_BLUE else Color.GRAY)
         updateBtn.visibility = if (stale) View.VISIBLE else View.GONE
     }

@@ -124,80 +124,157 @@ class FreeSpaceService : AccessibilityService() {
         val launch = packageManager.getLaunchIntentForPackage(PHOTOS)
             ?: return Outcome(false, "Google Photos is not installed on this phone.")
 
-        val before = relay.freeBytes()
-        launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(launch)
-        sleep(3000)
+        // A phone on a shelf has its screen off, and a screen that is off
+        // draws no windows -- there is literally nothing for an
+        // accessibility service to read. This is the likeliest reason for a
+        // run that reports seeing nothing at all.
+        val wake = wakeScreen()
+        try {
+            sleep(1200)
+            val state = screenState()
+            if (state == LOCKED) {
+                return Outcome(false,
+                    "The phone is locked, and the companion cannot get past a lock " +
+                    "screen. Turn the screen lock off on this phone, or unlock it " +
+                    "before freeing space.")
+            }
 
-        var clicked: Rect? = null
-        var items = 0
+            val before = relay.freeBytes()
+            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(launch)
+
+            return walkPhotos(triggers, confirmWords, before, state)
+        } finally {
+            try {
+                if (wake?.isHeld == true) wake.release()
+            } catch (e: Exception) {
+                // Releasing an already-released lock is not worth failing a run.
+            }
+        }
+    }
+
+    /**
+     * Work the screens through to the end, whichever one we happen to be on.
+     *
+     * Written as a priority loop rather than a fixed sequence of steps. The
+     * path is: the account picture, top right -> "Free up space on this
+     * device" -> a blue "Free up 29.80 MB" -> "You freed up 29.80 MB". But
+     * that path differs between Google Photos versions, and a rigid state
+     * machine breaks the moment one screen is skipped or added. Asking on
+     * every pass "what is in front of me, and what is the most finished
+     * thing I can act on?" survives both.
+     */
+    private fun walkPhotos(triggers: List<String>, confirms: List<String>,
+                           before: Long, state: String): Outcome {
         var openedMenu = false
+        var pressed = false
+        var sawAnything = false
+        var lastSeen = ""
 
         for (step in 0 until MAX_STEPS) {
             val nodes = visibleNodes()
-
-            if (clicked == null) {
-                items = itemCountIn(nodes).takeIf { it > 0 } ?: items
-                val target = match(nodes, triggers, skip = null)
-                if (target != null) {
-                    clicked = boundsOf(target)
-                    if (!tap(target)) {
-                        return Outcome(false, "Found \"${textOf(target)}\" but could not tap it.")
-                    }
-                    sleep(1500)
-                    continue
-                }
-
-                // Not on this screen. On most versions the entry lives
-                // behind the account button in the top corner, so try there
-                // once before giving up.
-                if (!openedMenu) {
-                    val menu = match(nodes, MENU_LABELS, skip = null)
-                    if (menu != null && tap(menu)) {
-                        openedMenu = true
-                        sleep(1500)
-                        continue
-                    }
-                }
-                sleep(POLL_MS)
-                continue
+            val texts = nodes.map { textOf(it) }.filter { it.isNotBlank() }
+            if (texts.isNotEmpty()) {
+                sawAnything = true
+                lastSeen = texts.distinct().take(12).joinToString(" | ")
             }
 
-            // The button has been pressed; a confirmation usually follows.
-            items = itemCountIn(nodes).takeIf { it > 0 } ?: items
-            val confirm = match(nodes, confirmWords, skip = clicked)
-            if (confirm != null) {
-                if (!tap(confirm)) {
-                    return Outcome(false, "Could not tap the confirmation.")
+            // 1. Finished. "You freed up 29.80 MB" carries the exact figure,
+            //    which beats diffing free space -- anything else on the
+            //    phone writing a file mid-run would corrupt that.
+            for (text in texts) {
+                Labels.freedBytes(text)?.let { freed ->
+                    return Outcome(true, "Freed ${Labels.format(freed)} on the phone.",
+                                   0, freed)
                 }
-                sleep(4000)
-                val freed = freedSince(before)
-                return Outcome(true, describe(items, freed), items, freed)
+            }
+
+            // 2. Also finished, with nothing to do. This is a success: the
+            //    phone is already clear of everything Google Photos has
+            //    backed up, which is exactly the state we want it in.
+            if (texts.any { Labels.isNothingToDo(it) }) {
+                return Outcome(true,
+                    "Nothing to free up — everything backed up is already off the phone.",
+                    0, 0)
+            }
+
+            // 3. The button that does it, "Free up 29.80 MB". Checked before
+            //    the menu entry because "free up" matches both and this one
+            //    is further along.
+            val action = nodes.firstOrNull { Labels.ACTION.containsMatchIn(textOf(it)) }
+            if (action != null) {
+                if (tap(action)) { pressed = true; sleep(3000); continue }
+            }
+
+            // 4. The menu entry, "Free up space on this device".
+            val entry = match(nodes, triggers)
+            if (entry != null && tap(entry)) { sleep(2200); continue }
+
+            // 5. The account picture in the top corner, which is where the
+            //    entry lives. It is an image with no text on some versions,
+            //    so fall back to position.
+            if (!openedMenu) {
+                val menu = match(nodes, MENU_LABELS) ?: topRightTarget(nodes)
+                if (menu != null && tap(menu)) {
+                    openedMenu = true
+                    sleep(2000)
+                    continue
+                }
             }
             sleep(POLL_MS)
         }
 
-        if (clicked != null) {
-            // Pressed, and no confirmation appeared. Some versions free
-            // space immediately, so this is a success if the figure moved.
+        if (pressed) {
+            // Pressed, and the confirmation screen never appeared or was
+            // missed. Believe the disk rather than the screen.
             val freed = freedSince(before)
-            return if (freed > 0) Outcome(true, describe(items, freed), items, freed)
-                   else Outcome(true, "Pressed the button; nothing needed clearing.", 0, 0)
+            return if (freed > 0)
+                Outcome(true, "Freed ${Labels.format(freed)} on the phone.", 0, freed)
+            else
+                Outcome(true, "Pressed the button; nothing needed clearing.", 0, 0)
         }
 
-        // The useful failure: say what was actually on screen, so the labels
-        // can be corrected in the dashboard without guesswork.
-        val seen = visibleNodes().mapNotNull { textOf(it).takeIf(String::isNotBlank) }
-            .distinct().take(12).joinToString(" | ")
+        // The useful failure. Which of these two it is decides what to do
+        // next, and they used to be indistinguishable.
+        if (!sawAnything) {
+            return Outcome(false,
+                "Could not read the screen at all — ${state}. Google Photos never " +
+                "came to the front. Android stops apps opening screens while they " +
+                "are in the background, so this usually means the phone was asleep " +
+                "or Photos was blocked from starting.")
+        }
         return Outcome(false,
-            "Could not find a button matching ${triggers.joinToString(", ")}. " +
-            "On screen: ${seen.ifEmpty { "nothing readable" }}")
+            "Google Photos is open, but nothing matched ${triggers.joinToString(", ")}. " +
+            "On screen: $lastSeen")
     }
 
-    private fun describe(items: Int, freed: Long): String {
-        val size = if (freed > 0) formatBytes(freed) else "no space"
-        return if (items > 0) "Cleared $items item(s), $size freed."
-               else "Freed $size."
+    /** Turn the screen on for the length of the run. */
+    @Suppress("DEPRECATION")
+    private fun wakeScreen(): android.os.PowerManager.WakeLock? = try {
+        val pm = getSystemService(android.content.Context.POWER_SERVICE)
+                as android.os.PowerManager
+        pm.newWakeLock(
+            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+            android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+            "companion:freeup").apply { acquire(3 * 60 * 1000L) }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Enough about the screen to explain a run that saw nothing, without
+     * widening what this service is allowed to look at.
+     */
+    private fun screenState(): String {
+        val pm = getSystemService(android.content.Context.POWER_SERVICE)
+                as? android.os.PowerManager
+        val km = getSystemService(android.content.Context.KEYGUARD_SERVICE)
+                as? android.app.KeyguardManager
+        return when {
+            pm?.isInteractive == false -> "the screen would not come on"
+            km?.isKeyguardLocked == true -> LOCKED
+            else -> "the screen was on and unlocked"
+        }
     }
 
     private fun freedSince(before: Long): Long {
@@ -234,49 +311,63 @@ class FreeSpaceService : AccessibilityService() {
         return r
     }
 
-    /**
-     * The first node whose label contains one of these words.
-     *
-     * `skip` is the button already pressed: "Free up space" and the "Free
-     * up" on the dialog that follows both match the same word, so without
-     * this the service would find the trigger again and sit there tapping
-     * it. Bounds identify it -- the same label can legitimately appear
-     * twice on one screen.
-     */
-    private fun match(nodes: List<AccessibilityNodeInfo>, words: List<String>,
-                      skip: Rect?): AccessibilityNodeInfo? {
+    /** The first node whose label contains one of these words. */
+    private fun match(nodes: List<AccessibilityNodeInfo>,
+                      words: List<String>): AccessibilityNodeInfo? {
         for (node in nodes) {
             val label = textOf(node).lowercase()
             if (label.isBlank()) continue
-            if (words.none { label.contains(it.lowercase()) }) continue
-            if (skip != null && boundsOf(node) == skip) continue
-            return node
+            if (words.any { label.contains(it.lowercase()) }) return node
         }
         return null
     }
 
-    /** "41 items" somewhere on screen, for a nicer line in the dashboard. */
-    private fun itemCountIn(nodes: List<AccessibilityNodeInfo>): Int {
-        val re = Regex("""(\d[\d,]*)\s*(items?|photos?|videos?)""", RegexOption.IGNORE_CASE)
-        for (node in nodes) {
-            val m = re.find(textOf(node)) ?: continue
-            m.groupValues[1].replace(",", "").toIntOrNull()?.let { return it }
-        }
-        return 0
+    /**
+     * The account picture, found by where it is rather than what it says.
+     *
+     * It is an image, and on some versions it carries no description at
+     * all, so there is nothing to match on. It is reliably the last
+     * clickable thing along the top edge.
+     */
+    private fun topRightTarget(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+        val screen = nodes.firstOrNull()?.let { boundsOf(it) } ?: return null
+        if (screen.width() <= 0) return null
+        val topBand = screen.top + (screen.height() * 0.14).toInt()
+        val rightBand = screen.left + (screen.width() * 0.72).toInt()
+
+        return nodes.filter { node ->
+            val b = boundsOf(node)
+            node.isClickable && b.width() in 1..(screen.width() / 3) &&
+                b.top < topBand && b.centerX() > rightBand
+        }.maxByOrNull { boundsOf(it).centerX() }
     }
 
-    /** Tap a node, or the nearest ancestor that is actually clickable. */
+    /**
+     * Tap a node, or the nearest ancestor that is actually clickable.
+     *
+     * Refuses an ancestor that covers most of the screen. Text on these
+     * screens often sits inside a clickable page-sized container -- the
+     * heading "Your device storage is 30% full, free up space" is one --
+     * and walking up to that taps the page rather than a button, which does
+     * something arbitrary rather than nothing.
+     */
     private fun tap(node: AccessibilityNodeInfo): Boolean {
+        val screen = rootInActiveWindow?.let { boundsOf(it) }
         var target: AccessibilityNodeInfo? = node
         var hops = 0
         while (target != null && hops < 6) {
-            if (target.isClickable) {
+            if (target.isClickable && !coversMostOf(boundsOf(target), screen)) {
                 return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
             target = target.parent
             hops++
         }
         return false
+    }
+
+    private fun coversMostOf(box: Rect, screen: Rect?): Boolean {
+        if (screen == null || screen.height() <= 0) return false
+        return box.height() > screen.height() * 0.6
     }
 
     private fun sleep(ms: Long) = try {
@@ -288,12 +379,17 @@ class FreeSpaceService : AccessibilityService() {
     companion object {
         const val PHOTOS = "com.google.android.apps.photos"
 
-        /** Used only if the relay sends none, e.g. it is unreachable. */
-        val DEFAULT_LABELS = listOf("free up space", "free up device storage")
-        val DEFAULT_CONFIRM = listOf("free up", "allow", "delete", "ok", "continue")
-        val MENU_LABELS = listOf("account", "profile", "signed in", "open account menu")
+        // The label matching lives in Labels, where it can be unit-tested
+        // against the strings actually on the phone. See LabelsTest.
+        val DEFAULT_LABELS = Labels.ENTRY
+        val DEFAULT_CONFIRM = Labels.CONFIRM
+        val MENU_LABELS = Labels.MENU
 
-        private const val MAX_STEPS = 30
+        private const val LOCKED = "the phone was locked"
+
+        // Slower than it looks: the Pixel 1 is a 2016 phone and Google
+        // Photos is not quick on it.
+        private const val MAX_STEPS = 45
         private const val MAX_NODES = 600
         private const val POLL_MS = 700L
 
@@ -301,15 +397,5 @@ class FreeSpaceService : AccessibilityService() {
         var instance: FreeSpaceService? = null
             private set
 
-        fun formatBytes(n: Long): String {
-            if (n < 1024) return "$n B"
-            val units = listOf("KB", "MB", "GB", "TB")
-            var value = n.toDouble() / 1024
-            var i = 0
-            while (value >= 1024 && i < units.size - 1) {
-                value /= 1024; i++
-            }
-            return String.format(java.util.Locale.US, "%.1f %s", value, units[i])
-        }
     }
 }

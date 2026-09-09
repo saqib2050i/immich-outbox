@@ -85,3 +85,37 @@ def test_the_changelog_documents_the_current_version():
     version = VERSION_FILE.read_text().strip()
     changelog = (ROOT / "CHANGELOG.md").read_text()
     assert f"## {version}" in changelog
+
+
+# ---- the phone app reports the same number ------------------------------
+
+COMPANION = ROOT / "companion" / "app" / "src" / "main" / "java" / "com" / \
+            "immichoutbox" / "companion"
+
+
+def test_the_app_takes_its_version_from_the_file_too():
+    """build.gradle.kts must read VERSION rather than carry a copy."""
+    gradle = (ROOT / "companion" / "app" / "build.gradle.kts").read_text()
+    assert 'rootProject.file("../VERSION")' in gradle
+    assert not re.search(r'versionName\s*=\s*"\d', gradle), \
+        "versionName is hardcoded and will drift from VERSION"
+
+
+def test_the_app_does_not_hardcode_a_version_anywhere():
+    """The bug this guards: Relay.kt held `const val VERSION = "1.1.0"` while
+    the build's versionName came from the file, so a freshly installed 1.3.0
+    announced itself as 1.1.0 and was offered an update it already had,
+    forever. A number kept in two places will eventually disagree."""
+    for src in COMPANION.glob("*.kt"):
+        for line in src.read_text().splitlines():
+            if line.lstrip().startswith("//") or line.lstrip().startswith("*"):
+                continue
+            assert not re.search(r'(val|var)\s+\w*VERSION\w*\s*(:\s*String\s*)?=\s*"\d+\.\d+',
+                                 line), \
+                f"{src.name} hardcodes a version: {line.strip()}"
+
+
+def test_the_app_asks_android_what_is_installed():
+    relay = (COMPANION / "Relay.kt").read_text()
+    assert "getPackageInfo" in relay, \
+        "the reported version must come from the installed package"

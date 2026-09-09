@@ -10,6 +10,41 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.3.1
+
+**The app reported the wrong version.** `Relay.kt` carried
+`const val VERSION = "1.1.0"` while the build took its `versionName` from
+the project's VERSION file, so a freshly installed 1.3.0 announced itself as
+1.1.0 and the server offered it an update it already had, permanently. It
+now asks Android what is installed, which cannot drift.
+
+**The app could not find the button.** Two causes, both fixed:
+
+- It looked for "free up space", and the menu entry is called **"Free up
+  space on this device"**. It now knows the real path — account picture →
+  that entry → the blue *Free up 29.80 MB* → *You freed up 29.80 MB* — and
+  reads the figure off the screen rather than measuring free space.
+- More importantly, it reported *"nothing readable"*, which was true: a
+  phone on a shelf has its screen off, and a screen that is off draws no
+  windows for an accessibility service to read. It now wakes the screen for
+  the length of the run, and when it still sees nothing it says whether the
+  screen was off, the phone was locked, or Google Photos simply never came
+  to the front — three situations that need three different fixes and used
+  to look identical.
+
+**"Nothing to free up" is a success**, not a failure. It means the phone is
+already clear of everything Google Photos has backed up, which is the state
+the whole system is trying to reach.
+
+The screen-matching now lives in `Labels.kt`, free of Android imports, with
+unit tests pinned to strings read off the real phone — CI runs them. It is
+the part of this app most likely to break without warning, and it was
+previously buried where nothing could test it.
+
+Adds the `WAKE_LOCK` permission: a normal one, granted at install without a
+prompt, giving access to no data. The guarantee that the app cannot read or
+delete a photo is unchanged.
+
 ## 1.3.0
 
 **The relay serves the phone app.** Changing the companion used to mean a
