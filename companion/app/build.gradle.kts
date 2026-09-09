@@ -37,15 +37,25 @@ android {
     // Absent the secrets this stays null and the release build is unsigned,
     // which the workflow detects and falls back from. Failing here instead
     // would block the server's release over a phone app.
-    val keystorePath: String? = System.getenv("ANDROID_KEYSTORE_PATH")
+    // An unset GitHub secret arrives as an empty string, not as an absent
+    // variable, so `?:` never fires on it. That cost a release: the key
+    // password fell back to "" instead of the store password and the build
+    // died with "Given final block not properly padded", which reads like a
+    // corrupt keystore rather than a missing default.
+    fun env(name: String): String? =
+        System.getenv(name)?.takeIf { it.isNotBlank() }
+
+    val keystorePath: String? = env("ANDROID_KEYSTORE_PATH")
     signingConfigs {
-        if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
+        if (keystorePath != null && file(keystorePath).exists()) {
             create("release") {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "companion"
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
-                    ?: System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                storePassword = env("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = env("ANDROID_KEY_ALIAS") ?: "companion"
+                // PKCS12, which keytool now makes by default, uses one
+                // password for both. Only a JKS store needs them separate.
+                keyPassword = env("ANDROID_KEY_PASSWORD")
+                    ?: env("ANDROID_KEYSTORE_PASSWORD")
             }
         }
     }

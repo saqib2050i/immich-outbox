@@ -156,3 +156,15 @@ def test_nothing_is_tapped_by_position():
     a run opened a slideshow instead of freeing space."""
     service = (COMPANION / "FreeSpaceService.kt").read_text()
     assert "topRightTarget" not in service
+
+
+def test_empty_environment_variables_are_treated_as_unset():
+    """An unset GitHub secret arrives as an empty string, not as an absent
+    variable, so Kotlin's `?:` never fires on it. The signing key password
+    fell back to "" instead of the store password, and the build failed with
+    "Given final block not properly padded" -- which reads like a corrupt
+    keystore rather than a missing default."""
+    gradle = (ROOT / "companion" / "app" / "build.gradle.kts").read_text()
+    bare = re.findall(r'System\.getenv\("[A-Z_]+"\)\s*\?:', gradle)
+    assert not bare, \
+        f"bare `System.getenv(...) ?:` cannot survive an empty secret: {bare}"

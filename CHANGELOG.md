@@ -10,6 +10,20 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.3.3
+
+**Release signing never worked.** An unset GitHub secret arrives as an
+*empty string*, not as an absent variable, so Kotlin's `?:` never fired and
+the key password fell back to `""` rather than the store password. The build
+died with `Given final block not properly padded` — which reads like a
+corrupt keystore and sent the hunt in the wrong direction entirely.
+
+Also: a mispasted keystore secret failed with `base64: invalid input` and
+nothing else. The decode now strips whitespace, checks something decoded,
+checks it looks like a keystore, and checks the password and alias open it —
+each with a sentence naming the likely cause and the decoded byte count to
+compare against the real file.
+
 ## 1.3.2
 
 **The phone never woke up to check in.** Polling was scheduled with
