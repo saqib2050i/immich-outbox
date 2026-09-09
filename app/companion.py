@@ -45,7 +45,8 @@ from . import config, db, settings
 # are settings rather than constants because Google renames these without
 # warning, and re-pointing the app at a new label should be a text field in
 # the dashboard, not a new APK.
-DEFAULT_LABELS = ("free up space", "free up device storage", "free up")
+DEFAULT_LABELS = ("free up space on this device", "free up space",
+                  "free up device storage")
 DEFAULT_CONFIRM = ("free up", "allow", "delete", "ok", "continue")
 
 # A run the phone never reported back on. Long enough to cover a slow sweep

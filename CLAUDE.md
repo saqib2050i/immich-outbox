@@ -205,6 +205,21 @@ signing key, so CI needs a stable one from `ANDROID_KEYSTORE_BASE64`; absent
 it the build is debug-signed and the install page says so, because failing
 the release of a *server* over a phone app would be the wrong trade.
 
+Two things about the app that cost a release each. Its reported version
+must come from the package manager, never a constant — a `const val VERSION`
+sat beside a `versionName` read from the file and the two drifted, so a
+freshly installed build announced the old number and was offered an update
+it already had, forever. And a screen that is off draws no windows, so an
+accessibility service on a shelf phone reads *nothing*; the service wakes
+the screen, and when it still sees nothing it distinguishes screen-off,
+locked, and Photos-never-came-forward, which need three different fixes and
+used to look identical.
+
+The screen matching lives in `companion/.../Labels.kt`, free of Android
+imports so it unit-tests on a laptop against strings read off the real
+phone. It matches text in somebody else's app, so it is the part most
+likely to break without warning, and it is the part that did.
+
 The app itself is in `companion/` — four Kotlin files, no dependencies, and
 no storage permission, which is what makes "it cannot delete a photo" an
 Android guarantee rather than a claim. `minSdk 29`, because Android 10 was

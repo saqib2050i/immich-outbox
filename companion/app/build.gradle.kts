@@ -74,9 +74,13 @@ android {
     }
 }
 
-// Deliberately no dependencies. Not androidx, not okhttp, not a JSON
-// library -- the framework has all of it. An app asking for an
-// accessibility service should be small enough to read in full before you
-// grant it.
+// Nothing ships in the APK. Not androidx, not okhttp, not a JSON library --
+// the framework has all of it. An app asking for an accessibility service
+// should be small enough to read in full before you grant it.
+//
+// JUnit is test-only and never leaves the laptop. It covers Labels, which
+// matches text in somebody else's app and is therefore the part most likely
+// to break without warning.
 dependencies {
+    testImplementation("junit:junit:4.13.2")
 }

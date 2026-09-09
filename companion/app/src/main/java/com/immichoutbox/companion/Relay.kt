@@ -39,7 +39,7 @@ class Relay(private val context: Context, private val prefs: Prefs) {
     fun poll(): Instruction? {
         val body = JSONObject()
             .put("device", prefs.deviceName)
-            .put("app_version", VERSION)
+            .put("app_version", installedVersion(context))
             .put("android", Build.VERSION.RELEASE ?: "")
             .put("battery", batteryPercent())
             .put("charging", isCharging())
@@ -133,6 +133,21 @@ class Relay(private val context: Context, private val prefs: Prefs) {
     }
 
     companion object {
-        const val VERSION = "1.1.0"
+        /**
+         * What is actually installed, asked of the package manager.
+         *
+         * This was a constant, and it lied: the build's versionName came
+         * from the project's VERSION file while this stayed pinned at
+         * 1.1.0, so a freshly installed 1.3.0 reported 1.1.0 and the server
+         * offered it an update it already had, forever. A number that has
+         * to be edited in two places will eventually disagree with itself;
+         * asking Android what it installed cannot.
+         */
+        fun installedVersion(context: Context): String = try {
+            context.packageManager
+                .getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
     }
 }
