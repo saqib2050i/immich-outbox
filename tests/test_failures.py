@@ -575,3 +575,43 @@ async def test_a_month_outside_the_window_is_still_sendable_by_hand(rig, monkeyp
 
     assert (await main.month_send({"month": "2025-11"}))["queued"] == 3
     assert db.counts()["queued"] == 3
+
+
+# ---- assets Immich will never serve again -------------------------------
+
+@pytest.mark.asyncio
+async def test_bytes_still_to_send_exclude_what_immich_no_longer_has(rig):
+    """Every other query filters these out; `pending_bytes` did not, so the
+    dashboard offered to send 13.2 GB when 3.35 GB of it was gone, and the
+    finish estimate was inflated by the same amount."""
+    from app import db
+
+    db.upsert_assets([asset(i, size=1000) for i in range(10)])
+    before = db.counts()
+    assert before["pending_bytes"] == 10_000
+
+    # The argument is what Immich still returns, so leave three out.
+    db.mark_missing({f"asset-{i}" for i in range(3, 10)})
+
+    after = db.counts()
+    assert after["missing"] == 3
+    assert after["missing_bytes"] == 3_000
+    assert after["pending_bytes"] == 7_000, \
+        "bytes still to send must leave out assets that cannot be sent"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_asset_that_had_failed_is_still_excluded(rig):
+    """`failed` rows count towards the backlog too, so they need the same
+    filter or a 404-ed asset is counted twice over."""
+    from app import db
+
+    db.upsert_assets([asset(0, size=5000)])
+    db.connect().execute("UPDATE assets SET state='failed' WHERE id='asset-0'")
+    db.connect().commit()
+    db.upsert_assets([asset(1, size=1)])          # something for Immich to return
+    db.mark_missing({"asset-1"})
+
+    counts = db.counts()
+    assert counts["missing"] == 1
+    assert counts["pending_bytes"] == 1, "only the surviving asset counts"

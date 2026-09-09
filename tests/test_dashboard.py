@@ -97,11 +97,32 @@ def test_every_settings_section_is_in_the_index():
         f"index and sections disagree: {set(sections) ^ listed}"
 
 
+def css_rules() -> list[tuple[str, str]]:
+    """(selector, body) for every rule in the inline stylesheet."""
+    style = HTML[HTML.index("<style>"):HTML.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)          # strip comments
+    return re.findall(r"([^{}]+)\{([^{}]*)\}", style)
+
+
 def test_the_grid_survives_the_tab_switcher():
-    """`[data-tab].tab-on{display:block}` overrides a plain `.setwrap{display:grid}`
-    and flattens the two-column layout. The selector has to out-specify it."""
-    assert ".setwrap.tab-on{" in HTML.replace(" ", "").replace("\n", ""), \
+    """`[data-tab].tab-on{display:block}` would flatten the two-column
+    layout, so the rule that sets the grid has to out-specify it."""
+    assert any(".setwrap" in sel and ".tab-on" in sel and "grid" in body
+               for sel, body in css_rules()), \
         "the settings grid will be flattened to display:block by the tab switcher"
+
+
+def test_the_settings_form_hides_with_its_tab():
+    """The bug this guards: `.setwrap{display:grid}` without `.tab-on` ties
+    `[data-tab]{display:none}` on specificity and beats it on source order,
+    so the entire settings form rendered on every tab -- 3,289px of it,
+    sitting between the Overview cards and the activity log."""
+    for sel, body in css_rules():
+        if ".setwrap" not in sel or ".tab-on" in sel:
+            continue
+        assert "display" not in body, (
+            f"`{sel.strip()}` sets display outside a .tab-on rule, which "
+            f"overrides [data-tab]{{display:none}} and shows settings on every tab")
 
 
 @pytest.mark.parametrize("element", [
@@ -112,3 +133,33 @@ def test_the_companion_panel_is_wired(element):
     """Pairing used to be a code you typed with no way to check it worked."""
     assert f'id="{element}"' in HTML, f"companion panel is missing #{element}"
     assert element in HTML.split("</body>")[0], f"#{element} is never read by the script"
+
+
+# ---- the figures on the front page have to agree with each other --------
+
+def test_the_pipeline_bar_and_its_legend_use_the_same_number():
+    """They were two lines apart and disagreed: the number subtracted the
+    stranded rows, the bar did not, so the Waiting block was drawn 934 wide
+    over a legend reading 294."""
+    body = HTML[HTML.index("const stranded"):HTML.index("gaugeFill.style.width")]
+    legend = re.search(r"nQueued\.textContent\s*=\s*([^;]+);", body).group(1)
+    bar = re.search(r"segQueued\.style\.flexGrow\s*=\s*([^;]+);", body).group(1)
+    assert "stranded" in legend, "the legend must exclude stranded rows"
+    assert "stranded" in bar, \
+        f"the bar does not subtract stranded rows while the legend does: {bar.strip()}"
+
+
+def test_the_queue_badge_is_written_in_one_place():
+    """Two writers made the tab flicker between 'Queue' and 'Queue (N)'."""
+    writers = re.findall(r"badgeQueue\.textContent\s*=", HTML)
+    assert len(writers) == 1, f"{len(writers)} writers of the queue badge"
+
+
+def test_a_freed_amount_is_reported_not_just_done():
+    """The app reports bytes rather than an item count, so keying off items
+    alone made every successful run read 'done' and never say how much."""
+    for element in ("cpLast", "cstLast"):
+        block = HTML[HTML.index(element + ".textContent"):]
+        block = block[:block.index(";")]
+        assert "freed_bytes" in block, \
+            f"{element} ignores freed_bytes and will always say 'done'"

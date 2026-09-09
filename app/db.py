@@ -1425,8 +1425,13 @@ def counts() -> dict:
         out.setdefault(s, 0)
     out["outbox_bytes"] = c.execute(
         "SELECT COALESCE(SUM(size),0) b FROM assets WHERE state='queued'").fetchone()["b"]
+    # missing_at IS NULL for the same reason every other query has it: an
+    # asset Immich no longer serves is not "still to send". Without it the
+    # dashboard offered to send 13.2 GB when 3.35 GB of that was gone, and
+    # the finish estimate was inflated by the same amount.
     out["pending_bytes"] = c.execute(
-        "SELECT COALESCE(SUM(size),0) b FROM assets WHERE state IN ('pending','failed')"
+        """SELECT COALESCE(SUM(size),0) b FROM assets
+            WHERE state IN ('pending','failed') AND missing_at IS NULL"""
     ).fetchone()["b"]
     out["confirmed_bytes"] = c.execute(
         "SELECT COALESCE(SUM(size),0) b FROM assets WHERE state='confirmed'").fetchone()["b"]

@@ -95,6 +95,19 @@
   .legend div{display:flex; flex-direction:column}
   .legend .n{font-size:22px; font-weight:700; letter-spacing:-.02em}
   .legend .k{font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim)}
+  .pipestatus{display:flex;align-items:baseline;gap:9px;font-size:13px;
+    color:var(--ink);margin:14px 0 0;line-height:1.5}
+  .pipedot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none;
+    position:relative;top:-1px}
+  .pipedot.sending{background:var(--transit)}
+  .pipedot.full,.pipedot.waiting{background:var(--rule)}
+  .pipedot.idle{background:var(--done)}
+  .pipedot.paused,.pipedot.blocked{background:var(--alarm)}
+  /* Rows the ledger still holds that Immich will never serve again. Kept
+     out of every figure above, and therefore easy to think missing until
+     it is said. */
+  .stranded{font-size:12px;color:var(--dim);margin:8px 0 0;line-height:1.5}
+  .stranded a{color:var(--dim)}
   .swatch{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:baseline}
 
   .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; margin-top:26px}
@@ -395,10 +408,15 @@
      hunting through eight unlabelled blocks to change one number. Each
      setting is its own row: the previous markup packed three of them into
      one flex row, which is what made the page look jumbled. */
-  /* .tab-on in the selector deliberately: the tab switcher sets
-     display:block on whatever is showing, which would flatten this grid. */
-  .setwrap,.setwrap.tab-on{margin-top:26px;display:grid;
+  /* `display` belongs only on the .tab-on rule. Putting it on bare
+     .setwrap too tied `[data-tab]{display:none}` on specificity and beat it
+     on source order, so the whole settings form rendered on every tab --
+     3,289px of it, sitting between the Overview cards and the activity log. */
+  .setwrap{margin-top:26px;
     grid-template-columns:170px minmax(0,1fr);gap:28px;align-items:start}
+  /* Matches [data-tab].tab-on for specificity and wins on order, which is
+     what keeps the switcher's display:block from flattening the grid. */
+  .setwrap.tab-on{display:grid}
   .setnav{position:sticky;top:14px;display:flex;flex-direction:column;gap:1px}
   .setnav a{font-size:11px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--dim);text-decoration:none;padding:7px 10px;border-left:2px solid transparent}
@@ -448,7 +466,7 @@
   .cgrid span{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
   .cgrid b{font-size:13px;font-weight:600}
   @media (max-width:820px){
-    .setwrap,.setwrap.tab-on{grid-template-columns:1fr;gap:12px}
+    .setwrap{grid-template-columns:1fr;gap:12px}
     .setnav{position:static;flex-direction:row;overflow-x:auto;gap:0;
       border-bottom:1px solid var(--rule);padding-bottom:2px}
     .setnav a{border-left:0;border-bottom:2px solid transparent;white-space:nowrap}
@@ -566,6 +584,8 @@
     <div><span class="n" id="nPhone">—</span><span class="k"><span class="swatch" style="background:var(--transit)"></span>In the outbox</span></div>
     <div><span class="n" id="nDone">—</span><span class="k"><span class="swatch" style="background:var(--done)"></span>Backed up</span></div>
   </div>
+  <p class="pipestatus"><span class="pipedot" id="pipeDot"></span><span id="pipeText">—</span></p>
+  <p class="stranded" id="strandedNote" hidden></p>
 </section>
 
 <div class="grid" data-tab="overview">
@@ -1143,8 +1163,26 @@ async function render(){
   nPhone.textContent  = fmtNum(c.queued);
   nDone.textContent   = fmtNum(c.confirmed);
 
+  // Said out loud on the front page, because it is deliberately excluded
+  // from every number above and its absence used to read as a bug: 2,700
+  // files that never moved and nothing anywhere explaining why.
+  strandedNote.hidden = !stranded;
+  if (stranded){
+    strandedNote.innerHTML = "";
+    strandedNote.append(document.createTextNode(
+      fmtNum(stranded) + " file(s) are in the ledger but no longer in Immich, "
+      + "so they are left out of the figures above. "));
+    const a = document.createElement("a");
+    a.href = "#problems";
+    a.textContent = "Review them in Problems";
+    strandedNote.append(a, document.createTextNode("."));
+  }
+
   const grow = v => Math.max(v, d.total ? d.total*0.004 : 1);
-  segQueued.style.flexGrow = grow(c.pending + c.failed);
+  // The same subtraction as the number above it. Without it the bar drew
+  // 934 while its own legend read 294, so most of the Waiting block stood
+  // for assets Immich no longer has.
+  segQueued.style.flexGrow = grow(Math.max(0, c.pending + c.failed - stranded));
   segPhone.style.flexGrow  = grow(c.queued);
   segDone.style.flexGrow   = grow(c.confirmed);
 
@@ -1174,12 +1212,10 @@ async function render(){
 
   if (d.auth && d.auth.must_change && pwSheet.hidden) openPasswordSheet(true);
   const problems = (d.stuck || []).length + (d.problems || []).length;
-  // The badge counts what the tab is now named for: files waiting to go to
-  // the outbox. renderQueue() refines it once the status has been fetched.
-  // The queue badge belongs to renderQueue(), which knows what is actually
-  // going out. Setting it here too made the two disagree on every tick --
-  // one writing pending+failed, the other the real waiting count -- so the
-  // tab flickered between "Queue" and "Queue (N)" forever.
+  // Only this badge is written here. The queue badge belongs to
+  // renderQueue(), which is the only place that knows what that tab lists;
+  // writing it from both made them disagree on every tick and the tab
+  // flickered between "Queue" and "Queue (N)".
   badgeProblems.hidden = !problems;
   badgeProblems.textContent = fmtNum(problems);
 
@@ -1864,10 +1900,15 @@ async function renderQueue(){
   if (q.status){
     qStatus.className = "qstatus " + q.status.state;
     qsText.textContent = q.status.detail;
-    // Only what is actually going out -- the resting library is not queued
-    // for anything and would make the badge meaningless.
-    badgeQueue.hidden = !q.status.waiting;
-    badgeQueue.textContent = fmtNum(q.status.waiting);
+    // The same sentence on the front page: it is the best single line the
+    // server produces and it was only ever visible on this tab.
+    pipeText.textContent = q.status.detail;
+    pipeDot.className = "pipedot " + q.status.state;
+
+    // What this tab lists is the outbox, so that is what the badge counts.
+    // It read `waiting` before, so the badge said 294 over a list of 34.
+    badgeQueue.hidden = !q.count;
+    badgeQueue.textContent = fmtNum(q.count);
   }
 
   // The bars belong to pollTransfer(), which runs far more often than this.
@@ -2447,8 +2488,10 @@ function renderCompanionSettings(cp){
                         : dev.battery + "%" + (dev.charging ? " (charging)" : "");
   cstFree.textContent   = dev.free_bytes ? fmtBytes(dev.free_bytes) : "—";
   cstLast.textContent   = (!last || !last.at) ? "never"
-                        : last.ok ? (last.items ? last.items + " cleared" : "done")
-                        : "failed";
+                        : !last.ok ? "failed"
+                        : last.freed_bytes ? fmtBytes(last.freed_bytes) + " freed"
+                        : last.items ? last.items + " cleared"
+                        : "nothing to clear";
 
   // Which build is where. The server serves the app, so these should agree;
   // when they do not, the phone simply has not been updated yet.
@@ -2534,10 +2577,13 @@ function renderPhone(cp){
   cpRowLast.hidden = !last || !last.at;
   if (last && last.at){
     // Short enough to sit on one line in a narrow card, like every other
-    // value in this column.
-    cpLast.textContent = last.ok
-      ? (last.items ? last.items + " cleared" : "done")
-      : "failed";
+    // value in this column. (see above)
+    // The app reports bytes now, not an item count, so keying off items
+    // alone made every successful run read "done" and never say how much.
+    cpLast.textContent = !last.ok ? "failed"
+      : last.freed_bytes ? fmtBytes(last.freed_bytes) + " freed"
+      : last.items ? last.items + " cleared"
+      : "nothing to clear";
   }
 
   // The phone polls; the server never dials out to it. So a manual request
