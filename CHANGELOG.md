@@ -10,6 +10,27 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.1.0
+
+**Library is laid out as the control surface it became.** It was built as a
+read-only timeline and inherited the job of managing months without the
+layout changing to suit.
+
+- **Months lead the page.** The panel where sending happens sat third,
+  behind two panels of reference material — about three screens down, and
+  every year collapsed, so the first control was 3,814px from the top. It is
+  2,712px now and the first thing on the tab.
+- **A summary says what is outstanding** without expanding anything:
+  *200 to send · 33 in the outbox · 95 only if you ask*. Every year starts
+  collapsed, so that total used to be two clicks and a scroll away.
+- **The newest year holding something to send opens by itself**, once. A
+  year opened or closed by hand disables that, so the default never fights a
+  deliberate choice.
+- **Each month has a progress bar**, as years already did — backed up, in
+  the outbox, going out, in pipeline order. What is left unpainted is
+  resting or excluded, so a nearly empty bar means nothing is going to
+  happen in that month without asking.
+
 ## 2.0.0
 
 **One rule decides what sends by itself.** Everything from the cut-off date
