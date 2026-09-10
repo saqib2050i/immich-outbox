@@ -641,6 +641,11 @@ async def month_detail(month: str):
     return db.month_detail(month)
 
 
+@app.get("/api/month/{month}/files")
+async def month_files(month: str, limit: int = 100, offset: int = 0):
+    return db.list_in_month(month, min(limit, 300), offset)
+
+
 @app.post("/api/month/send")
 async def month_send(payload: dict):
     month = str(payload.get("month", ""))
