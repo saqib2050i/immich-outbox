@@ -204,6 +204,28 @@ def _blocked(cfg) -> tuple[bool, str]:
     return True, f"outbox full, {waiting} file(s) waiting"
 
 
+def _idle_seconds(cfg, report: dict) -> int:
+    """How long before the phone should ask again when there is nothing for
+    it to do.
+
+    This number *is* the latency of "free up now". The phone dials out and
+    the server never dials in -- a phone on DHCP has no stable address and
+    an inbound listener is a permanently open port -- so a command cannot
+    reach a sleeping phone any sooner than the phone next asks for one.
+
+    Which makes the interval a straight trade against the phone's battery,
+    and charging the axis to make it on: a check-in is one small POST, and
+    a phone on a charger can afford one a minute where a phone on battery
+    cannot. The shelf phone this was built for is never off its cable, and
+    was waiting up to half an hour to be told to do something.
+    """
+    minutes = (cfg.companion_charging_poll_minutes if report.get("charging")
+               else cfg.companion_idle_poll_minutes)
+    # The app floors this at 60 too. A misconfigured interval must not turn
+    # into a hot loop on somebody's phone.
+    return max(60, minutes * 60)
+
+
 def _cooldown_left(cfg) -> float:
     last = db.get_meta("companion_last_run_at")
     age = _age_minutes(last)
@@ -234,7 +256,7 @@ def poll(report: dict) -> dict:
         "request_id": "",
         "labels": trigger,
         "confirm_labels": confirm,
-        "next_poll_seconds": max(60, cfg.companion_idle_poll_minutes * 60),
+        "next_poll_seconds": _idle_seconds(cfg, report),
         # Told on every check-in, so the phone finds out about a new build
         # without anyone having to go looking. The app only ever reports
         # this to its own screen -- installing is the browser's job and the
@@ -244,6 +266,10 @@ def poll(report: dict) -> dict:
 
     if not cfg.companion_enabled:
         answer["reason"] = "companion disabled on the server"
+        # Switched off is the one state worth being slow about: waking a
+        # phone every minute to be told there is nothing to do, and never
+        # will be, is the interval spent on nothing.
+        answer["next_poll_seconds"] = max(60, cfg.companion_idle_poll_minutes * 60)
         return answer
 
     # A run that was handed out and never reported on. Clear it, or the

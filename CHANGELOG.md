@@ -10,6 +10,34 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.2.0
+
+**The phone stops reading last run's screen, and stops waiting half an hour
+to be told anything.**
+
+- **A run leaves Google Photos where the next run can start from.** It used
+  to walk away on "You freed up 29.80 MB", and Photos resumes where it was
+  left — so the next run opened straight onto that screen, read it as its
+  own result, and returned a figure nothing had earned without pressing a
+  button. Nothing was freed, so the outbox stayed full behind a dashboard
+  reporting a healthy phone. A run now backs out to Photos' own screen and
+  brings the companion forward, so the phone rests on its status line.
+- **And it refuses to believe a finished screen it did not arrive at.** The
+  reset above is the fix; this is what survives the reset failing. A result
+  screen counts only once the button has been pressed *this* run, a
+  "nothing to free up" only once the menu entry has been tapped, and one
+  that turns up before either is backed out of. If it cannot be escaped the
+  run says so, in red, quoting the screen — which beats a green tick over a
+  stalled pipeline.
+- **A phone on its charger checks in every minute.** The phone dials out and
+  the relay never dials in, so the check-in interval *is* how long "Free up
+  now" waits, and it was 30 minutes. That interval is paid for out of the
+  phone's battery, so it is now two settings split on the one axis that
+  matters: a minute while charging, the old half hour while not. The shelf
+  phone this was built for is never off its cable. Switched off entirely,
+  the phone keeps the slow interval — being woken every minute to be told
+  there is nothing to do is the interval spent on nothing.
+
 ## 2.1.0
 
 **Library is laid out as the control surface it became.** It was built as a

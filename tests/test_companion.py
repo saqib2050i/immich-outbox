@@ -315,6 +315,49 @@ def test_an_idle_phone_is_told_to_come_back_later(rig):
     assert companion.poll({"device": "pixel"})["next_poll_seconds"] == 1800
 
 
+def test_a_phone_on_the_charger_is_asked_to_come_back_sooner(rig):
+    """This interval is the latency of "free up now".
+
+    The phone dials out and the relay never dials in, so a command waits
+    for the phone to ask. A plugged-in phone can afford to ask often, and
+    the shelf phone this was built for is always plugged in -- it was
+    waiting up to half an hour to be told to do something.
+    """
+    from app import companion
+    enable(companion_idle_poll_minutes=30, companion_charging_poll_minutes=1)
+    answer = companion.poll({"device": "pixel", "charging": True})
+    assert answer["next_poll_seconds"] == 60
+
+
+def test_a_phone_on_battery_keeps_the_slower_interval(rig):
+    """The fast interval is bought with the phone's battery, so it is only
+    spent while something else is paying."""
+    from app import companion
+    enable(companion_idle_poll_minutes=30, companion_charging_poll_minutes=1)
+    answer = companion.poll({"device": "pixel", "charging": False})
+    assert answer["next_poll_seconds"] == 1800
+
+
+def test_a_switched_off_companion_does_not_wake_the_phone_every_minute(rig):
+    """Off is the one state worth being slow about: there is nothing to
+    hear, and there will not be until somebody changes a setting."""
+    from app import companion
+    from app import settings
+    settings.save({"companion_enabled": False,
+                   "companion_idle_poll_minutes": 30,
+                   "companion_charging_poll_minutes": 1})
+    answer = companion.poll({"device": "pixel", "charging": True})
+    assert answer["next_poll_seconds"] == 1800
+
+
+def test_the_interval_is_never_faster_than_a_minute(rig):
+    """A phone is not a thing to put in a hot loop by typing a zero."""
+    from app import companion
+    enable(companion_charging_poll_minutes=0, companion_idle_poll_minutes=0)
+    assert companion.poll({"device": "p", "charging": True})["next_poll_seconds"] == 60
+    assert companion.poll({"device": "p", "charging": False})["next_poll_seconds"] == 60
+
+
 def test_the_check_in_is_recorded(rig):
     from app import companion
     enable()

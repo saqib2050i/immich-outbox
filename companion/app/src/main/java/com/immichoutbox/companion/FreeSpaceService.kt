@@ -1,6 +1,7 @@
 package com.immichoutbox.companion
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -154,10 +155,16 @@ class FreeSpaceService : AccessibilityService() {
             }
 
             val before = relay.freeBytes()
-            launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(launch)
 
-            return walkPhotos(triggers, confirmWords, before, state)
+            try {
+                return walkPhotos(triggers, confirmWords, before, state)
+            } finally {
+                // However the run went, do not walk away leaving Photos on
+                // a screen the next run would misread. See settlePhotos.
+                settlePhotos(triggers)
+            }
         } finally {
             try {
                 if (wake?.isHeld == true) wake.release()
@@ -177,12 +184,25 @@ class FreeSpaceService : AccessibilityService() {
      * machine breaks the moment one screen is skipped or added. Asking on
      * every pass "what is in front of me, and what is the most finished
      * thing I can act on?" survives both.
+     *
+     * With one thing the priority loop cannot answer on its own: whether
+     * the finished screen in front of it is *this* run's. Google Photos
+     * resumes where it was left, so a run that ended on "You freed up
+     * 29.80 MB" hands the next one that same screen on its first pass. Read
+     * naively it is a success carrying a figure nothing earned, returned
+     * without a button ever being pressed -- and since nothing was freed,
+     * the outbox stays full while the dashboard reports a healthy phone.
+     * So a finished screen only counts once this run has been somewhere,
+     * and one that turns up before that is backed out of.
      */
     private fun walkPhotos(triggers: List<String>, confirms: List<String>,
                            before: Long, state: String): Outcome {
         var openedMenu = false
+        // Has this run moved at all? A finished screen is only ours if it is.
+        var navigated = false
         var pressed = false
         var sawAnything = false
+        var escapes = 0
         var lastSeen = ""
 
         for (step in 0 until MAX_STEPS) {
@@ -193,23 +213,36 @@ class FreeSpaceService : AccessibilityService() {
                 lastSeen = texts.distinct().take(12).joinToString(" | ")
             }
 
+            val freed = texts.firstNotNullOfOrNull { Labels.freedBytes(it) }
+            val idle = texts.any { Labels.isNothingToDo(it) }
+
             // 1. Finished. "You freed up 29.80 MB" carries the exact figure,
             //    which beats diffing free space -- anything else on the
-            //    phone writing a file mid-run would corrupt that.
-            for (text in texts) {
-                Labels.freedBytes(text)?.let { freed ->
-                    return Outcome(true, "Freed ${Labels.format(freed)} on the phone.",
-                                   0, freed)
-                }
+            //    phone writing a file mid-run would corrupt that. Believed
+            //    only after we pressed the button that produces it.
+            if (freed != null && pressed) {
+                return Outcome(true, "Freed ${Labels.format(freed)} on the phone.",
+                               0, freed)
             }
 
             // 2. Also finished, with nothing to do. This is a success: the
             //    phone is already clear of everything Google Photos has
-            //    backed up, which is exactly the state we want it in.
-            if (texts.any { Labels.isNothingToDo(it) }) {
+            //    backed up, which is exactly the state we want it in. It
+            //    only appears once the menu entry has been tapped, so
+            //    seeing it before that means we are looking at the past.
+            if (idle && navigated) {
                 return Outcome(true,
                     "Nothing to free up — everything backed up is already off the phone.",
                     0, 0)
+            }
+
+            // Either of those, left over from last time. Back out of it and
+            // walk the path properly rather than believing it.
+            if ((freed != null || idle) && escapes < MAX_ESCAPES) {
+                escapes++
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                sleep(1400)
+                continue
             }
 
             // 3. The button that does it, "Free up 29.80 MB". Checked before
@@ -222,7 +255,7 @@ class FreeSpaceService : AccessibilityService() {
 
             // 4. The menu entry, "Free up space on this device".
             val entry = match(nodes, triggers)
-            if (entry != null && tap(entry)) { sleep(2200); continue }
+            if (entry != null && tap(entry)) { navigated = true; sleep(2200); continue }
 
             // 5. The account picture, which is where the entry lives. Found
             //    only by its description, never by position: it carries a
@@ -235,6 +268,7 @@ class FreeSpaceService : AccessibilityService() {
                 val menu = match(nodes, MENU_LABELS)
                 if (menu != null && tap(menu)) {
                     openedMenu = true
+                    navigated = true
                     sleep(2000)
                     continue
                 }
@@ -261,9 +295,50 @@ class FreeSpaceService : AccessibilityService() {
                 "are in the background, so this usually means the phone was asleep " +
                 "or Photos was blocked from starting.")
         }
+        if (escapes > 0 && !navigated) {
+            // Better a run that says so than one that reports last run's
+            // figure: this one is visibly red on the dashboard, and the
+            // screen it could not leave is in the message.
+            return Outcome(false,
+                "Google Photos opened on the result of an earlier run and would not " +
+                "go back, so nothing here could be trusted as this run's. " +
+                "On screen: $lastSeen")
+        }
         return Outcome(false,
             "Google Photos is open, but nothing matched ${triggers.joinToString(", ")}. " +
             "On screen: $lastSeen")
+    }
+
+    /**
+     * Leave the phone where the next run can start from.
+     *
+     * Two things happen here, and both are about the run after this one.
+     * Photos is walked back off its free-up screens, because it resumes
+     * where it was left and the next run would otherwise open straight onto
+     * this run's result. Then our own screen is brought forward, so the
+     * phone rests on the status line rather than inside somebody else's
+     * app -- which is also what a person picking it up wants to see.
+     *
+     * Bounded, and it gives up the moment Photos is no longer in front:
+     * pressing Back past the home screen leaves Photos altogether, and
+     * that is a fine place to stop too. Nothing in here may throw. Tidying
+     * up must never turn a run that worked into a run that failed.
+     */
+    private fun settlePhotos(triggers: List<String>) {
+        try {
+            for (step in 0 until MAX_BACKS) {
+                val root = rootInActiveWindow ?: break
+                if (root.packageName?.toString() != PHOTOS) break
+                val texts = visibleNodes().map { textOf(it) }.filter { it.isNotBlank() }
+                if (!Labels.isFreeUpScreen(texts, triggers)) break
+                if (!performGlobalAction(GLOBAL_ACTION_BACK)) break
+                sleep(BACK_MS)
+            }
+            startActivity(Intent(this, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+        } catch (e: Exception) {
+            // Nothing here is worth failing a run over.
+        }
     }
 
     /** Turn the screen on for the length of the run. */
@@ -390,6 +465,16 @@ class FreeSpaceService : AccessibilityService() {
         private const val MAX_STEPS = 45
         private const val MAX_NODES = 600
         private const val POLL_MS = 700L
+
+        // Backing out of a stale result mid-walk. Three is already more
+        // screens than the path has; past that, Back is not working and
+        // saying so beats pressing it forever.
+        private const val MAX_ESCAPES = 3
+
+        // Backing out at the end. The path is three screens deep, and the
+        // loop stops early the moment the free-up screens are gone.
+        private const val MAX_BACKS = 6
+        private const val BACK_MS = 900L
 
         @Volatile
         var instance: FreeSpaceService? = null
