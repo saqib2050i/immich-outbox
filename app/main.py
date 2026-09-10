@@ -162,7 +162,6 @@ async def status():
             "connection": json.loads(db.get_meta("immich_conn") or '{"state":"checking","ok":false,"summary":"Checking connection…","checks":[]}'),
             "checked_at": db.get_meta("immich_conn_at"),
         },
-        "window": db.window_progress(cfg.backfill_start, cfg.backfill_end),
         "settings": cfg.as_dict(),
         "stuck": [dict(r) for r in db.stuck(config.STUCK_AFTER_DAYS)],
         "problems": [dict(r) for r in db.problems()],
@@ -376,23 +375,6 @@ async def queue_cancel(payload: dict):
             **result}
 
 
-@app.get("/api/backlog")
-async def backlog():
-    """Everything waiting to be sent, by month — the pile behind the queue."""
-    months = db.waiting_breakdown()
-    return {
-        "months": months,
-        "total": sum(m["total"] for m in months),
-        "bytes": sum(m["bytes"] for m in months),
-        "failed": sum(m["failed"] for m in months),
-        # The numbers that matter: what is actually on its way out, as
-        # against what merely exists in the ledger and is going nowhere.
-        "asked": sum(m["asked"] for m in months),
-        "eligible": sum(m["eligible"] for m in months),
-        "resting": sum(m["resting"] for m in months),
-        "to_send_bytes": sum(m["to_send_bytes"] for m in months),
-    }
-
 
 @app.post("/api/backlog/dismiss")
 async def backlog_dismiss(payload: dict):
@@ -403,7 +385,10 @@ async def backlog_dismiss(payload: dict):
     """
     month = payload.get("month")
     ids = payload.get("ids")
-    everything = bool(payload.get("all"))
+    # Either spelling. The payload key is `all` while the db parameter it
+    # feeds is `everything`, so reaching for the wrong one is a coin toss --
+    # it cost a rejected call the first time this was used by hand.
+    everything = bool(payload.get("all") or payload.get("everything"))
     if ids is not None and (not isinstance(ids, list)
                             or not all(isinstance(i, str) for i in ids)):
         raise HTTPException(status_code=400, detail="ids must be a list of strings")
@@ -482,7 +467,10 @@ async def dismissed_restore(payload: dict):
     """Undo a dismissal: one month, some ids, or everything."""
     month = payload.get("month")
     ids = payload.get("ids")
-    everything = bool(payload.get("all"))
+    # Either spelling. The payload key is `all` while the db parameter it
+    # feeds is `everything`, so reaching for the wrong one is a coin toss --
+    # it cost a rejected call the first time this was used by hand.
+    everything = bool(payload.get("all") or payload.get("everything"))
     if ids is not None and (not isinstance(ids, list)
                             or not all(isinstance(i, str) for i in ids)):
         raise HTTPException(status_code=400, detail="ids must be a list of strings")
@@ -729,39 +717,6 @@ async def post_settings(payload: dict):
     return settings.save(payload).as_dict()
 
 
-@app.post("/api/window/set")
-async def window_set(payload: dict):
-    """Jump the backfill window straight to a month, from the statistics
-    table, instead of stepping through with Previous/Next."""
-    month = str(payload.get("month", ""))   # "YYYY-MM"
-    try:
-        year, mon = (int(x) for x in month.split("-"))
-        start = date(year, mon, 1)
-    except (ValueError, TypeError):
-        return {"ok": False, "error": f"bad month {month!r}"}
-
-    nxt = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
-    end = date.fromordinal(nxt.toordinal() - 1)
-
-    cfg = settings.save({
-        "backfill_start": start.isoformat(),
-        "backfill_end": end.isoformat(),
-        "backfill_enabled": bool(payload.get("enable", False)),
-    })
-    return {"ok": True, "start": cfg.backfill_start, "end": cfg.backfill_end,
-            "enabled": cfg.backfill_enabled,
-            "window": db.window_progress(cfg.backfill_start, cfg.backfill_end)}
-
-
-@app.post("/api/window/advance")
-async def window_advance(payload: dict | None = None):
-    step = int((payload or {}).get("step", 1))
-    cfg = settings.advance_window(step)
-    return {
-        "start": cfg.backfill_start,
-        "end": cfg.backfill_end,
-        "window": db.window_progress(cfg.backfill_start, cfg.backfill_end),
-    }
 
 
 @app.post("/api/immich/test")

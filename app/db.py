@@ -282,9 +282,7 @@ def cancel_queued(ids: list[str], skip: bool = False) -> int:
 # Is this row actually going to be sent? Same predicate claim_batch uses,
 # so the backlog cannot disagree with what the feeder will do.
 ELIGIBLE_SQL = """
-    ((:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
-     OR (:backfill = 1 AND substr(taken_at,1,10)
-           BETWEEN :backfill_start AND :backfill_end))
+    (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
 """
 
 
@@ -292,10 +290,7 @@ def _window_params() -> dict:
     from . import settings
     cfg = settings.load()
     return {"ongoing": 1 if cfg.ongoing_enabled else 0,
-            "ongoing_from": cfg.ongoing_from,
-            "backfill": 1 if cfg.backfill_enabled else 0,
-            "backfill_start": cfg.backfill_start,
-            "backfill_end": cfg.backfill_end}
+            "ongoing_from": cfg.ongoing_from}
 
 
 def waiting_breakdown() -> list[dict]:
@@ -579,7 +574,6 @@ def smallest_sendable(filt: dict) -> int | None:
     params = dict(filt)
     params["include_video"] = 1 if filt["include_video"] else 0
     params["ongoing"] = 1 if filt["ongoing"] else 0
-    params["backfill"] = 1 if filt["backfill"] else 0
     params["max_attempts"] = MAX_ATTEMPTS
     params["fix_dates"] = 1 if filt.get("fix_dates") else 0
     row = connect().execute(
@@ -593,8 +587,6 @@ def smallest_sendable(filt: dict) -> int | None:
               AND (
                    forced = 1
                 OR (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
-                OR (:backfill = 1 AND substr(taken_at,1,10)
-                      BETWEEN :backfill_start AND :backfill_end)
               )""", params).fetchone()
     return row["m"] if row and row["m"] is not None else None
 
@@ -681,15 +673,12 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
                AND (
                     forced = 1
                  OR (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
-                 OR (:backfill = 1 AND substr(taken_at,1,10)
-                       BETWEEN :backfill_start AND :backfill_end)
                )
              ORDER BY forced DESC, taken_at ASC LIMIT :scan_limit"""
 
     params = dict(filt)
     params["include_video"] = 1 if filt["include_video"] else 0
     params["ongoing"] = 1 if filt["ongoing"] else 0
-    params["backfill"] = 1 if filt["backfill"] else 0
     params["scan_limit"] = max_files * 4
     params["max_attempts"] = MAX_ATTEMPTS
     params["fix_dates"] = 1 if filt.get("fix_dates") else 0
@@ -709,23 +698,6 @@ def claim_batch(budget_bytes: int, max_files: int, filt: dict,
     return picked
 
 
-def window_progress(start: str, end: str) -> dict:
-    """How far the current backfill month has got. This is the signal for
-    whether it is safe to step the window forward."""
-    rows = connect().execute(
-        """SELECT state, COUNT(*) n FROM assets
-           WHERE substr(taken_at,1,10) BETWEEN ? AND ? GROUP BY state""",
-        (start, end),
-    ).fetchall()
-    out = {r["state"]: r["n"] for r in rows}
-    total = sum(out.values())
-    return {
-        "total": total,
-        "confirmed": out.get("confirmed", 0),
-        "queued": out.get("queued", 0),
-        "remaining": out.get("pending", 0) + out.get("failed", 0),
-        "done": total > 0 and out.get("confirmed", 0) == total,
-    }
 
 
 def reserve_outbox_name(asset_id: str, filename: str) -> str:
@@ -1203,9 +1175,7 @@ def media_breakdown() -> list[dict]:
 # Kept beside it so the two cannot drift: a month reading "will send" while
 # claim_batch disagrees is worse than no answer.
 ELIGIBLE_SQL_A = """
-    ((:ongoing = 1 AND substr(a.taken_at,1,10) >= :ongoing_from)
-     OR (:backfill = 1 AND substr(a.taken_at,1,10)
-           BETWEEN :backfill_start AND :backfill_end))
+    (:ongoing = 1 AND substr(a.taken_at,1,10) >= :ongoing_from)
 """
 
 
@@ -1358,8 +1328,6 @@ def reconciliation() -> list[dict]:
             WHEN kind = 'VIDEO' AND :include_video = 0 THEN 'video_off'
             WHEN size > :max_bytes THEN 'too_big'
             WHEN (:ongoing = 1 AND substr(taken_at,1,10) >= :ongoing_from)
-              OR (:backfill = 1 AND substr(taken_at,1,10)
-                    BETWEEN :bstart AND :bend)
               OR forced = 1                             THEN 'queued_soon'
             ELSE 'outside_window'
           END AS reason,
@@ -1374,9 +1342,6 @@ def reconciliation() -> list[dict]:
         "max_bytes": cfg.max_asset_bytes,
         "ongoing": 1 if cfg.ongoing_enabled else 0,
         "ongoing_from": cfg.ongoing_from,
-        "backfill": 1 if cfg.backfill_enabled else 0,
-        "bstart": cfg.backfill_start,
-        "bend": cfg.backfill_end,
     }).fetchall()
     return [dict(r) for r in rows]
 
@@ -1429,9 +1394,9 @@ def timeline() -> list[dict]:
 def monthly_breakdown() -> list[dict]:
     """Every month in the library, newest first.
 
-    This is the map for the backfill: it shows which months are done, which
-    are part-way, and how big each one is before you commit to clearing it
-    out of Google Photos.
+    The map for deciding what to send: which months are done, which are
+    part-way, and how big each one is before committing to clear it out of
+    Google Photos.
     """
     rows = connect().execute("""
         SELECT substr(taken_at, 1, 7)                                AS month,
@@ -1500,7 +1465,7 @@ def structural_rate(cap_bytes: int, hold_days: int = 30) -> float:
 
     Nothing leaves the phone until Smart Storage clears it, so at most one
     outbox-worth moves per hold period. This is the number that actually
-    governs how long a backfill takes.
+    governs how long the whole library takes.
     """
     return cap_bytes / float(hold_days) if hold_days else 0.0
 

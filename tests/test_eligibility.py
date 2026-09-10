@@ -1,7 +1,13 @@
 """What is allowed out of the ledger, and when.
 
+One rule runs by itself -- everything from the cut-off date onwards.
+Anything older goes only when it is asked for, which is what `forced`
+means. There used to be a second window, a start/end range stepped forward
+by hand; Library lists every month with what is left in it, so the window
+was a second place for the same decision to live.
+
 Eligibility is applied at release time, not at scan time, so the ledger
-always holds the whole library and widening a window frees assets on the
+always holds the whole library and moving the cut-off frees assets on the
 next cycle instead of needing a rescan.
 """
 
@@ -13,14 +19,14 @@ pytestmark = pytest.mark.asyncio
 
 
 def claim(**over):
+    """What the feeder would take right now.
+
+    Built from cfg.eligibility rather than assembled by hand, so a test
+    cannot pass against a filter shape the feeder no longer uses.
+    """
     from app import db, settings
     cfg = settings.load()
-    filt = {"include_video": cfg.include_video,
-            "max_asset_bytes": cfg.max_asset_bytes,
-            "ongoing": cfg.ongoing_enabled, "ongoing_from": cfg.ongoing_from,
-            "backfill": cfg.backfill_enabled,
-            "backfill_start": cfg.backfill_start,
-            "backfill_end": cfg.backfill_end}
+    filt = dict(cfg.eligibility)
     filt.update(over)
     return [r["id"] for r in db.claim_batch(cfg.outbox_max_bytes, 40, filt)]
 
@@ -29,38 +35,17 @@ async def test_ongoing_window_is_a_floor(rig):
     from app import db, settings
 
     db.upsert_assets([asset(0, taken="2014-06-01"), asset(1, taken="2026-06-01")])
-    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01",
-                   "backfill_enabled": False})
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01"})
     assert claim() == ["asset-1"]
 
 
-async def test_backfill_window_is_a_range(rig):
-    from app import db, settings
-
-    db.upsert_assets([asset(0, taken="2014-12-31"), asset(1, taken="2015-01-15"),
-                      asset(2, taken="2015-02-01")])
-    settings.save({"ongoing_enabled": False, "backfill_enabled": True,
-                   "backfill_start": "2015-01-01", "backfill_end": "2015-01-31"})
-    assert claim() == ["asset-1"]
 
 
-async def test_windows_combine(rig):
-    from app import db, settings
-
-    db.upsert_assets([asset(0, taken="2015-01-15"), asset(1, taken="2019-06-01"),
-                      asset(2, taken="2026-06-01")])
-    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-01-01",
-                   "backfill_enabled": True, "backfill_start": "2015-01-01",
-                   "backfill_end": "2015-01-31"})
-    assert claim() == ["asset-0", "asset-2"]
-
-
-async def test_widening_a_window_needs_no_rescan(rig):
+async def test_moving_the_cutoff_needs_no_rescan(rig):
     from app import db, settings
 
     db.upsert_assets([asset(0, taken="2014-06-01")])
-    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01",
-                   "backfill_enabled": False})
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01"})
     assert claim() == []
     # The row was never dropped, only withheld.
     settings.save({"ongoing_from": "2010-01-01"})
@@ -71,8 +56,7 @@ async def test_forced_ignores_the_windows_and_jumps_the_queue(rig):
     from app import db, settings
 
     db.upsert_assets([asset(0, taken="2014-06-01"), asset(1, taken="2026-06-01")])
-    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01",
-                   "backfill_enabled": False})
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01"})
     assert db.force_send(ids=["asset-0"]) == 1
     assert claim() == ["asset-0", "asset-1"], "forced asset did not go first"
 
@@ -116,28 +100,44 @@ async def test_retries_stop_after_five_attempts(rig):
     assert claim() == ["asset-0"]
 
 
-async def test_the_backfill_window_steps_a_calendar_month(rig):
+
+
+# ---- the second window is gone --------------------------------------
+
+async def test_there_is_one_automatic_rule(rig):
+    """A window stepped forward by hand was a second place for the same
+    decision to live, and Library already lists every month with what is
+    left in it. Anything older than the cut-off waits to be asked for."""
     from app import settings
-
-    settings.save({"backfill_start": "2015-12-01", "backfill_end": "2015-12-31"})
-    cfg = settings.advance_window(1)
-    assert (cfg.backfill_start, cfg.backfill_end) == ("2016-01-01", "2016-01-31")
-
-    cfg = settings.advance_window(1)
-    assert (cfg.backfill_start, cfg.backfill_end) == ("2016-02-01", "2016-02-29")
-
-    cfg = settings.advance_window(-1)
-    assert (cfg.backfill_start, cfg.backfill_end) == ("2016-01-01", "2016-01-31")
+    spec = set(settings.SPEC)
+    assert not [k for k in spec if "backfill" in k], \
+        "the backfill window is still configurable"
+    assert "ongoing_from" in spec
+    assert set(settings.load().eligibility) == {
+        "include_video", "max_asset_bytes", "ongoing", "ongoing_from", "fix_dates"}
 
 
-async def test_window_progress_tracks_a_month(rig):
-    from app import db
+async def test_old_photos_wait_to_be_asked_for(rig):
+    """The behaviour that replaces the window: outside the cut-off nothing
+    moves until it is forced, and forcing is what Library's month buttons
+    do."""
+    from app import db, settings
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-01-01"})
+    db.upsert_assets([asset(0, taken="2015-06-01"), asset(1, taken="2026-06-01")])
 
-    db.upsert_assets([asset(i, taken="2015-01-10") for i in range(3)])
-    p = db.window_progress("2015-01-01", "2015-01-31")
-    assert (p["total"], p["remaining"], p["done"]) == (3, 3, False)
+    assert claim() == ["asset-1"], "only what is inside the cut-off"
 
-    db.mark_queued(["asset-0", "asset-1", "asset-2"])
-    db.confirm_absent([])
-    p = db.window_progress("2015-01-01", "2015-01-31")
-    assert (p["confirmed"], p["done"]) == (3, True)
+    db.force_send_month("2015-06")
+    assert set(claim()) == {"asset-0", "asset-1"}, "asked for, so it goes"
+
+
+async def test_a_stale_backfill_setting_is_simply_ignored(rig):
+    """Upgrading leaves cfg_backfill_* rows in the ledger. load() reads only
+    the keys it knows, so they are inert rather than a migration."""
+    from app import db, settings
+    db.set_meta("cfg_backfill_enabled", "true")
+    db.set_meta("cfg_backfill_start", "2015-01-01")
+
+    cfg = settings.load()
+    assert not hasattr(cfg, "backfill_enabled")
+    assert "backfill" not in str(cfg.eligibility)
