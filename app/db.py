@@ -1067,6 +1067,36 @@ BUCKET_SQL = """
 """
 
 
+def list_in_month(month: str, limit: int = 100, offset: int = 0) -> dict:
+    """The files in one month, so a single one can be excluded or sent.
+
+    Ordered largest first: the decision being made here is almost always
+    about size, and the file worth excluding is the one at the top.
+
+    Each row carries whether anything will actually move it, because "not
+    sent" and "never going to be sent" look identical in a list of names.
+    """
+    where = ["substr(taken_at,1,7) = :month",
+             "missing_at IS NULL",
+             "id NOT IN (SELECT id FROM motion_parts)"]
+    clause = " AND ".join(where)
+    params = dict(_window_params(), month=month)
+
+    total = connect().execute(
+        f"SELECT COUNT(*) n FROM assets WHERE {clause}", params).fetchone()["n"]
+
+    rows = connect().execute(
+        f"""SELECT id, filename, size, kind, state, taken_at, width, height,
+                   duration, forced, last_error,
+                   CASE WHEN forced = 1 OR {ELIGIBLE_SQL} THEN 1 ELSE 0 END
+                       AS will_send
+            FROM assets WHERE {clause}
+            ORDER BY size DESC LIMIT :limit OFFSET :offset""",
+        dict(params, limit=limit, offset=offset)).fetchall()
+    return {"month": month, "total": total, "items": [dict(r) for r in rows],
+            "offset": offset, "limit": limit}
+
+
 def list_in_bucket(bucket: str, state: str = "all",
                    limit: int = 100, offset: int = 0) -> dict:
     """Files in one resolution bucket, largest first."""
@@ -1169,6 +1199,16 @@ def media_breakdown() -> list[dict]:
 # Whether an item beats what Storage Saver would have done to it. Photos are
 # capped at 16 MP and video at 1080p, so anything above those lines is what
 # this relay actually buys you.
+# The same predicate as ELIGIBLE_SQL, for queries that alias assets as `a`.
+# Kept beside it so the two cannot drift: a month reading "will send" while
+# claim_batch disagrees is worse than no answer.
+ELIGIBLE_SQL_A = """
+    ((:ongoing = 1 AND substr(a.taken_at,1,10) >= :ongoing_from)
+     OR (:backfill = 1 AND substr(a.taken_at,1,10)
+           BETWEEN :backfill_start AND :backfill_end))
+"""
+
+
 GAIN_SQL_A = """
     CASE
       WHEN a.width IS NULL OR a.width = 0 OR a.height IS NULL OR a.height = 0 THEN 0
@@ -1357,6 +1397,16 @@ def timeline() -> list[dict]:
                SUM(CASE WHEN a.state = 'queued' THEN 1 ELSE 0 END)    AS queued,
                SUM(CASE WHEN a.state IN ('pending','failed') THEN 1 ELSE 0 END)
                                                                       AS remaining,
+               -- "N left" said nothing about whether N was ever going to
+               -- move. Outside every date window a file sits pending by
+               -- design, and reading that as a backlog is what made the
+               -- whole ledger look like a queue.
+               SUM(CASE WHEN a.state IN ('pending','failed')
+                         AND (a.forced = 1 OR {ELIGIBLE_SQL_A})
+                        THEN 1 ELSE 0 END)                            AS sending,
+               SUM(CASE WHEN a.state IN ('pending','failed')
+                         AND a.forced = 0 AND NOT {ELIGIBLE_SQL_A}
+                        THEN 1 ELSE 0 END)                            AS resting,
                COALESCE(SUM(CASE WHEN a.state IN ('pending','failed')
                                  THEN a.size ELSE 0 END), 0)          AS remaining_bytes,
                SUM(CASE WHEN a.state = 'skipped' THEN 1 ELSE 0 END)    AS dismissed,
@@ -1372,7 +1422,7 @@ def timeline() -> list[dict]:
           AND a.taken_at IS NOT NULL AND a.taken_at != ''
         GROUP BY substr(a.taken_at, 1, 7)
         ORDER BY substr(a.taken_at, 1, 7) DESC
-    """).fetchall()
+    """, _window_params()).fetchall()
     return [dict(r) for r in rows]
 
 

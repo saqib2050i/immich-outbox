@@ -10,6 +10,28 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.6.0
+
+**A month now says whether its remainder is going anywhere.** "96 left" told
+you nothing: outside every date window a file sits pending by design, and
+reading that as a backlog is what made the whole ledger look like a queue.
+Months distinguish what is **to send** from what is **only if you ask**, and
+a test checks the split against what the feeder will actually claim, so the
+row cannot promise a send that never happens.
+
+**Individual files can be excluded from Library.** The case the month
+buttons cannot serve: a screenshot or a photo of a document inside a window
+you otherwise want. The list says why each file is where it is — "to send",
+"only if you ask", "not being sent", "in the outbox", "backed up" — because
+`pending` alone does not distinguish being on the way from going nowhere.
+Files Immich no longer has are left out, since they can be neither sent nor
+excluded.
+
+The file list also survives the redraw that follows acting on it. Excluding
+one file redraws the timeline, which rebuilds every month body; without
+holding that state the list shut itself after each exclusion and had to be
+reopened to do the next one.
+
 ## 1.5.0
 
 **Library becomes the place months are managed.** First step of moving that

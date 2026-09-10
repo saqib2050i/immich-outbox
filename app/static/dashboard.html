@@ -198,6 +198,19 @@
   .cat.gain{border-left-color:var(--transit)}
   .cat .cname{font-weight:700;font-size:13px}
   .cat .cwhy{display:block;font-weight:400;color:var(--dim);font-size:11px}
+  .tl-files{margin:10px 0 0;border-top:1px solid var(--rule);padding-top:8px}
+  .tl-files > summary{font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--dim);cursor:pointer;list-style:none}
+  .tl-files > summary::-webkit-details-marker{display:none}
+  .tl-files > summary::before{content:"+ ";font-family:var(--mono)}
+  .tl-files[open] > summary::before{content:"− "}
+  .flist{margin:8px 0 0;max-height:22rem;overflow-y:auto}
+  .frow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;
+    align-items:center;padding:5px 0;border-top:1px solid var(--rule);font-size:12px}
+  .frow:first-of-type{border-top:0}
+  .frow .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-family:var(--mono)}
+  .frow .fmeta{color:var(--dim);white-space:nowrap}
   .cat .cfig{color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
   .cat button{font-size:10px;padding:3px 9px}
   .mdetail .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
@@ -1552,6 +1565,10 @@ const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
 // months were open, which is why an expanded month closed itself.
 const tlOpenYears = new Set();
 const tlOpenMonths = new Set();
+// Which months have their file list open. Acting on a file redraws the
+// timeline, which rebuilds every month body -- without this the list shut
+// itself after each exclusion and had to be reopened to do the next one.
+const tlOpenFiles = new Set();
 
 // The last payload we drew. The feeder writes to the ledger once per file,
 // and every write pushes an event, so this ran dozens of times a minute and
@@ -1614,9 +1631,11 @@ async function drawTimeline(){
     yn.className = "yn"; yn.textContent = year;
     const yf = document.createElement("span");
     yf.className = "yf";
+    const rest = list.reduce((a, m) => a + (m.resting || 0), 0);
     yf.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
                    + Math.round(tot ? (conf / tot) * 100 : 0) + "% done"
-                   + (dism ? " · " + fmtNum(dism) + " dismissed" : "")
+                   + (rest ? " · " + fmtNum(rest) + " only if you ask" : "")
+                   + (dism ? " · " + fmtNum(dism) + " not being sent" : "")
                    + (gain ? " · " + fmtBytes(gain) + " worth upgrading" : "");
     const yb = document.createElement("span");
     yb.className = "yb";
@@ -1656,10 +1675,15 @@ function monthNode(m, openMonths){
   // Dismissed is named here because it is the one figure that makes a
   // month look finished without being sent: nothing remains, but nothing
   // went either.
-  right.textContent = fmtBytes(m.bytes) + " · " + fmtNum(m.confirmed) + " done"
-    + (m.remaining ? " · " + fmtNum(m.remaining) + " left" : "")
-    + (m.queued ? " · " + m.queued + " in outbox" : "")
-    + (m.dismissed ? " · " + fmtNum(m.dismissed) + " not being sent" : "");
+  // "N left" said nothing about whether N was ever going to move. Outside
+  // every date window a file sits pending by design, and reading that as a
+  // backlog is what made the whole ledger look like a queue.
+  const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " done"];
+  if (m.sending)   bits.push(fmtNum(m.sending) + " to send");
+  if (m.resting)   bits.push(fmtNum(m.resting) + " only if you ask");
+  if (m.queued)    bits.push(m.queued + " in outbox");
+  if (m.dismissed) bits.push(fmtNum(m.dismissed) + " not being sent");
+  right.textContent = bits.join(" · ");
 
   const tags = document.createElement("span");
   if (m.gain_bytes > 0){
@@ -1821,7 +1845,86 @@ function paintMonthBody(m, host, d){
     foot.appendChild(again);
   }
 
+  // One file at a time, for the case the month-level buttons cannot serve:
+  // a screenshot or a photo of a document inside a window you otherwise
+  // want. Collapsed, because it is the exception and the month figures are
+  // what people come here for.
+  const files = document.createElement("details");
+  files.className = "tl-files";
+  const fsum = document.createElement("summary");
+  fsum.textContent = "Individual files";
+  files.appendChild(fsum);
+  const fbody = document.createElement("div");
+  fbody.className = "flist";
+  fbody.innerHTML = '<p class="empty">Loading…</p>';
+  files.appendChild(fbody);
+  files.addEventListener("toggle", () => {
+    if (files.open){ tlOpenFiles.add(m.month); loadMonthFiles(m.month, fbody); }
+    else tlOpenFiles.delete(m.month);
+  });
+  host.appendChild(files);
+  // Setting .open fires toggle, which does the loading.
+  if (tlOpenFiles.has(m.month)) files.open = true;
+
   if (foot.children.length) host.appendChild(foot);
+}
+
+async function loadMonthFiles(month, host){
+  let d;
+  try { d = await (await fetch(`/api/month/${month}/files?limit=100`)).json(); }
+  catch { host.innerHTML = '<p class="empty">Could not load.</p>'; return; }
+
+  host.innerHTML = "";
+  if (!d.items.length){
+    host.innerHTML = '<p class="empty">Nothing in this month.</p>';
+    return;
+  }
+  if (d.total > d.items.length){
+    const note = document.createElement("p");
+    note.className = "empty";
+    note.textContent = `Largest ${fmtNum(d.items.length)} of ${fmtNum(d.total)}.`;
+    host.appendChild(note);
+  }
+
+  d.items.forEach(f => {
+    const row = document.createElement("div");
+    row.className = "frow";
+
+    const nm = document.createElement("span");
+    nm.className = "fname"; nm.textContent = f.filename; nm.title = f.filename;
+
+    const meta = document.createElement("span");
+    meta.className = "fmeta";
+    // Why this file is where it is. "pending" alone does not distinguish
+    // "on its way" from "outside every window and going nowhere".
+    const where =
+        f.state === "confirmed" ? "backed up"
+      : f.state === "queued"    ? "in the outbox"
+      : f.state === "skipped"   ? "not being sent"
+      : f.state === "failed"    ? "failed"
+      : f.will_send             ? "to send"
+      : "only if you ask";
+    meta.textContent = fmtBytes(f.size) + " · " + where;
+
+    const act = document.createElement("button");
+    const excluded = f.state === "skipped";
+    const done = f.state === "confirmed" || f.state === "queued";
+    act.className = "ghost";
+    act.textContent = excluded ? "Send" : done ? "" : "Don't send";
+    if (done){ act.hidden = true; }
+    act.onclick = async () => {
+      act.disabled = true;
+      const url = excluded ? "/api/send" : "/api/backlog/dismiss";
+      await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                        body: JSON.stringify({ids: [f.id]})});
+      monthCache.delete(month);
+      await loadMonthFiles(month, host);
+      await tick();
+    };
+
+    row.append(nm, meta, act);
+    host.appendChild(row);
+  });
 }
 
 async function toggleMonth(month, host, btn){

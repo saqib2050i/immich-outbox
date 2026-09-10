@@ -195,3 +195,106 @@ async def test_excluding_a_month_ignores_what_immich_no_longer_has(rig):
     db.mark_missing({f"asset-{i}" for i in range(4)})
 
     assert db.dismiss_waiting(month="2026-11") == 4
+
+
+# ---- "N left" has to say whether N is going anywhere --------------------
+
+@pytest.mark.asyncio
+async def test_a_month_says_whether_its_remainder_will_actually_move(rig):
+    """"N left" said nothing about whether N was ever going to go. Outside
+    every date window a file sits pending by design, and reading that as a
+    backlog is what made the whole ledger look like a queue."""
+    from app import db, settings
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-27",
+                   "backfill_enabled": False})
+
+    db.upsert_assets([asset(1, taken="2026-09-01"),     # inside the window
+                      asset(2, taken="2019-01-01"),     # outside it
+                      asset(3, taken="2019-02-01")])
+    months = {m["month"]: m for m in db.timeline()}
+
+    assert months["2026-09"]["sending"] == 1
+    assert months["2026-09"]["resting"] == 0
+    assert months["2019-01"]["sending"] == 0
+    assert months["2019-01"]["resting"] == 1, \
+        "a month outside every window is not a backlog"
+    # The parts still add up to the whole.
+    for m in months.values():
+        assert m["sending"] + m["resting"] == m["remaining"]
+
+
+@pytest.mark.asyncio
+async def test_asking_for_a_file_moves_it_from_resting_to_sending(rig):
+    from app import db, settings
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-27",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(1, taken="2019-01-01")])
+
+    assert db.timeline()[0]["resting"] == 1
+    db.force_send(ids=["asset-1"])
+    m = db.timeline()[0]
+    assert m["resting"] == 0 and m["sending"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_split_agrees_with_what_the_feeder_will_claim(rig, monkeypatch):
+    """The timeline and claim_batch must not disagree about what is going
+    out, or the month row promises sends that never happen."""
+    from app import db, feeder, immich, settings
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-27",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(1, size=100, taken="2026-09-01"),
+                      asset(2, size=100, taken="2019-01-01")])
+
+    promised = sum(m["sending"] for m in db.timeline())
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == promised == 1
+
+
+# ---- excluding one file ------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_single_file_can_be_excluded_and_sent_again(rig):
+    """The case the month buttons cannot serve: a screenshot inside a window
+    you otherwise want."""
+    from app import db
+    db.upsert_assets([asset(i, taken="2026-09-0" + str(i + 1)) for i in range(3)])
+
+    assert db.dismiss_waiting(ids=["asset-1"]) == 1
+    listed = {f["id"]: f for f in db.list_in_month("2026-09")["items"]}
+    assert listed["asset-1"]["state"] == "skipped"
+    assert listed["asset-0"]["state"] == "pending"
+
+    assert db.force_send(ids=["asset-1"]) == 1
+    assert db.list_in_month("2026-09")["items"] and \
+        {f["id"]: f["state"] for f in db.list_in_month("2026-09")["items"]}["asset-1"] \
+        == "pending"
+
+
+@pytest.mark.asyncio
+async def test_the_month_file_list_says_what_will_move(rig):
+    """"pending" alone does not distinguish "on its way" from "outside every
+    window and going nowhere"."""
+    from app import db, settings
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2026-08-27",
+                   "backfill_enabled": False})
+    db.upsert_assets([asset(1, taken="2026-09-01"), asset(2, taken="2019-01-01")])
+
+    byid = {f["id"]: f for f in db.list_in_month("2026-09")["items"]}
+    assert byid["asset-1"]["will_send"] == 1
+    byid = {f["id"]: f for f in db.list_in_month("2019-01")["items"]}
+    assert byid["asset-2"]["will_send"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_month_file_list_hides_what_immich_no_longer_has(rig):
+    """They cannot be sent or excluded, so offering them is a dead end."""
+    from app import db
+    db.upsert_assets([asset(i, taken="2026-09-05") for i in range(4)])
+    db.mark_missing({"asset-0", "asset-1"})
+
+    # mark_missing takes the ids Immich still returns, so 2 and 3 are gone.
+    d = db.list_in_month("2026-09")
+    assert d["total"] == 2
+    assert {f["id"] for f in d["items"]} == {"asset-0", "asset-1"}
