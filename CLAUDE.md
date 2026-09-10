@@ -124,6 +124,38 @@ made more than once.
   table. It binds to the table, and a NULL join column collapses everything
   into one group.
 
+## The dashboard's stylesheet
+
+One inline `<style>` in `dashboard.html`, no build step, and `login.html`
+keeps its own copy of the tokens because it has to render before there is
+anywhere to share one from. Three things in it are load-bearing:
+
+- **`--transit`, `--done`, `--alarm`, `--dim` and `--rule` are referenced
+  from inline styles in the script.** Renaming one silently unstyles
+  whatever it drew, with no error anywhere.
+- **`[data-tab]:not(.tab-on)` hides an inactive tab's panels.** The `:not()`
+  is not decoration. A bare `[data-tab]` is one attribute — specificity
+  (0,1,0) — so any single class that sets `display` ties it and wins on
+  source order. `.grid{display:grid}` did that and put the Overview cards on
+  every tab; `.setwrap{display:grid}` did it earlier and put the entire
+  settings form there. Two tests guard this.
+- **`summary::before` is a grid item.** Every disclosure row here is a grid
+  whose first column is the caret, so the column count must include it. Both
+  timeline rows were a column short, which pushed the last child onto a
+  second row and into column one — and an `auto` column sizes to its widest
+  item, so a figure sitting underneath shoved the year label into the middle
+  of the row.
+
+Sans for prose, mono for values: sizes, counts, times, filenames, paths.
+The page was mono throughout and read like a log file. And no glyph outside
+ASCII is load-bearing — the carets were U+25B8, which the old mono stack had
+and a system sans stack does not, so they rendered as full stops until they
+were drawn with borders instead.
+
+It is used on a phone, so the narrow breakpoints are not an afterthought:
+a year's figures are one unbreakable ~400px string, and left inline they
+took the whole page's horizontal scrollbar with them.
+
 ## Bugs that keep recurring
 
 Partial string edits have twice left **duplicate route definitions** where

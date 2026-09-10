@@ -10,6 +10,41 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.3.0
+
+**The dashboard is rebuilt to look like something from this decade, and to
+work on a phone.** No feature moved, was added, or was taken away — every
+control is where it was. This is the stylesheet and the rows that would not
+fit.
+
+- **Sans for prose, mono for values.** The whole page was set in a monospace
+  face, which made every sentence read like a log line. Mono now earns its
+  place only where digits have to line up or a string will be copied: sizes,
+  counts, times, filenames, paths.
+- **Dark first, with a real light mode.** Both are defined properly rather
+  than one being an override of the other, and the browser chrome follows
+  the scheme instead of a single hard-coded colour.
+- **It fits a 390px screen.** It did not: the timeline alone ran 274px off
+  the right edge and took the page's horizontal scrollbar with it, because a
+  year's figures are one unbreakable 400px string. Those now drop to their
+  own line and wrap. So do a category's name, a file's size, and a queued
+  file's details — each of which was either clipped, crushed to one word per
+  line, or hidden outright. Controls are thumb-sized rather than mouse-sized.
+- **The tab bar is one scrolling strip** rather than three wrapped rows.
+- **Two layout bugs that predate this.** `summary::before` is itself a grid
+  item, so both timeline rows were a column short: the year's figures were
+  pushed onto a second row and into column one, and an `auto` column sizes
+  to its widest item — which is why the year label sat in the middle of the
+  row. The month's "worth upgrading" tag wrapped the same way, hard against
+  the left margin. And the disclosure triangles were U+25B8, which the mono
+  stack had and a system sans stack does not: they are drawn now, not typed.
+- **A tab's panels stay hidden.** `[data-tab]{display:none}` is one
+  attribute, so any single class setting `display` ties it and wins on
+  source order. `.grid{display:grid}` did exactly that during this rebuild
+  and put the three Overview cards on Library. It is `:not(.tab-on)` now,
+  and a test refuses the weaker form.
+- The sign-in page is on the same palette, which it never was.
+
 ## 2.2.0
 
 **The phone stops reading last run's screen, and stops waiting half an hour
