@@ -142,6 +142,15 @@
   section.timeline{margin-top:26px}
   section.timeline h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;
                       color:var(--dim);margin:0 0 4px;font-weight:600}
+  .tlsum{display:flex;flex-wrap:wrap;gap:10px 22px;margin:0 0 16px;
+    padding:12px 14px;background:var(--panel);border:1px solid var(--rule)}
+  .tlsum-part{display:flex;flex-direction:column;gap:1px}
+  .tlsum-part b{font-size:20px;font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  .tlsum-part span{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--dim)}
+  .tlsum-part.go b{color:var(--transit)}
+  .tlsum-part.moving b{color:var(--done)}
+  .tlsum-part.rest b{color:var(--dim)}
   .tl-yr{border-bottom:1px solid var(--rule)}
   .tl-yr > summary{display:grid;grid-template-columns:auto 1fr auto;gap:12px;
                    align-items:center;padding:10px 0;cursor:pointer;list-style:none}
@@ -165,6 +174,12 @@
   .tl-mo .mn{font-weight:700;font-variant-numeric:tabular-nums}
   .tl-mo .mm{color:var(--dim);font-variant-numeric:tabular-nums}
   .tl-mo .mr{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tl-mo .mb{grid-column:1/-1;display:flex;height:4px;border:1px solid var(--rule);
+    margin-top:2px}
+  .tl-mo .mb i{display:block;height:100%}
+  .tl-mo .mb i.done{background:var(--done)}
+  .tl-mo .mb i.moving{background:var(--transit)}
+  .tl-mo .mb i.go{background:var(--rule)}
   .tl-mo.done{border-left-color:var(--done)}
   .tl-mo.done .mn{color:var(--done)}
   .badge{font-size:9px;letter-spacing:.12em;text-transform:uppercase;
@@ -966,18 +981,20 @@
   </form>
 </div>
 
+<section class="timeline" id="nav-timeline" data-tab="library">
+  <h2>Months</h2>
+  <p class="empty">Every month that holds media, and what is left in it. This is
+     where sending happens: a whole month, one of its categories, or a single
+     file.</p>
+  <div class="tlsum" id="tlSummary" hidden></div>
+  <div id="tlBody"><p class="empty">Loading…</p></div>
+</section>
+
 <section class="tools" data-tab="library">
   <h2 class="eyebrow">What has not made it yet</h2>
   <p class="empty">Everything in Immich that is not yet in Google Photos, and why.
      With a curated library this should trend to empty.</p>
   <div class="recon" id="recon"></div>
-</section>
-
-<section class="timeline" id="nav-timeline" data-tab="library">
-  <h2>Timeline</h2>
-  <p class="empty">Only months that actually hold media. Open one to see what is
-     worth upgrading before you clear it from Google Photos.</p>
-  <div id="tlBody"><p class="empty">Loading…</p></div>
 </section>
 
 <section class="stats" id="nav-library" data-tab="library">
@@ -1529,6 +1546,9 @@ const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
 // overlap -- one wiping tlBody while the other was still reading which
 // months were open, which is why an expanded month closed itself.
 const tlOpenYears = new Set();
+// Set once the user opens or closes a year themselves, so the default
+// choice below never fights a deliberate one.
+let tlTouched = false;
 const tlOpenMonths = new Set();
 // Which months have their file list open. Acting on a file redraws the
 // timeline, which rebuilds every month body -- without this the list shut
@@ -1568,12 +1588,46 @@ async function drawTimeline(){
 
   const openYears = tlOpenYears, openMonths = tlOpenMonths;
 
+  // What is outstanding, without expanding anything. Every year starts
+  // collapsed, so the answer used to be three clicks and a scroll away.
+  const sum = months.reduce((a, m) => ({
+    sending:   a.sending   + (m.sending   || 0),
+    resting:   a.resting   + (m.resting   || 0),
+    dismissed: a.dismissed + (m.dismissed || 0),
+    queued:    a.queued    + (m.queued    || 0),
+  }), {sending: 0, resting: 0, dismissed: 0, queued: 0});
+
+  tlSummary.innerHTML = "";
+  const parts = [];
+  if (sum.sending)   parts.push([fmtNum(sum.sending),   "to send",         "go"]);
+  if (sum.queued)    parts.push([fmtNum(sum.queued),    "in the outbox",   "moving"]);
+  if (sum.resting)   parts.push([fmtNum(sum.resting),   "only if you ask", "rest"]);
+  if (sum.dismissed) parts.push([fmtNum(sum.dismissed), "not being sent",  "rest"]);
+  tlSummary.hidden = !parts.length;
+  parts.forEach(([n, label, cls]) => {
+    const el = document.createElement("div");
+    el.className = "tlsum-part " + cls;
+    const b = document.createElement("b"); b.textContent = n;
+    const k = document.createElement("span"); k.textContent = label;
+    el.append(b, k);
+    tlSummary.appendChild(el);
+  });
+
   const years = new Map();
   months.forEach(m => {
     const y = m.month.slice(0, 4);
     if (!years.has(y)) years.set(y, []);
     years.get(y).push(m);
   });
+
+  // Open the newest year holding something that is going out, the first
+  // time this is drawn. Otherwise the page opens on nothing actionable and
+  // every visit starts with the same two clicks.
+  if (!tlOpenYears.size && !tlTouched){
+    const live = [...years.entries()]
+      .find(([, list]) => list.some(m => (m.sending || 0) + (m.queued || 0) > 0));
+    if (live) tlOpenYears.add(live[0]);
+  }
 
   tlBody.innerHTML = "";
   for (const [year, list] of years){
@@ -1588,6 +1642,7 @@ async function drawTimeline(){
     yd.dataset.year = year;
     if (openYears.has(year)) yd.open = true;
     yd.addEventListener("toggle", () => {
+      tlTouched = true;
       yd.open ? tlOpenYears.add(year) : tlOpenYears.delete(year);
     });
 
@@ -1658,7 +1713,23 @@ function monthNode(m, openMonths){
     tags.appendChild(g);
   }
 
-  sum.append(nm, mid, right, tags);
+  // Three states, in the order the pipeline runs: backed up, in the outbox,
+  // going out. What is left unpainted is resting or excluded -- which is
+  // the point, since an empty bar means nothing is going to happen here.
+  const bar = document.createElement("span");
+  bar.className = "mb";
+  const seg = (n, cls) => {
+    if (!n) return;
+    const i = document.createElement("i");
+    i.className = cls;
+    i.style.width = (m.total ? (n / m.total) * 100 : 0) + "%";
+    bar.appendChild(i);
+  };
+  seg(m.confirmed, "done");
+  seg(m.queued, "moving");
+  seg(m.sending, "go");
+
+  sum.append(nm, mid, right, tags, bar);
   md.appendChild(sum);
 
   const body = document.createElement("div");

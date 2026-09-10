@@ -181,3 +181,49 @@ def test_a_freed_amount_is_reported_not_just_done():
         block = block[:block.index(";")]
         assert "freed_bytes" in block, \
             f"{element} ignores freed_bytes and will always say 'done'"
+
+
+# ---- Library is a control surface now, not a report ---------------------
+
+def library_sections() -> list[str]:
+    """The Library panels, in the order they appear."""
+    return re.findall(r'<section class="[^"]*" (?:id="[^"]*" )?data-tab="library">\s*'
+                      r'<h2[^>]*>([^<]+)</h2>', HTML)
+
+
+def test_the_months_panel_comes_first_in_library():
+    """It is where sending happens. It used to sit third, behind two panels
+    of reference material -- about three screens down."""
+    sections = library_sections()
+    assert sections, "no Library sections found"
+    assert "month" in sections[0].lower(), \
+        f"Library opens on {sections[0]!r} rather than the months"
+
+
+def test_library_answers_what_is_outstanding_without_expanding_anything():
+    """Every year starts collapsed, so the total used to be two clicks and a
+    scroll away."""
+    assert 'id="tlSummary"' in HTML
+    body = HTML[HTML.index("tlSummary.innerHTML"):]
+    body = body[:body.index("const years")]
+    for label in ("to send", "in the outbox", "only if you ask", "not being sent"):
+        assert label in body, f"the summary does not report {label!r}"
+
+
+def test_a_month_carries_its_own_progress_bar():
+    """Years had one and months did not, so finding the month that still
+    needed work meant reading every figure in the year."""
+    assert 'bar.className = "mb"' in HTML
+    for state in ("done", "moving", "go"):
+        assert f'seg(m.' in HTML and f'"{state}"' in HTML
+
+
+def test_the_default_open_year_yields_to_a_deliberate_one():
+    """Opening a useful year on first draw is a convenience; overriding what
+    the user has chosen on every poll would be a bug."""
+    assert "tlTouched" in HTML
+    guard = re.search(r"if \(!tlOpenYears\.size && !tlTouched\)", HTML)
+    assert guard, "the default is not guarded by the user's own choice"
+    toggle = HTML[HTML.index('yd.addEventListener("toggle"'):]
+    assert "tlTouched = true" in toggle[:200], \
+        "opening a year by hand does not disable the default"
