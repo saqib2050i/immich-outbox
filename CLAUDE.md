@@ -203,6 +203,16 @@ socket. The cost is that "free up now" takes effect on the phone's next
 check-in, so the server sets the interval and asks for a fast one only when
 there is something worth waking up for.
 
+Which makes the idle interval the latency of every command, and it is paid
+for out of the phone's battery — so it is split on that axis and no other.
+`companion_charging_poll_minutes` (a minute) applies while the phone reports
+charging, `companion_idle_poll_minutes` (thirty) while it does not, and the
+shelf phone this was built for is never off its cable. A single interval
+meant either waking a phone on battery every minute or making a plugged-in
+phone wait half an hour, and it did the second. Switched off on the server
+is the one state deliberately kept slow: there is nothing to hear, and there
+will not be until somebody changes a setting.
+
 Two endpoints are the phone's (`/api/companion/poll`, `/api/companion/report`),
 gated in the middleware by a pairing token rather than a session — the phone
 has no browser. Two are the dashboard's, behind the normal session gate.
@@ -226,6 +236,23 @@ whole point of a phone on a shelf — the app simply never checks in. It also
 must hold a `PARTIAL_WAKE_LOCK` across the check-in, because the alarm wakes
 the phone only for the length of the broadcast and the work happens on
 another thread after that returns.
+
+**Google Photos resumes where it was left, so a run has to put it back.**
+Leaving it on "You freed up 29.80 MB" meant the next run opened onto that
+screen and read it as its own result: a success carrying a figure nothing
+earned, returned without a button being pressed, and nothing actually
+freed — the outbox stayed full behind a dashboard reporting a healthy
+phone. `settlePhotos()` backs out to Photos' own screen at the end of every
+run, pass or fail, and then brings the companion forward.
+
+That reset is the fix; the guard in `walkPhotos` is what survives it
+failing. A finished screen only counts once *this* run has been somewhere —
+the freed figure after the button was pressed, "nothing to free up" after
+the menu entry was tapped — and one that turns up before that is backed out
+of, three times before the run gives up and says so. A visible failure over
+a stalled pipeline is the right trade: the report is only ever a log line
+(nothing here confirms an asset), but a green tick over an outbox that never
+drains is the hardest kind of fault to notice.
 
 Nothing may be tapped by position. The account picture is found by its
 description; a positional fallback tapped the memories carousel instead and

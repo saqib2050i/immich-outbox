@@ -62,6 +62,13 @@ SPEC: dict[str, tuple[type, object]] = {
     # the only moment freeing space actually buys anything.
     "companion_auto": (bool, True),
     "companion_min_battery": (int, 30),
+    # How long a manual "free up now" can sit before the phone hears about
+    # it. The phone dials out and the server never dials in, so this is the
+    # latency, and it is bought with the phone's battery. A phone on its
+    # charger -- which is the shelf phone this was built for -- can afford
+    # to ask every minute; the same phone unplugged cannot, so it keeps the
+    # slower one. Charging is the axis because charging is the cost.
+    "companion_charging_poll_minutes": (int, 1),
     "companion_idle_poll_minutes": (int, 30),
     # One free-up unblocks roughly one outbox's worth. Asking again before
     # Google Photos has uploaded the replacements just wakes the phone.
@@ -101,6 +108,7 @@ class Settings:
     companion_enabled: bool
     companion_auto: bool
     companion_min_battery: int
+    companion_charging_poll_minutes: int
     companion_idle_poll_minutes: int
     companion_cooldown_minutes: int
     companion_offline_hours: int

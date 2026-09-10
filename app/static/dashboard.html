@@ -890,9 +890,16 @@
         <input type="number" id="s_companion_min_battery" min="0" max="100">
       </div>
       <div class="field">
-        <div class="lab"><label for="s_companion_idle_poll_minutes">Check-in interval, minutes</label>
-          <span class="hint">How often the phone asks for work when there is none.
-            A manual request waits at most this long.</span></div>
+        <div class="lab"><label for="s_companion_charging_poll_minutes">Check-in interval on the charger, minutes</label>
+          <span class="hint">The phone asks for work; the relay never calls it. So
+            this is how long “Free up now” waits — a minute on a phone that is
+            plugged in, which is what a phone on a shelf is.</span></div>
+        <input type="number" id="s_companion_charging_poll_minutes" min="1" max="240">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_idle_poll_minutes">Check-in interval on battery, minutes</label>
+          <span class="hint">The same thing when the phone is unplugged, where
+            asking often costs it something. Keep this the longer of the two.</span></div>
         <input type="number" id="s_companion_idle_poll_minutes" min="1" max="240">
       </div>
       <div class="field">

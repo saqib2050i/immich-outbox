@@ -61,6 +61,54 @@ class LabelsTest {
         assertFalse(Labels.isNothingToDo(junk))
     }
 
+    // ---- knowing when to stop pressing Back ------------------------------
+    //
+    // Google Photos resumes where it was left. A run that walked away from
+    // "You freed up 29.80 MB" handed the next run that screen on its first
+    // pass, which read as a success carrying a figure nothing earned --
+    // and since nothing was actually freed, the outbox stayed full behind
+    // a dashboard reporting a healthy phone.
+
+    @Test fun `the result screen is one to back out of`() {
+        assertTrue(Labels.isFreeUpScreen(
+            listOf("You freed up 29.80 MB", "Done"), Labels.ENTRY))
+    }
+
+    @Test fun `the button screen is one to back out of`() {
+        assertTrue(Labels.isFreeUpScreen(
+            listOf("Your device storage is 30% full, free up space",
+                   "Free up 29.80 MB"), Labels.ENTRY))
+    }
+
+    @Test fun `nothing to free up is still a screen to leave`() {
+        assertTrue(Labels.isFreeUpScreen(listOf("Nothing to free up"), Labels.ENTRY))
+    }
+
+    @Test fun `the account menu that leads there is one to back out of`() {
+        assertTrue(Labels.isFreeUpScreen(
+            listOf("Account and settings", "Free up space on this device",
+                   "Photos settings"), Labels.ENTRY))
+    }
+
+    @Test fun `the Photos home screen is where we stop`() {
+        assertFalse(Labels.isFreeUpScreen(
+            listOf("Photos", "Search", "Library", "Sharing",
+                   "Memories", "2012", "Backup complete"), Labels.ENTRY))
+    }
+
+    @Test fun `a renamed entry from the server is still recognised`() {
+        // The labels are a setting because Google renames these, so the
+        // screen we back out of has to be judged against the same list the
+        // walk uses -- not a constant compiled into the app.
+        assertTrue(Labels.isFreeUpScreen(
+            listOf("Konto", "Speicher auf diesem Gerät freigeben"),
+            listOf("speicher auf diesem gerät freigeben")))
+    }
+
+    @Test fun `an empty screen is not a reason to keep pressing`() {
+        assertFalse(Labels.isFreeUpScreen(emptyList(), Labels.ENTRY))
+    }
+
     // ---- sizes -----------------------------------------------------------
 
     @Test fun `sizes parse in every unit Photos uses`() {
