@@ -78,7 +78,22 @@ app/static/       dashboard.html, login.html — no build step
 ```
 
 Asset states: `pending` → `queued` → `confirmed`, plus `failed` and
-`skipped`. `forced` bypasses the date windows and jumps the queue.
+`skipped`. `forced` bypasses the cut-off and jumps the queue.
+
+**One automatic rule.** Everything from `ongoing_from` onwards goes by
+itself; everything older waits to be asked for, which is what `forced`
+means and what Library's month and file controls set. There used to be a
+second window — a start/end range stepped forward by hand — and it was
+removed because Library already lists every month with what is left in it,
+so the window was a second place for the same decision to live, kept in
+step by hand.
+
+The consequence worth knowing when reading old code or ledgers: `pending`
+does not mean "queued". Most of the ledger is `pending` by design and going
+nowhere. Anything showing a figure has to say which kind it is — the
+timeline splits `sending` from `resting` for exactly this reason, and
+presenting the whole ledger as a backlog is a mistake this dashboard has
+made more than once.
 
 ## Hard-won details
 

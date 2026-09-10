@@ -4,25 +4,24 @@ Environment variables are only the initial defaults. Once saved from the
 dashboard, values live in the database and take effect on the next cycle --
 no container restart.
 
-Two independent windows decide what is eligible to send, and they can both
-be on at once:
+One rule decides what goes automatically:
 
     ongoing    everything taken on or after a cut-off date, forever.
-               This is the "draw a line and move on" mode: new photos flow
-               through the Pixel, history is left alone.
+               New photos flow through the Pixel; history is left alone
+               until it is asked for.
 
-    backfill   a start/end date window you advance by hand, one month at a
-               time, as you delete the old Storage Saver copies from Google
-               Photos. Keeps you from creating duplicates faster than you
-               can clear them.
+Anything older is sent by asking for it in Library, a month or a file at a
+time. There was a second window -- a start/end range stepped forward by
+hand -- which did the same job less well: Library already lists every month
+with what is left in it, and a window you have to remember to advance is a
+second place for the same decision to live.
 
 Eligibility is applied when an asset is released to the outbox, never when
-it is scanned. The ledger always holds the whole library, so widening a
-window releases assets immediately instead of needing a rescan.
+it is scanned. The ledger always holds the whole library, so moving the
+cut-off releases assets immediately instead of needing a rescan.
 """
 
 from dataclasses import dataclass, asdict
-from datetime import date
 
 from . import config, db
 
@@ -45,9 +44,6 @@ SPEC: dict[str, tuple[type, object]] = {
     "max_asset_mb": (int, config.MAX_ASSET_BYTES // (1024 * 1024)),
     "ongoing_enabled": (bool, True),
     "ongoing_from": (str, config.MIN_TAKEN_AT),
-    "backfill_enabled": (bool, False),
-    "backfill_start": (str, "2015-01-01"),
-    "backfill_end": (str, "2015-01-31"),
     # Alerting
     "alert_webhook_url": (str, ""),
     "alert_format": (str, "json"),          # "json" (Gotify, Apprise) or "ntfy"
@@ -94,9 +90,6 @@ class Settings:
     max_asset_mb: int
     ongoing_enabled: bool
     ongoing_from: str
-    backfill_enabled: bool
-    backfill_start: str
-    backfill_end: str
     alert_webhook_url: str
     alert_format: str
     alert_stall_days: int
@@ -133,9 +126,6 @@ class Settings:
             "max_asset_bytes": self.max_asset_bytes,
             "ongoing": self.ongoing_enabled,
             "ongoing_from": self.ongoing_from,
-            "backfill": self.backfill_enabled,
-            "backfill_start": self.backfill_start,
-            "backfill_end": self.backfill_end,
             "fix_dates": self.fix_dates,
         }
 
@@ -189,30 +179,3 @@ def save(updates: dict) -> Settings:
     db.log("settings", "settings updated")
     return load()
 
-
-def _month_bounds(anchor: date) -> tuple[date, date]:
-    start = anchor.replace(day=1)
-    end = (start.replace(year=start.year + 1, month=1) if start.month == 12
-           else start.replace(month=start.month + 1))
-    return start, date.fromordinal(end.toordinal() - 1)
-
-
-def advance_window(direction: int = 1) -> Settings:
-    """Move the backfill window one calendar month. The workflow is: clear
-    that month from Google Photos, let the originals flow, confirm the
-    window is done, then step forward."""
-    s = load()
-    try:
-        cur = date.fromisoformat(s.backfill_start)
-    except ValueError:
-        cur = date.today().replace(day=1)
-
-    month = cur.month + direction
-    year = cur.year + (month - 1) // 12
-    month = (month - 1) % 12 + 1
-    start, end = _month_bounds(date(year, month, 1))
-
-    return save({
-        "backfill_start": start.isoformat(),
-        "backfill_end": end.isoformat(),
-    })

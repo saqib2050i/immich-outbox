@@ -7,6 +7,29 @@ from conftest import asset, fake_download
 pytestmark = pytest.mark.asyncio
 
 
+def backlog() -> dict:
+    """What the removed /api/backlog route reported.
+
+    The route went with the panel it fed -- Library holds that view now --
+    but waiting_breakdown() is still what the queue status line and the
+    companion's "is it blocked?" check are built on, so its shape is still
+    worth holding to.
+    """
+    from app import db
+    months = db.waiting_breakdown()
+    return {
+        "months": months,
+        "total": sum(m["total"] for m in months),
+        "bytes": sum(m["bytes"] for m in months),
+        "failed": sum(m["failed"] for m in months),
+        "asked": sum(m["asked"] for m in months),
+        "eligible": sum(m["eligible"] for m in months),
+        "resting": sum(m["resting"] for m in months),
+        "to_send_bytes": sum(m["to_send_bytes"] for m in months),
+    }
+
+
+
 async def test_a_404_fails_permanently_in_one_attempt(rig, monkeypatch):
     """Immich returning 404 for an original means the file is gone from its
     storage. Five retries produce five identical failures, so the whole
@@ -222,7 +245,7 @@ async def test_the_backlog_is_visible_by_month(rig):
     db.mark_failed("asset-0", "original missing from Immich storage (HTTP 404)",
                    permanent=True)
 
-    b = await main.backlog()
+    b = backlog()
     by = {m["month"]: m for m in b["months"]}
     assert b["total"] == 6
     assert by["2025-11"]["total"] == 4 and by["2025-11"]["failed"] == 1
@@ -249,7 +272,7 @@ async def test_dismissing_a_month_stops_it_refilling_the_queue(rig, monkeypatch)
     assert added == 1, "a dismissed month came back"
     assert db.queue_contents()[0]["taken_at"].startswith("2026-02")
 
-    assert (await main.backlog())["total"] == 0
+    assert (backlog())["total"] == 0
 
 
 async def test_a_dismissed_month_can_be_sent_again_after_a_rescan(rig):
@@ -263,7 +286,7 @@ async def test_a_dismissed_month_can_be_sent_again_after_a_rescan(rig):
 
     assert db.force_send_month("2025-11") == 3
     assert db.counts()["pending"] == 3
-    assert (await main.backlog())["total"] == 3
+    assert (backlog())["total"] == 3
 
 
 async def test_dismissing_the_whole_backlog(rig):
@@ -273,7 +296,7 @@ async def test_dismissing_the_whole_backlog(rig):
                      + [asset(10 + i, size=100, taken="2019-03-02") for i in range(5)])
     r = await main.backlog_dismiss({"all": True})
     assert r["dismissed"] == 10
-    assert (await main.backlog())["total"] == 0
+    assert (backlog())["total"] == 0
     assert db.counts()["skipped"] == 10
 
 
@@ -326,7 +349,7 @@ async def test_dismissed_assets_are_findable_again(rig):
     db.upsert_assets([asset(i, size=100, taken="2025-11-05") for i in range(4)]
                      + [asset(10 + i, size=100, taken="2026-02-01") for i in range(2)])
     await main.backlog_dismiss({"all": True})
-    assert (await main.backlog())["total"] == 0
+    assert (backlog())["total"] == 0
 
     d = await main.dismissed()
     assert d["total"] == 6
@@ -342,7 +365,7 @@ async def test_restoring_a_month_puts_it_back_in_the_backlog(rig):
 
     r = await main.dismissed_restore({"month": "2025-11"})
     assert r["restored"] == 4
-    assert (await main.backlog())["total"] == 4
+    assert (backlog())["total"] == 4
     assert (await main.dismissed())["total"] == 2
 
 
@@ -458,7 +481,7 @@ async def test_the_backlog_separates_asked_from_the_rest_of_the_library(rig):
         [asset(10 + i, size=100, taken="2015-06-01") for i in range(50)])  # resting
     db.force_send(ids=["asset-10", "asset-11"])                           # asked
 
-    b = await main.backlog()
+    b = backlog()
     assert b["asked"] == 2
     assert b["eligible"] == 3
     assert b["resting"] == 48
@@ -480,7 +503,7 @@ async def test_dismiss_everything_spares_the_resting_library(rig):
     r = await main.backlog_dismiss({"all": True})       # default scope
     assert r["dismissed"] == 4, "the resting library was dismissed too"
 
-    b = await main.backlog()
+    b = backlog()
     assert b["total"] == 49 and b["resting"] == 49
     assert b["asked"] == 0 and b["eligible"] == 0
 

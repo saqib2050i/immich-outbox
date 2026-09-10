@@ -168,8 +168,7 @@ async def test_reconciliation_does_not_promise_to_send_missing_assets(rig, monke
     contradicting each other, and neither wrong on its own terms."""
     from app import db, immich, main, settings, worker
 
-    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01",
-                   "backfill_enabled": False})
+    settings.save({"ongoing_enabled": True, "ongoing_from": "2020-01-01"})
     db.upsert_assets([asset(i, size=100, taken="2026-05-05") for i in range(4)])
 
     # Only one survives the next full pass.
@@ -184,7 +183,8 @@ async def test_reconciliation_does_not_promise_to_send_missing_assets(rig, monke
         "assets that cannot be sent were counted as about to be sent"
 
     # And the two views agree.
-    waiting = (await main.backlog())["total"]
+    months = db.waiting_breakdown()
+    waiting = sum(m["total"] for m in months)
     assert waiting == 1
     assert groups.get("queued_soon", 0) == waiting
 

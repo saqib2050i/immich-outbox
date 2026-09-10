@@ -10,6 +10,34 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.0.0
+
+**One rule decides what sends by itself.** Everything from the cut-off date
+onwards; everything older waits to be asked for in Library, a month or a
+file at a time. The backfill window — a start/end range stepped forward by
+hand — is gone. Library already lists every month with what is left in it,
+so the window was a second place for the same decision to live, kept in
+step manually.
+
+**The Queue tab is about the queue again.** It showed the entire ledger by
+month and called it a backlog, which is what made twelve thousand untouched
+photos look like work outstanding. It now shows what is moving, what is in
+the outbox, and files whose dates need correcting. The month view is
+Library's.
+
+**The Dismissed panel is gone.** Excluded files show as "not being sent"
+against their month, where they can be sent again — which is where the
+decision was made. Tools keeps one bulk undo for reversing a sweep.
+
+Also gone: the "point the backfill window here" button, the Previous/Next
+month stepper, and the whole-backlog dismiss buttons, none of which have a
+job any more.
+
+**Upgrading.** Stored `cfg_backfill_*` values are ignored rather than
+migrated — `settings.load()` reads only the keys it knows. Anything the
+backfill window was releasing stops going automatically and appears in
+Library as "only if you ask", where sending the month starts it again.
+
 ## 1.6.0
 
 **A month now says whether its remainder is going anywhere.** "96 left" told
