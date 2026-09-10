@@ -645,10 +645,16 @@ async def month_detail(month: str):
 async def month_send(payload: dict):
     month = str(payload.get("month", ""))
     group = payload.get("group")
-    n = db.force_send_month(month, group)
+    # Deliberately explicit. Everything else refuses to touch a confirmed
+    # asset, so the one path that does should be impossible to reach by
+    # accident.
+    resend = bool(payload.get("resend"))
+    n = db.force_send_month(month, group, resend=resend)
     if n:
         db.log("send", f"{n} file(s) from {month}"
-                       + (f" ({group})" if group else "") + " moved to the front")
+                       + (f" ({group})" if group else "")
+                       + (" queued again, including ones already backed up"
+                          if resend else " moved to the front"))
         async with feeder.CYCLE_LOCK:
             _, used = feeder.reconcile()
             await feeder.top_up(used)

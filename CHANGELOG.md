@@ -10,6 +10,30 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 1.5.0
+
+**Library becomes the place months are managed.** First step of moving that
+job off the Queue tab, where a view of the whole ledger was being presented
+as a backlog.
+
+- **Send a month again, including what is already backed up.** Nothing else
+  could: a scan will not touch an existing row and confirmation is
+  permanent, so a month deleted from Google Photos had no way back. Sending
+  a file Google Photos already holds is not harmful — it hashes the upload
+  and treats a match as already backed up — so this is a cost, not a risk.
+  It stays behind an explicit flag and says what it will do first.
+- **Exclude a month from Library**, beside the month it is about, instead of
+  sweeping the backlog from another tab. Sending the month is the undo.
+- The month row now says how many files are **not being sent**, which was
+  the one figure that let a month look finished without having gone.
+
+**Three send paths queued assets Immich no longer has.** `force_send`,
+`force_send_month` and `dismiss_waiting` had no `missing_at` filter, while
+the screens that count for them all do. So "Send the whole month (53)" acted
+on 53 where the screen showed 33; `claim_batch` refuses them, so the extra
+20 sat pending for good. The same ghost count as before, in the control
+Library is being built around. All three now agree with what is on screen.
+
 ## 1.4.1
 
 Queue page.

@@ -350,6 +350,9 @@ def dismiss_waiting(month: str | None = None, ids: list[str] | None = None,
     """
     sql = ["UPDATE assets SET state='skipped', forced=0",
            "WHERE state IN ('pending','failed')",
+           # Excluded everywhere else, so counting them here would report a
+           # bigger number than the screen the button sits on.
+           "AND missing_at IS NULL",
            "AND id NOT IN (SELECT id FROM motion_parts)"]
     params: dict = {}
 
@@ -1092,8 +1095,14 @@ def list_in_bucket(bucket: str, state: str = "all",
 def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
     """Queue assets now, ignoring the date windows.
 
-    Already-confirmed items are left alone: they are in Google Photos, and
-    re-sending would just create a duplicate.
+    Already-confirmed items are left alone. Re-sending one is not harmful
+    -- Google Photos hashes the upload and treats a match as already backed
+    up -- but it costs a trip through the outbox for nothing, so it takes
+    the deliberate path in force_send_month(resend=True) instead.
+
+    Assets Immich no longer serves are left alone too: claim_batch will not
+    take them, so forcing them only leaves a number on screen that cannot
+    come down.
     """
     c = connect()
     with _lock:
@@ -1103,6 +1112,7 @@ def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
                                       last_error=NULL
                     WHERE {BUCKET_SQL} = ?
                       AND state IN ('pending','failed')
+                      AND missing_at IS NULL
                       AND id NOT IN (SELECT id FROM motion_parts)""",
                 (bucket,),
             )
@@ -1117,6 +1127,7 @@ def force_send(ids: list[str] | None = None, bucket: str | None = None) -> int:
                                       last_error=NULL
                     WHERE id IN ({marks})
                       AND state IN ('pending','failed','skipped')
+                      AND missing_at IS NULL
                       AND id NOT IN (SELECT id FROM motion_parts)""",
                 ids,
             )
@@ -1223,13 +1234,33 @@ def month_detail(month: str) -> dict:
     return {"month": month, "groups": groups}
 
 
-def force_send_month(month: str, group: str | None = None) -> int:
-    """Queue a month, or one of its four categories, ahead of everything else."""
+def force_send_month(month: str, group: str | None = None,
+                     resend: bool = False) -> int:
+    """Queue a month, or one of its four categories, ahead of everything else.
+
+    `resend` also takes back assets already confirmed, which is otherwise
+    refused by invariant 4. It is for the case where a month was deleted
+    from Google Photos and has to go up again: nothing else can put it
+    back, because a scan will not touch an existing row and confirmation is
+    permanent.
+
+    Sending a file Google Photos already holds is not harmful -- it hashes
+    the upload and treats a match as already backed up. The exception is a
+    file whose bytes have changed since it went, which `fix_dates` does, so
+    the caller is expected to say how many of those there are.
+    """
+    states = ["'pending'", "'failed'", "'skipped'"]
+    if resend:
+        states.append("'confirmed'")
     # 'skipped' is included so a dismissed month can be brought back after
     # the originals are restored in Immich -- dismissing is an exclusion,
     # not a tombstone.
     where = ["substr(taken_at,1,7) = ?",
-             "state IN ('pending','failed','skipped')",
+             f"state IN ({','.join(states)})",
+             # claim_batch will not take these, so queueing them only puts a
+             # number on screen that can never come down -- the same ghost
+             # count, in the one control Library is built around.
+             "missing_at IS NULL",
              "id NOT IN (SELECT id FROM motion_parts)"]
     params: list = [month]
     if group:
@@ -1241,9 +1272,16 @@ def force_send_month(month: str, group: str | None = None) -> int:
 
     c = connect()
     with _lock:
+        # The delivery record is cleared with the state. A row that says
+        # 'pending' while still carrying confirmed_at and an outbox_name
+        # points at a file that is not there and a backup that is being
+        # redone, and every view reading those would disagree with the
+        # state beside them.
         cur = c.execute(
             f"""UPDATE assets SET forced=1, state='pending', attempts=0,
-                                  last_error=NULL
+                                  last_error=NULL, confirmed_at=NULL,
+                                  sent_at=NULL, outbox_name=NULL,
+                                  seen_on_phone=0
                 WHERE {' AND '.join(where)}""",
             params,
         )

@@ -1653,9 +1653,13 @@ function monthNode(m, openMonths){
 
   const right = document.createElement("span");
   right.className = "mr";
+  // Dismissed is named here because it is the one figure that makes a
+  // month look finished without being sent: nothing remains, but nothing
+  // went either.
   right.textContent = fmtBytes(m.bytes) + " · " + fmtNum(m.confirmed) + " done"
     + (m.remaining ? " · " + fmtNum(m.remaining) + " left" : "")
-    + (m.queued ? " · " + m.queued + " in outbox" : "");
+    + (m.queued ? " · " + m.queued + " in outbox" : "")
+    + (m.dismissed ? " · " + fmtNum(m.dismissed) + " not being sent" : "");
 
   const tags = document.createElement("span");
   if (m.gain_bytes > 0){
@@ -1745,24 +1749,79 @@ function paintMonthBody(m, host, d){
     host.appendChild(el);
   });
 
-  const remaining = (d.groups || []).reduce(
-    (a, g) => a + g.remaining + (g.dismissed || 0), 0);
-  if (remaining > 0){
-    const foot = document.createElement("div");
-    foot.className = "foot";
-    const all = document.createElement("button");
-    all.textContent = "Send the whole month (" + fmtNum(remaining) + ")";
-    all.onclick = async () => {
-      all.disabled = true; all.textContent = "Queuing";
+  const groups = d.groups || [];
+  const remaining = groups.reduce((a, g) => a + g.remaining + (g.dismissed || 0), 0);
+  const excludable = groups.reduce((a, g) => a + g.remaining, 0);
+  const confirmed = groups.reduce((a, g) => a + g.confirmed, 0);
+
+  const foot = document.createElement("div");
+  foot.className = "foot";
+
+  const post = async (btn, body, working) => {
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = working;
+    try {
       await fetch("/api/month/send", {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({month: m.month})
-      });
+        body: JSON.stringify(body)});
+      monthCache.delete(m.month);
       await tick();
-    };
+    } finally { btn.textContent = was; btn.disabled = false; }
+  };
+
+  if (remaining > 0){
+    const all = document.createElement("button");
+    all.textContent = "Send the whole month (" + fmtNum(remaining) + ")";
+    all.onclick = () => post(all, {month: m.month}, "Queuing");
     foot.appendChild(all);
-    host.appendChild(foot);
   }
+
+  // Excluding a month here is what replaces sweeping the backlog: the
+  // decision belongs beside the month it is about.
+  if (excludable > 0){
+    const no = document.createElement("button");
+    no.className = "ghost";
+    no.textContent = "Don't send (" + fmtNum(excludable) + ")";
+    no.title = "Leaves them in the ledger, sends nothing, and can be undone "
+             + "by sending the month again";
+    no.onclick = async () => {
+      if (!confirm(`Stop sending ${fmtNum(excludable)} file(s) from `
+                 + `${m.month}?\n\nNothing is deleted. Sending the month `
+                 + `again brings them back.`)) return;
+      no.disabled = true;
+      const was = no.textContent; no.textContent = "Excluding";
+      try {
+        await fetch("/api/backlog/dismiss", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({month: m.month})});
+        monthCache.delete(m.month);
+        await tick();
+      } finally { no.textContent = was; no.disabled = false; }
+    };
+    foot.appendChild(no);
+  }
+
+  // The only route back for a month already backed up. Everything else
+  // refuses to touch a confirmed asset, so a month deleted from Google
+  // Photos could not otherwise be put back.
+  if (confirmed > 0){
+    const again = document.createElement("button");
+    again.className = "ghost";
+    again.textContent = "Send again (" + fmtNum(confirmed) + " already backed up)";
+    again.onclick = async () => {
+      if (!confirm(`Send ${fmtNum(confirmed)} file(s) from ${m.month} again?`
+                 + `\n\nThey are recorded as backed up. Google Photos skips `
+                 + `anything it already holds, so this is for a month you have `
+                 + `deleted from Google Photos and want back.\n\nFiles whose `
+                 + `dates were rewritten since they went will upload as new `
+                 + `copies.`)) return;
+      await post(again, {month: m.month, resend: true}, "Queuing");
+    };
+    foot.appendChild(again);
+  }
+
+  if (foot.children.length) host.appendChild(foot);
 }
 
 async function toggleMonth(month, host, btn){
