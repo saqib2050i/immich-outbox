@@ -318,3 +318,75 @@ async def test_waiting_count_excludes_the_resting_library(rig):
                      + [asset(10 + i, size=100, taken="2015-01-01") for i in range(20)])
     s = await status_of(rig)
     assert s["waiting"] == 1, "the resting library was counted as queued"
+
+
+# ---- progress that survives a multi-claim fill ---------------------------
+
+async def test_the_fill_progress_does_not_restart_on_every_claim(rig, monkeypatch):
+    """It used to be created and destroyed inside _fetch_batch, which runs
+    once per claim, so a fill needing several claims showed the bar vanish
+    and start again at zero each time -- and "12 of 40" counted a claim
+    nobody had asked for."""
+    from app import db, feeder, immich, settings
+
+    settings.save({"max_batch_files": 2})        # force several claims
+    db.upsert_assets([asset(i, size=100) for i in range(6)])
+
+    seen = []
+    real = fake_download()
+
+    async def watched(asset_id):
+        b = feeder.BATCH
+        seen.append(None if b is None else b["files_total"])
+        return await real(asset_id)
+
+    monkeypatch.setattr(immich, "stream_original", watched)
+    _, used = feeder.reconcile()
+    assert await feeder.top_up(used) == 6
+
+    assert None not in seen, "progress disappeared between claims"
+    # Totals only ever grow: 2, then 4, then 6 as each claim is made.
+    assert seen == sorted(seen), f"the total went backwards: {seen}"
+    assert seen[-1] > seen[0], f"the total never grew past one claim: {seen}"
+    assert feeder.BATCH is None, "progress must be cleared once the fill ends"
+
+
+async def test_the_fill_progress_is_cleared_even_if_a_claim_raises(rig, monkeypatch):
+    """Otherwise the dashboard shows a bar that never finishes."""
+    from app import db, feeder, immich, settings
+
+    settings.save({"max_batch_files": 2})
+    db.upsert_assets([asset(i, size=100) for i in range(4)])
+
+    async def boom(asset_id):
+        raise RuntimeError("network gone")
+
+    monkeypatch.setattr(immich, "stream_original", boom)
+    _, used = feeder.reconcile()
+    try:
+        await feeder.top_up(used)
+    except Exception:
+        pass
+    assert feeder.BATCH is None
+
+
+# ---- the outbox figures must not be capped by the list ------------------
+
+async def test_the_outbox_count_is_not_capped_by_the_rendered_list(rig, monkeypatch):
+    """queue_contents() returns at most 500 rows. Counting those made a
+    16 GB outbox of ordinary photos report "500 in the outbox" while
+    Overview read the real number off the disk."""
+    from app import db, main
+
+    await fill(monkeypatch, n=5, size=100)
+    assert db.counts()["queued"] == 5
+
+    # Stand in for the server-side cap without seeding 500 files.
+    real = db.queue_contents
+    monkeypatch.setattr(db, "queue_contents", lambda *a, **k: real(*a, **k)[:2])
+
+    q = await main.queue()
+    assert q["shown"] == 2, "the list is still capped"
+    assert q["count"] == 5, "but the count is the whole outbox"
+    assert q["bytes"] == db.counts()["outbox_bytes"], \
+        "and so are the bytes"

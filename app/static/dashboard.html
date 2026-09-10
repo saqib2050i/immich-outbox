@@ -627,10 +627,11 @@
 </div>
 
 <section class="queue" id="nav-queue" data-tab="queue">
-  <h2>Queue</h2>
-  <p class="qnote">Files waiting to go to the outbox. They move a batch at a
-     time, as fast as the outbox empties — which happens when the phone has
-     uploaded them to Google Photos and Smart Storage clears them.</p>
+  <h2>Waiting to be sent</h2>
+  <p class="qnote">Files inside your date windows that have not gone out yet.
+     Photos and videos move in separate lanes, several at once, filling the
+     outbox until it is full — then they wait, because the outbox only empties
+     when the phone has uploaded them to Google Photos.</p>
 
   <div class="qstatus" id="qStatus">
     <span class="qsdot" id="qsDot"></span><span id="qsText">—</span>
@@ -1905,15 +1906,20 @@ async function renderQueue(){
     pipeText.textContent = q.status.detail;
     pipeDot.className = "pipedot " + q.status.state;
 
-    // What this tab lists is the outbox, so that is what the badge counts.
-    // It read `waiting` before, so the badge said 294 over a list of 34.
-    badgeQueue.hidden = !q.count;
-    badgeQueue.textContent = fmtNum(q.count);
+    // The waiting backlog, which is the panel this tab opens with. It was
+    // briefly changed to the outbox count on the belief that the outbox was
+    // all this tab listed -- it is the second panel, below the backlog.
+    badgeQueue.hidden = !q.status.waiting;
+    badgeQueue.textContent = fmtNum(q.status.waiting);
   }
 
   // The bars belong to pollTransfer(), which runs far more often than this.
+  // `shown` can be less than `count`: the list is capped server-side, and a
+  // silently short list is worse than a long one.
+  const shortfall = q.count > (q.shown ?? q.count);
   qSummary.textContent = q.count
     ? `${fmtNum(q.count)} file(s) in the outbox \u00b7 ${fmtBytes(q.bytes)}`
+      + (shortfall ? ` \u00b7 showing the oldest ${fmtNum(q.shown)}` : "")
     : "";
   btnCancelAll.hidden = q.count === 0;
   btnCancelAll.textContent = `Cancel all (${fmtNum(q.count)})`;
@@ -2156,8 +2162,10 @@ function paintTransfer(state){
   });
 
   if (batch){
+    // "this batch" named one claim of forty, which restarted mid-fill and
+    // meant nothing to anyone. This counts the whole fill.
     qpBatchText.textContent =
-      `${fmtNum(batch.files_done)} of ${fmtNum(batch.files_total)} files in this batch`;
+      `${fmtNum(batch.files_done)} of ${fmtNum(batch.files_total)} files this cycle`;
     const pct = batch.bytes_total
       ? Math.min(100, (batch.bytes_done / batch.bytes_total) * 100) : 0;
     qpBatch.style.width = pct + "%";

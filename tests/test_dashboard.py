@@ -155,6 +155,24 @@ def test_the_queue_badge_is_written_in_one_place():
     assert len(writers) == 1, f"{len(writers)} writers of the queue badge"
 
 
+def test_the_queue_badge_counts_the_panel_the_tab_opens_with():
+    """It was changed to the outbox count on the belief that the outbox was
+    all the tab listed. The outbox is the *second* panel; the tab opens on
+    the waiting backlog, so a badge of 34 sat over a list of 294."""
+    line = re.search(r"badgeQueue\.textContent\s*=\s*([^;]+);", HTML).group(1)
+    assert "waiting" in line, \
+        f"the badge does not count the backlog the tab leads with: {line.strip()}"
+
+
+def test_the_tab_and_its_first_panel_do_not_share_a_name():
+    """Tab 'Queue' over panel 'Queue' over panel 'In the outbox' is why
+    "why is it called queue?" kept coming back."""
+    first = re.search(r'<section class="queue"[^>]*>\s*<h2>([^<]+)</h2>', HTML)
+    assert first, "could not find the first queue panel"
+    assert first.group(1).strip().lower() != "queue", \
+        "the first panel repeats the tab's name"
+
+
 def test_a_freed_amount_is_reported_not_just_done():
     """The app reports bytes rather than an item count, so keying off items
     alone made every successful run read 'done' and never say how much."""
