@@ -125,6 +125,28 @@ def test_the_settings_form_hides_with_its_tab():
             f"overrides [data-tab]{{display:none}} and shows settings on every tab")
 
 
+def test_a_hidden_tab_stays_hidden_whatever_else_styles_it():
+    """The general form of the bug below.
+
+    `[data-tab]{display:none}` is one attribute -- specificity (0,1,0) --
+    so any single class that sets `display` ties it, and whichever is
+    written last wins. `.grid{display:grid}` beat it that way and put the
+    three Overview cards on every tab, including Library. `:not(.tab-on)`
+    makes the rule (0,2,0) and the question of source order goes away.
+    """
+    for sel, body in css_rules():
+        if "[data-tab]" not in sel or ".tab-on" in sel.split("[data-tab]")[1][:9]:
+            continue
+        if "display:none" not in body.replace(" ", ""):
+            continue
+        assert ":not(.tab-on)" in sel, (
+            f"`{sel.strip()}` hides tabs on attribute specificity alone, so any "
+            f"later class setting `display` will show that panel on every tab")
+        break
+    else:
+        raise AssertionError("no rule hides the panels of an inactive tab")
+
+
 @pytest.mark.parametrize("element", [
     "cstState", "cstWhy", "cstPaired", "cstSeen", "cstBatt", "cstFree",
     "cstLast", "cstDot", "btnFreeNowS", "btnPair", "btnRepair",

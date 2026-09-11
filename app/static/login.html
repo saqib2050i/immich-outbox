@@ -3,38 +3,57 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1217" media="(prefers-color-scheme: dark)">
 <title>Photo relay — sign in</title>
 <style>
+  /* The same tokens as the dashboard, kept in step by hand -- this page has
+     to load before there is anywhere to share a stylesheet from. */
   :root{
-    --paper:#DCE0DA; --panel:#E6E9E3; --ink:#111E1A; --rule:#A6AFA6; --dim:#5C6660;
-    --transit:#1B4FD8; --alarm:#A82118;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color-scheme:dark light;
+    --paper:#0e1217; --panel:#161b23; --panel-2:#1d232d; --ink:#dde4ee;
+    --dim:#8b98a9; --rule:#242c38; --rule-2:#323c4a;
+    --transit:#4cd7f6; --alarm:#ff9c90; --on-accent:#06222b;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,
+           "Helvetica Neue",Arial,sans-serif;
   }
-  @media (prefers-color-scheme:dark){
-    :root{--paper:#0E1614;--panel:#152220;--ink:#DDE4DE;--rule:#33413C;--dim:#8A968F;
-          --transit:#6E97FF;--alarm:#E4695C;}
+  @media (prefers-color-scheme:light){
+    :root{--paper:#f6f7f9;--panel:#ffffff;--panel-2:#f0f2f6;--ink:#131922;
+          --dim:#5c6879;--rule:#e3e7ee;--rule-2:#cdd4de;
+          --transit:#0f7c9c;--alarm:#c03a2e;--on-accent:#ffffff;}
   }
   *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-       background:var(--paper);color:var(--ink);font-family:var(--mono);padding:24px}
-  form{width:100%;max-width:340px}
-  .eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin:0 0 6px}
-  h1{font-size:24px;margin:0 0 20px;letter-spacing:-.02em;
-     border-bottom:2px solid var(--ink);padding-bottom:14px}
-  h1 .arrow{color:var(--transit)}
-  label{display:block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-        color:var(--dim);margin:0 0 6px}
-  input{width:100%;font:inherit;font-size:15px;background:var(--panel);color:var(--ink);
-        border:1px solid var(--rule);padding:10px 12px}
-  input:focus-visible{outline:2px solid var(--transit);outline-offset:1px}
-  button{width:100%;margin-top:14px;font:inherit;font-size:12px;letter-spacing:.12em;
-         text-transform:uppercase;background:var(--ink);color:var(--paper);
-         border:1px solid var(--ink);padding:11px;cursor:pointer}
-  button:hover{background:transparent;color:var(--ink)}
-  button:disabled{opacity:.5;cursor:default}
-  .err{color:var(--alarm);font-size:12px;margin-top:12px;min-height:1.2em}
-  .note{font-size:11px;color:var(--dim);margin-top:18px;line-height:1.5;
-        border-top:1px solid var(--rule);padding-top:12px}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;min-height:100svh;display:flex;align-items:center;justify-content:center;
+       background:var(--paper);color:var(--ink);font-family:var(--sans);
+       font-size:14px;line-height:1.5;padding:24px 20px;
+       -webkit-font-smoothing:antialiased}
+  form{width:100%;max-width:380px;background:var(--panel);
+       border:1px solid var(--rule);border-radius:12px;padding:28px 26px 24px;
+       box-shadow:0 1px 2px rgba(0,0,0,.3),0 16px 40px -20px rgba(0,0,0,.6)}
+  .eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+           color:var(--dim);margin:0 0 8px;font-weight:600}
+  h1{font-size:21px;margin:0 0 24px;letter-spacing:-.025em;font-weight:680;
+     line-height:1.3;border-bottom:1px solid var(--rule);padding-bottom:18px}
+  h1 .arrow{color:var(--transit);font-weight:400}
+  label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+        color:var(--dim);margin:0 0 7px;font-weight:600}
+  input{width:100%;font:inherit;font-size:15px;background:var(--panel-2);color:var(--ink);
+        border:1px solid var(--rule-2);border-radius:8px;padding:11px 13px;min-height:42px}
+  input:focus-visible{outline:2px solid var(--transit);outline-offset:1px;
+                      border-color:transparent}
+  button{width:100%;margin-top:16px;font:inherit;font-size:13px;font-weight:600;
+         letter-spacing:.02em;background:var(--transit);color:var(--on-accent);
+         border:1px solid var(--transit);border-radius:8px;padding:12px;
+         min-height:44px;cursor:pointer;transition:filter .12s ease}
+  button:hover{filter:brightness(1.1)}
+  button:focus-visible{outline:2px solid var(--transit);outline-offset:2px}
+  button:disabled{opacity:.5;cursor:default;filter:none}
+  .err{color:var(--alarm);font-size:13px;margin-top:14px;min-height:1.2em}
+  .note{font-size:12px;color:var(--dim);margin-top:22px;line-height:1.6;
+        border-top:1px solid var(--rule);padding-top:16px}
+  .note b{color:var(--ink);font-family:var(--mono);font-weight:600}
 </style>
 </head>
 <body>
