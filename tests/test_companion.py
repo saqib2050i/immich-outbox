@@ -163,6 +163,8 @@ async def test_a_full_outbox_with_work_behind_it_asks_by_itself(rig, monkeypatch
     db.upsert_assets([asset(i, size=100) for i in range(3, 8)])
     db.set_meta("outbox_used", str(rig.used()))
 
+    # The server decides on its own cycle; the phone only collects.
+    companion.consider()
     answer = companion.poll({"device": "pixel", "battery": 90, "charging": True})
     assert answer["free_space"] is True
     assert "outbox full" in answer["reason"]
@@ -170,17 +172,37 @@ async def test_a_full_outbox_with_work_behind_it_asks_by_itself(rig, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_room_in_the_outbox_is_not_a_reason_to_wake_the_phone(rig, monkeypatch):
+async def test_the_tail_of_a_finished_library_still_gets_asked_for(rig, monkeypatch):
+    """The case this declined for a long time, and the expensive one.
+
+    Once everything is queued there is nothing waiting *behind* the outbox,
+    so the old test stopped at its first line and said no. But the files in
+    the outbox are not backed up until they disappear, and only a free-up
+    makes them disappear -- so the last batch of every run sat on the phone
+    until Smart Storage's thirty-day clock reached it.
+    """
     from app import companion, db
 
     enable()
     rig.cap(10_000)
-    await fill_to_cap(monkeypatch, n=1, size=100)
-    db.upsert_assets([asset(9, size=100)])
+    await fill_to_cap(monkeypatch, n=3, size=100)
     db.set_meta("outbox_used", str(rig.used()))
+    # Nothing at all is waiting to be sent: the library is fully queued.
+    assert db.smallest_sendable(__import__("app").settings.load().eligibility) is None
 
+    companion.consider()
     answer = companion.poll({"device": "pixel", "battery": 90, "charging": True})
-    assert answer["free_space"] is False
+    assert answer["free_space"] is True
+    assert "nothing behind them" in answer["reason"]
+
+
+def test_an_empty_outbox_is_not_a_reason_to_wake_the_phone(rig):
+    """The cooldown stops it thrashing; this stops it asking for nothing."""
+    from app import companion
+
+    enable()
+    assert companion.consider() is None
+    assert companion.poll({"device": "pixel"})["free_space"] is False
 
 
 @pytest.mark.asyncio
@@ -193,6 +215,7 @@ async def test_auto_can_be_switched_off(rig, monkeypatch):
     db.upsert_assets([asset(i, size=100) for i in range(3, 8)])
     db.set_meta("outbox_used", str(rig.used()))
 
+    companion.consider()
     assert companion.poll({"device": "pixel"})["free_space"] is False
 
 
@@ -208,9 +231,11 @@ async def test_it_waits_out_the_cooldown_before_asking_again(rig, monkeypatch):
     db.upsert_assets([asset(i, size=100) for i in range(3, 8)])
     db.set_meta("outbox_used", str(rig.used()))
 
+    companion.consider()
     assert companion.poll({"device": "pixel"})["free_space"] is True
     companion.record({"ok": True, "detail": "done"})
 
+    assert companion.consider() is None
     again = companion.poll({"device": "pixel"})
     assert again["free_space"] is False
     assert "waiting" in again["reason"]
@@ -358,6 +383,123 @@ def test_the_interval_is_never_faster_than_a_minute(rig):
     assert companion.poll({"device": "p", "charging": False})["next_poll_seconds"] == 60
 
 
+@pytest.mark.asyncio
+async def test_the_ask_is_made_and_logged_without_the_phone_saying_anything(
+        rig, monkeypatch):
+    """The failure that made this unreadable.
+
+    The decision used to live inside poll(), so it was evaluated *by the
+    phone asking*. A phone that had gone quiet meant the condition was
+    never tested, request() was never called -- and request() is what
+    writes the log line. Fifteen hours of a stalled pipeline produced no
+    entry of any kind, so there was nothing to diagnose from but an
+    absence.
+    """
+    from app import companion, db
+
+    enable()
+    rig.cap(300)
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    db.set_meta("outbox_used", str(rig.used()))
+
+    # No poll(). The phone is asleep and says nothing at all.
+    assert companion.consider() is not None
+    lines = [e["msg"] for e in db.recent_events(50)]
+    assert any("free-up requested" in m for m in lines), lines
+
+
+def test_asking_twice_over_is_not_a_thing(rig):
+    """consider() runs every feeder cycle -- a minute or two apart."""
+    from app import companion
+
+    enable()
+    companion.request("manual")
+    assert companion.consider() is None
+
+
+def test_the_phone_is_not_told_to_linger_unless_the_server_says_so(rig):
+    from app import companion
+
+    enable()
+    assert companion.poll({"device": "pixel"})["dwell_seconds"] == 0
+
+    enable(companion_dwell_enabled=True, companion_dwell_seconds=90)
+    assert companion.poll({"device": "pixel"})["dwell_seconds"] == 90
+
+    # Switched off again mid-flight: the next check-in stops lingering.
+    enable(companion_dwell_enabled=False, companion_dwell_seconds=90)
+    assert companion.poll({"device": "pixel"})["dwell_seconds"] == 0
+
+
+def test_the_backup_panel_labels_reach_the_phone(rig):
+    from app import companion
+
+    enable()
+    assert companion.poll({"device": "p"})["backup_labels"] == list(
+        companion.DEFAULT_BACKUP)
+    enable(companion_backup_labels="Sichern, Hochladen")
+    assert companion.poll({"device": "p"})["backup_labels"] == [
+        "sichern", "hochladen"]
+
+
+@pytest.mark.asyncio
+async def test_what_google_photos_says_about_itself_confirms_nothing(
+        rig, monkeypatch):
+    """The tempting one, and the one that would forge the proof.
+
+    "Backing up" and its absence are read off somebody else's screen. If a
+    string like that could mark an asset backed up, a renamed label would
+    silently confirm a library that never left the house.
+    """
+    from app import companion, db
+
+    enable()
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    before = db.counts()
+
+    companion.record({"ok": True, "detail": "done", "backup": {
+        "active": False, "remaining": 0, "detail": "Backup complete"}})
+
+    assert db.counts() == before
+    assert companion.snapshot()["backup"]["active"] is False
+
+
+def test_a_backup_that_stops_moving_is_reported_as_stuck(rig):
+    """A slow backup and a stopped one look identical from the server. The
+    count not moving between runs is the only difference there is."""
+    from datetime import datetime, timedelta, timezone
+    from app import alerts, companion, db
+
+    enable(companion_cooldown_minutes=60)
+    companion.poll({"device": "pixel"})
+    for _ in range(2):
+        companion.record({"ok": True, "detail": "x", "backup": {
+            "active": True, "remaining": 250, "eta_minutes": 146,
+            "detail": "Backing up 250 photos"}})
+
+    keys = {a["key"] for a in alerts.evaluate()}
+    assert "companion_backup_stuck" not in keys, "not stuck yet — give it time"
+
+    stuck = json.loads(db.get_meta("companion_backup"))
+    stuck["since"] = (datetime.now(timezone.utc)
+                      - timedelta(hours=5)).isoformat()
+    db.set_meta("companion_backup", json.dumps(stuck))
+    assert "companion_backup_stuck" in {a["key"] for a in alerts.evaluate()}
+
+
+def test_a_backup_still_moving_is_not_reported_as_stuck(rig):
+    from app import alerts, companion
+
+    enable()
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "x", "backup": {
+        "active": True, "remaining": 250, "detail": "Backing up 250 photos"}})
+    companion.record({"ok": True, "detail": "x", "backup": {
+        "active": True, "remaining": 180, "detail": "Backing up 180 photos"}})
+
+    assert "companion_backup_stuck" not in {a["key"] for a in alerts.evaluate()}
+
+
 def test_the_check_in_is_recorded(rig):
     from app import companion
     enable()
@@ -377,7 +519,7 @@ def test_a_phone_that_stops_checking_in_raises_an_alert(rig):
     from datetime import datetime, timedelta, timezone
     from app import alerts, companion, db
 
-    enable(companion_offline_hours=12)
+    enable(companion_offline_minutes=60)
     companion.poll({"device": "pixel"})
     stale = datetime.now(timezone.utc) - timedelta(hours=20)
     db.set_meta("companion_seen_at", stale.isoformat())

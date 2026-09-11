@@ -108,7 +108,26 @@ def evaluate() -> list[dict]:
                                    "on the phone, so the outbox will stay "
                                    "full. Check the app is still running and "
                                    "the phone is on the network."})
-        elif snap["state"] == "failed":
+        # Google Photos says it is backing up, and has said the same number
+        # for three runs running. A stopped backup and a slow one look
+        # identical from here -- the count not moving is the difference,
+        # and until the phone could read it there was nothing to compare.
+        backup = snap.get("backup") or {}
+        if backup.get("active"):
+            stuck = _age_hours(backup.get("since"))
+            window = max(1.0, cfg.companion_cooldown_minutes * 3 / 60)
+            if stuck is not None and stuck >= window:
+                out.append({"key": "companion_backup_stuck",
+                            "title": "Google Photos has stopped uploading",
+                            "message": (
+                                f"The phone still reports "
+                                f"{backup.get('remaining', 0)} to go and the "
+                                f"figure has not moved in {stuck:.0f}h "
+                                f"({backup.get('detail','')}). Nothing will "
+                                "leave the outbox until it resumes — open "
+                                "Google Photos on the phone, and check it is "
+                                "not restricted by battery optimisation.")})
+        if snap["state"] == "failed":
             out.append({"key": "companion_failed",
                         "title": "Phone could not free space",
                         "message": snap["line"] + " Google Photos may have "

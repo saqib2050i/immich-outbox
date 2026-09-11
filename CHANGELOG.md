@@ -10,6 +10,51 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.4.0
+
+**The companion stops going quiet, and starts saying what Google Photos is
+doing.** Diagnosed from a live pipeline that moved nothing for fifteen
+hours while every panel on the dashboard looked healthy.
+
+- **A free-up is asked for whenever the outbox is holding anything.** The
+  old rule was "the outbox is full *and* work is queued behind it", on the
+  reasoning that freeing space buys nothing if nothing will refill. True for
+  throughput, false for confirmation: a file in the outbox is not backed up
+  until it disappears, and only a free-up makes it disappear. So once a
+  library was fully queued there was nothing behind the outbox, the rule
+  declined, and the last batch of every run sat on the phone until Smart
+  Storage's thirty-day clock reached it. Measured: 1,518 files, 15.3 GB,
+  twelve hours, not one request made.
+- **And it is asked for on the server's own cycle.** The decision used to
+  live inside the phone's check-in, so it was evaluated *by the phone
+  asking* — and `request()` is what writes the log line. A quiet phone
+  therefore produced no entry of any kind, and an absence is the worst thing
+  to have to diagnose from. `feeder.housekeeping()` decides now; the phone
+  only collects. The one judgement left at poll time is the battery, which
+  is the only fact the phone knows and the server does not.
+- **"Warn if silent for" is in minutes, and defaults to 60.** It was twelve
+  hours, set when the phone checked in twice an hour. Since 2.2.0 a phone on
+  a charger checks in every minute, so twelve hours was 720 missed check-ins
+  before anybody was told.
+- **The phone can stay in Google Photos after a run**, off by default and
+  switched from the server. Photos uploads far faster in the foreground, and
+  says so itself on the same screen: *"Keep the app open for faster backup"*.
+  Doze and the standby bucket an app sinks into when nobody opens it are why
+  a shelf phone backs up nothing all day and then starts the moment it is
+  picked up.
+- **And while it is there, it reads how far along the backup is** —
+  *"Backing up 250 photos"*, *"2 hours, 26 min remaining"* — and reports the
+  count, the estimate and the raw line. The dashboard shows it; a new alert
+  fires when the count has not moved for three runs, because a slow backup
+  and a stopped one are otherwise identical from the server. The labels are
+  a setting, like the button labels already were.
+- **None of it confirms anything.** What Photos says about its own backup
+  changes what the dashboard shows and when the server bothers asking. It
+  never changes an asset's state. Confirmation stays in `feeder.reconcile()`,
+  derived from files that are no longer on disk — a string scraped off
+  somebody else's screen that could mark an asset backed up would forge the
+  only proof this system has, and a renamed label would do it silently.
+
 ## 2.3.0
 
 **The dashboard is rebuilt to look like something from this decade, and to
