@@ -178,8 +178,239 @@ def test_a_report_is_never_silent(rig):
 
 def test_a_file_with_no_date_at_all_is_flagged_not_ignored(rig):
     from app import diagnose
-    out = diagnose._findings(_report({"Make": "Google"}))
-    assert any("no DateTimeOriginal" in f["text"] for f in out), out
+    out = diagnose._findings(_report({"EXIF:Make": "Google"}))
+    assert any("not in the file at all" in f["text"] for f in out), out
+    assert any("upload" in f["text"] for f in out), out
+
+
+# ---- the date Google Photos reads ---------------------------------------
+#
+# The fault: Immich shows a correct date held in its own database, put
+# there by a Google Takeout sidecar at import, while the file itself
+# carries DateTimeOriginal present and *empty*. Google reads the file, not
+# Immich, finds nothing, and files the photo under the day it was uploaded.
+# Confirmed on PXL_20240105_034733992.jpg, which landed on today despite a
+# perfectly parseable date sitting in its own filename.
+
+
+@pytest.mark.parametrize("value", [
+    "",                          # a NUL-filled tag, as exiftool renders it
+    "                   ",       # a space-filled one
+    "0000:00:00 00:00:00",       # an mp4 whose creation_time is zero
+    "    :  :     :  :  ",
+])
+def test_a_tag_that_is_there_and_says_nothing(value):
+    """Measured against real exiftool 13.25 output, not guessed: each of
+    these is a tag the file *has*, holding no date."""
+    from app import diagnose
+    assert diagnose.is_blank(value) is True
+
+
+@pytest.mark.parametrize("value", [
+    "2023:01:01 07:57:59", "2023:01:01", "+05:00", "Google",
+])
+def test_a_tag_with_something_in_it_is_not_blank(value):
+    from app import diagnose
+    assert diagnose.is_blank(value) is False
+
+
+def test_a_blank_date_is_not_silence(rig):
+    """The whole point. It used to be filtered out one line before the
+    report was assembled, so the confirmed case produced no finding at all
+    and an em-dash on screen -- identical to a file with nothing wrong."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "",
+                          "EXIF:Make": "Google", "File:MIMEType": "image/jpeg"})
+    assert v["dated"] is False
+    assert v["state"] == diagnose.BLANK
+    assert "empty" in v["reason"]
+    assert "upload" in v["reason"]
+
+
+def test_blank_and_missing_are_told_apart(rig):
+    """Same consequence, different causes, so they are never merged: one is
+    an export that blanked the field, the other a file that never had it."""
+    from app import diagnose
+    blank = diagnose.verdict({"EXIF:DateTimeOriginal": ""})
+    gone = diagnose.verdict({"EXIF:Make": "Google"})
+    assert blank["state"] == diagnose.BLANK
+    assert gone["state"] == diagnose.MISSING
+    assert blank["reason"] != gone["reason"]
+    assert not blank["dated"] and not gone["dated"]
+
+
+def test_a_good_photo_is_said_to_be_good(rig):
+    """Reporting "fine" out loud, rather than staying quiet, is what makes
+    a quiet report mean something."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59",
+                          "EXIF:OffsetTimeOriginal": "+05:00"})
+    assert v["dated"] is True
+    assert v["level"] == "ok"
+    assert "2023:01:01 07:57:59" in v["reason"]
+
+
+def test_a_date_in_the_wrong_tag_does_not_count(rig):
+    """XMP carrying a date while EXIF's is blank is still a file Google
+    Photos will misdate -- but the value is named, because it is exactly
+    what a correction would be copied from."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "",
+                          "XMP:DateTimeOriginal": "2024:01:05 08:47:33"})
+    assert v["dated"] is False
+    assert "not the tag Google Photos reads" in v["reason"]
+    assert v["others"] == [{"tag": "XMP:DateTimeOriginal",
+                            "value": "2024:01:05 08:47:33"}]
+
+
+def test_a_bare_tag_name_still_resolves(rig):
+    """-G qualifies every key by group. A dict written by hand, or a
+    reading taken before that flag was added, must not come back empty."""
+    from app import diagnose
+    assert diagnose.pick({"DateTimeOriginal": "x"},
+                         "EXIF:DateTimeOriginal") == ("x", "DateTimeOriginal")
+    assert diagnose.pick({"EXIF:DateTimeOriginal": "x"},
+                         "EXIF:DateTimeOriginal") == ("x", "EXIF:DateTimeOriginal")
+
+
+def test_exif_is_preferred_over_xmp_for_the_same_name(rig):
+    """Without -G exiftool returns both under the bare name and the second
+    silently wins, which would report a date in the tag Google reads when
+    the value came from one it does not."""
+    from app import diagnose
+    value, key = diagnose.pick({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59",
+                                "XMP:DateTimeOriginal": "1999:09:09 09:09:09"},
+                               "EXIF:DateTimeOriginal", "XMP:DateTimeOriginal")
+    assert (value, key) == ("2023:01:01 07:57:59", "EXIF:DateTimeOriginal")
+
+
+# ---- video ---------------------------------------------------------------
+
+VIDEO = {"File:MIMEType": "video/mp4"}
+
+
+def test_a_video_with_a_create_date_is_reported_fine_not_skipped(rig):
+    """Videos are not the fault here, and a tool that says nothing about
+    them cannot be used to prove that."""
+    from app import diagnose
+    v = diagnose.verdict({**VIDEO, "QuickTime:CreateDate": "2024:01:05 03:47:33"})
+    assert v["dated"] is True
+    assert v["tag"] == "CreateDate"
+    assert "UTC" in v["reason"]
+
+
+def test_a_video_whose_creation_time_is_zero(rig):
+    """Measured: an mp4 with creation_time 0 reports 0000:00:00 00:00:00,
+    which is neither a missing tag nor a date."""
+    from app import diagnose
+    v = diagnose.verdict({**VIDEO, "QuickTime:CreateDate": "0000:00:00 00:00:00",
+                          "QuickTime:MediaCreateDate": "0000:00:00 00:00:00"})
+    assert v["dated"] is False
+    assert v["state"] == diagnose.BLANK
+
+
+def test_a_video_is_judged_by_quicktime_not_by_exif(rig):
+    from app import diagnose
+    v = diagnose.verdict({**VIDEO, "QuickTime:CreateDate": "2024:01:05 03:47:33",
+                          "EXIF:DateTimeOriginal": ""})
+    assert v["dated"] is True
+
+
+def test_the_ledger_decides_the_kind_when_the_file_will_not_say(rig):
+    from app import diagnose
+    v = diagnose.verdict({"QuickTime:CreateDate": "2024:01:05 03:47:33"},
+                         kind="VIDEO")
+    assert v["dated"] is True
+
+
+# ---- against what Immich holds ------------------------------------------
+
+def test_a_still_is_compared_against_the_wall_clock(rig):
+    """DateTimeOriginal is local time with no zone and Immich's
+    localDateTime is the same wall clock, so they are compared naively --
+    the trailing Z Immich sends is an artefact of the transport."""
+    from app import diagnose
+    says = {"ok": True, "local_date_time": "2024-01-05T08:47:33.000Z",
+            "file_created_at": "2024-01-05T03:47:33.000Z",
+            "time_zone": "Asia/Karachi"}
+    out = diagnose._agrees_with_immich(
+        {"EXIF:DateTimeOriginal": "2024:01:05 08:47:33"}, says, "IMAGE")
+    assert out["level"] == "ok"
+
+
+def test_a_pakistan_era_still_is_not_shifted_five_hours(rig):
+    """Comparing DateTimeOriginal against fileCreatedAt instead would make
+    every GMT+5 photo in this library look five hours wrong. It is the same
+    error the filename check already had to be corrected for."""
+    from app import diagnose
+    says = {"ok": True, "local_date_time": "2024-01-05T08:47:33.000Z",
+            "file_created_at": "2024-01-05T03:47:33.000Z"}
+    out = diagnose._agrees_with_immich(
+        {"EXIF:DateTimeOriginal": "2024:01:05 08:47:33",
+         "EXIF:OffsetTimeOriginal": "+05:00"}, says, "IMAGE")
+    assert out["level"] == "ok", out
+
+
+def test_a_video_is_compared_against_the_instant(rig):
+    """QuickTime CreateDate is UTC by specification, so it goes against
+    fileCreatedAt -- the other way round from a still."""
+    from app import diagnose
+    says = {"ok": True, "local_date_time": "2024-01-05T08:47:33.000Z",
+            "file_created_at": "2024-01-05T03:47:33.000Z"}
+    out = diagnose._agrees_with_immich(
+        {**VIDEO, "QuickTime:CreateDate": "2024:01:05 03:47:33"},
+        says, "VIDEO")
+    assert out["level"] == "ok", out
+
+
+def test_a_file_that_disagrees_with_immich_is_reported(rig):
+    from app import diagnose
+    says = {"ok": True, "local_date_time": "2024-01-05T08:47:33.000Z"}
+    out = diagnose._agrees_with_immich(
+        {"EXIF:DateTimeOriginal": "2019:06:01 12:00:00"}, says, "IMAGE")
+    assert out["level"] == "warn"
+    assert "would use the file's" in out["text"]
+
+
+def test_immich_being_unreachable_is_not_a_verdict(rig):
+    """A trace that could not reach Immich still has two copies to compare,
+    so this stays quiet rather than inventing a disagreement."""
+    from app import diagnose
+    assert diagnose._agrees_with_immich(
+        {"EXIF:DateTimeOriginal": "2024:01:05 08:47:33"},
+        {"ok": False, "error": "connection refused"}, "IMAGE") is None
+
+
+# ---- what the report shows ----------------------------------------------
+
+def test_the_table_shows_a_blank_tag_as_present_and_empty(rig):
+    """On screen a blank tag used to draw the same em-dash as a missing
+    one, which is the fault wearing the disguise of a clean report."""
+    from app import diagnose
+    rows = {r["tag"]: r for r in diagnose._tag_table(
+        {"EXIF:DateTimeOriginal": "", "EXIF:Make": "Google"})}
+    assert rows["DateTimeOriginal"]["state"] == diagnose.BLANK
+    assert rows["DateTimeOriginal"]["text"] == "present but empty"
+    assert rows["CreateDate"]["state"] == diagnose.MISSING
+
+
+def test_a_blank_tag_survives_into_the_comparison(rig):
+    """_dates fed the copy-against-copy diff and dropped anything falsy, so
+    a date blanked in transit would have compared equal to one never there."""
+    from app import diagnose
+    assert diagnose._dates({"EXIF:DateTimeOriginal": ""}) == {
+        "DateTimeOriginal": ""}
+
+
+def test_both_copies_get_a_verdict(rig):
+    """The answer is allowed to differ between them -- that is the whole
+    point of stamping one on its way past."""
+    from app import diagnose
+    out = diagnose._findings(_report({"EXIF:DateTimeOriginal": ""},
+                                     {"EXIF:DateTimeOriginal": ""}))
+    said = [f["text"] for f in out]
+    assert any(t.startswith("Immich's original:") for t in said), said
+    assert any(t.startswith("the outbox copy:") for t in said), said
 
 
 # ---- through the endpoint ------------------------------------------------

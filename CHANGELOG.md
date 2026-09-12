@@ -10,6 +10,46 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.7.0
+
+**The trace says whether Google Photos will date a file, or file it under
+the upload.** Many photos in this library carry `DateTimeOriginal` present
+and *empty* — the tag is in the file, its twenty bytes blank. Immich shows
+the right date because it holds one of its own, put there by a Google
+Takeout sidecar at import; Google Photos reads the file, finds nothing, and
+files the photo under today. Confirmed on
+`PXL_20240105_034733992.jpg`, which landed on the upload date despite a
+perfectly good date sitting in its own filename, which Google did not use.
+
+The tool could not see it. `_dates()` dropped anything falsy one line
+before the report was assembled, so a blanked tag came back identical to a
+tag that was never there, and the dashboard drew the same em-dash for both.
+A file with the exact fault produced a clean-looking report. So:
+
+- **Present-but-empty is now its own state**, apart from missing, and the
+  two are never merged — same consequence, different causes. It covers all
+  three shapes real files use: a NUL-filled tag, a space-filled one, and an
+  mp4 whose `creation_time` is zero and reads `0000:00:00 00:00:00`.
+- **Every copy gets a verdict**, in those words: *would be dated correctly
+  by Google*, or *would fall back to upload time*, with the reason and the
+  tag it was decided by. Both copies get one, because the answer is allowed
+  to differ between them — which is the whole point of stamping one on its
+  way past.
+- **Videos are reported, not skipped.** They are not the fault here, and a
+  tool silent about them cannot be used to prove that. A video is judged by
+  QuickTime's `CreateDate`, which is UTC by specification, where a still is
+  judged by `DateTimeOriginal`, which is local time with no zone at all.
+- **What Immich holds is shown beside what the file holds**, fetched per
+  trace: `localDateTime`, `fileCreatedAt` and the zone. The gap between the
+  two columns *is* the fault, and it was previously invisible.
+- Tags are read group-qualified now. Without that, exiftool returns
+  `EXIF:DateTimeOriginal` and `XMP:DateTimeOriginal` under one name and the
+  second quietly wins — which would report a date in the tag Google reads
+  when the value came from one it does not.
+
+Detection only. Nothing is written to any file, and the correction itself
+is the next step.
+
 ## 2.6.0
 
 **Tools can trace one file from Immich to the phone and say where it

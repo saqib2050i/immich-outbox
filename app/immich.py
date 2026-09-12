@@ -29,6 +29,10 @@ import httpx
 
 SEARCH = "/api/search/metadata"
 ORIGINAL = "/api/assets/{id}/original"
+# The singular form is what Immich called this before 1.106. Only ever
+# tried after the plural one 404s.
+ASSET = "/api/assets/{id}"
+ASSET_OLD = "/api/asset/{id}"
 
 _version: tuple[int, int, int] | None = None
 _version_text: str = "unknown"
@@ -275,6 +279,45 @@ async def stream_original(asset_id: str):
                 "is likely offline or moved out of an external library")
         raise RuntimeError(msg)
     return resp, client
+
+
+async def asset_detail(asset_id: str) -> dict:
+    """What Immich itself holds about one asset's date.
+
+    The file cannot settle this on its own. Immich keeps three separate
+    answers -- `localDateTime`, the wall clock where the shutter fired;
+    `fileCreatedAt`, the same moment as a UTC instant; and
+    `exifInfo.timeZone`, which is often null -- and for a photo imported
+    from a Google Takeout sidecar those came from the sidecar rather than
+    from the file, which is exactly how Immich can show a date the file
+    does not carry.
+
+    Read-only, one asset, and never fatal: a trace that could not reach
+    Immich still has two copies to compare, so this returns why it failed
+    rather than raising.
+    """
+    try:
+        async with _client(20.0) as client:
+            r = await client.get(ASSET.format(id=asset_id))
+            if r.status_code == 404:
+                r = await client.get(ASSET_OLD.format(id=asset_id))
+            if r.status_code != 200:
+                return {"ok": False, "error": describe_error(r)}
+            item = r.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+    exif = item.get("exifInfo") or {}
+    return {
+        "ok": True,
+        "local_date_time": item.get("localDateTime") or None,
+        "file_created_at": item.get("fileCreatedAt") or None,
+        "time_zone": exif.get("timeZone") or None,
+        "exif_date_time_original": exif.get("dateTimeOriginal") or None,
+        "make": exif.get("make") or None,
+        "model": exif.get("model") or None,
+        "type": (item.get("type") or "").upper(),
+    }
 
 
 async def ping() -> bool:

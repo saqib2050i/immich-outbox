@@ -15,6 +15,14 @@ photo's metadata would need exactly that permission. Syncthing verifies
 every block it transfers, so a file it reports in sync is byte-identical to
 the one in the outbox -- a stronger statement than re-reading its EXIF.
 
+It also answers the question that decides where a photo lands: will Google
+Photos read a date out of this file, or file it under the day it was
+uploaded? Much of this library carries DateTimeOriginal present and *empty*
+-- the date lived in a Google Takeout sidecar, Immich read it into its own
+database at import, and the file left carrying a blank field. Immich shows
+the right date on every screen while Google Photos dates the photo to the
+upload, and the two facts never meet anywhere but here.
+
 Nothing here writes. It downloads Immich's copy to a temporary file, reads
 it, and deletes it.
 """
@@ -35,14 +43,25 @@ from . import config, db, feeder, immich, settings
 # about. `-Warning` with `-a` is the point of the last one -- structural
 # damage shows up there and nowhere else.
 EXIF_TAGS = [
+    # Stills. DateTimeOriginal is the one Google Photos reads; the rest are
+    # here to say what else the file has when that one is empty.
     "-DateTimeOriginal", "-CreateDate", "-ModifyDate",
     "-OffsetTime", "-OffsetTimeOriginal", "-OffsetTimeDigitized",
     "-SubSecDateTimeOriginal", "-GPSDateTime",
-    "-XMP:DateTimeOriginal", "-XMP:CreateDate",
+    "-XMP:DateTimeOriginal", "-XMP:CreateDate", "-XMP:DateCreated",
+    # Video. QuickTime:CreateDate is UTC by specification, unlike every
+    # tag above it, and MediaCreateDate corroborates it.
     "-QuickTime:CreateDate", "-QuickTime:ModifyDate",
+    "-QuickTime:MediaCreateDate", "-QuickTime:TrackCreateDate",
+    "-QuickTime:CreationDate",
     "-Make", "-Model", "-Software", "-MIMEType",
     "-ImageWidth", "-ImageHeight", "-FileModifyDate",
-    "-a", "-Warning",
+    # -G qualifies every key by group, so EXIF:DateTimeOriginal and
+    # XMP:DateTimeOriginal stay apart. Without it exiftool returns both
+    # under the bare name and the second silently wins -- which would
+    # report a date in the tag Google reads when the value came from one
+    # it does not.
+    "-G", "-a", "-Warning",
 ]
 
 # What the camera called it. An independent witness to the moment of the
@@ -287,12 +306,265 @@ def _offset_hours(value) -> float | None:
     return sign * (int(m.group(2)) + int(m.group(3)) / 60)
 
 
-def _dates(exif: dict) -> dict:
-    """Just the tags that decide what date Google Photos gives a file."""
-    keep = ("DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal",
-            "OffsetTime", "SubSecDateTimeOriginal", "FileModifyDate",
-            "XMP:DateTimeOriginal", "QuickTime:CreateDate")
-    return {k: exif[k] for k in keep if k in exif and exif[k] not in (None, "")}
+def pick(exif: dict, *candidates: str) -> tuple[object, str | None]:
+    """The first of these tags the file actually carries, and which one.
+
+    Keys arrive group-qualified from `-G`. A bare name is tried too, so a
+    dict assembled by hand in a test still resolves, and so a reading taken
+    before `-G` was added does not silently come back empty.
+    """
+    for key in candidates:
+        if key in exif:
+            return exif[key], key
+        bare = key.split(":")[-1]
+        if bare in exif:
+            return exif[bare], bare
+    return None, None
+
+
+def is_blank(value: object) -> bool:
+    """A tag that is present and says nothing.
+
+    This is the whole problem in one function. A Takeout export can leave
+    DateTimeOriginal in the file with its twenty bytes blanked, and an mp4
+    whose creation_time is zero reports `0000:00:00 00:00:00` -- neither is
+    a missing tag and neither is a date, and both were being filtered out
+    one line above this as though they were nothing at all. Google Photos
+    reads no date from either and files the upload under today.
+    """
+    if not isinstance(value, str):
+        return False
+    # Strip the punctuation a date is made of and see whether anything was
+    # ever written between it. "0000:00:00 00:00:00" collapses to zeros, a
+    # space-filled tag to nothing at all, and "Google" to itself.
+    text = value.replace("\x00", "").strip()
+    bare = text.replace(":", "").replace("-", "").replace(" ", "")
+    return bare == "" or bare.strip("0") == ""
+
+
+# The four things a date tag can be. "missing" and "blank" have the same
+# consequence and different causes, so they are never merged.
+MISSING, BLANK, UNREADABLE, VALUE = "missing", "blank", "unreadable", "value"
+
+
+def date_state(exif: dict, *candidates: str) -> tuple[str, object, str | None]:
+    """(state, raw value, which tag) for a date the file may or may not have."""
+    raw, key = pick(exif, *candidates)
+    if key is None:
+        return MISSING, None, None
+    if is_blank(raw):
+        return BLANK, raw, key
+    if _exif_dt(raw) is None:
+        return UNREADABLE, raw, key
+    return VALUE, raw, key
+
+
+def is_video(exif: dict, kind: str | None = None) -> bool:
+    """What the file is, asked of the file before the ledger."""
+    mime, _ = pick(exif, "File:MIMEType", "MIMEType")
+    if isinstance(mime, str) and mime:
+        return mime.lower().startswith("video/")
+    return (kind or "").upper() == "VIDEO"
+
+
+# The tag Google Photos reads, per kind, and what else the file might be
+# carrying when that one is empty. Order is priority: the first with a
+# value is the one quoted.
+PHOTO_DATE = ("EXIF:DateTimeOriginal",)
+VIDEO_DATE = ("QuickTime:CreateDate",)
+
+# Where a capture time could honestly be recovered from when the tag above
+# is empty. ModifyDate is deliberately not here: it is when the file was
+# last written, which for a Takeout export is the export itself, and
+# offering it as a capture time would date a whole library to the day it
+# was downloaded. Composite tags are not here either -- exiftool derives
+# them from the very tags being examined, so on a blank file they restate
+# the blank with an offset glued to it.
+PHOTO_SPARE = ("XMP:DateTimeOriginal", "XMP:CreateDate", "XMP:DateCreated",
+               "EXIF:CreateDate")
+VIDEO_SPARE = ("QuickTime:CreationDate", "QuickTime:MediaCreateDate",
+               "QuickTime:TrackCreateDate")
+
+# Everything shown side by side, whether or not it has anything in it.
+# Wider than the lists above on purpose: a tag that must never be *used*
+# is still worth *seeing*.
+PHOTO_SHOWN = PHOTO_DATE + PHOTO_SPARE + (
+    "EXIF:ModifyDate", "EXIF:OffsetTimeOriginal", "EXIF:OffsetTime",
+    "EXIF:Make", "EXIF:Model", "EXIF:Software", "File:FileModifyDate")
+VIDEO_SHOWN = VIDEO_DATE + VIDEO_SPARE + (
+    "QuickTime:ModifyDate", "QuickTime:Make", "QuickTime:Model",
+    "File:FileModifyDate")
+
+# A file's own groups, whose names are unambiguous within it.
+NATIVE = {False: ("EXIF", "File"), True: ("QuickTime", "File")}
+
+
+def label(key: str, video: bool = False) -> str:
+    """A tag's name, kept qualified wherever dropping the group would lie.
+
+    `EXIF:DateTimeOriginal` and `XMP:DateTimeOriginal` are different tags
+    that Google Photos treats differently, and shortening both to
+    "DateTimeOriginal" put them on one row -- the same collapse that
+    requesting them without -G causes, arriving by the back door.
+    """
+    group, _, name = key.rpartition(":")
+    return name if not group or group in NATIVE[video] else key
+
+
+def _dates(exif: dict, kind: str | None = None) -> dict:
+    """Every tag that decides the date, said out loud including the empty ones.
+
+    It used to drop anything falsy, which meant a blanked DateTimeOriginal
+    -- the exact fault this is for -- came back indistinguishable from a
+    file that never had one, and the dashboard drew an em-dash for both.
+    """
+    video = is_video(exif, kind)
+    out: dict = {}
+    for key in (VIDEO_SHOWN if video else PHOTO_SHOWN):
+        raw, found = pick(exif, key)
+        if found is None:
+            continue
+        out[label(key, video)] = "" if raw is None else str(raw)
+    return out
+
+
+def _tag_table(exif: dict, kind: str | None = None) -> list[dict]:
+    """The same tags with their state, for a reader rather than a diff."""
+    video = is_video(exif, kind)
+    rows = []
+    for key in (VIDEO_SHOWN if video else PHOTO_SHOWN):
+        raw, found = pick(exif, key)
+        name = label(key, video)
+        if found is None:
+            rows.append({"tag": name, "state": MISSING, "text": "not in the file"})
+        elif is_blank(raw):
+            rows.append({"tag": name, "state": BLANK,
+                         "text": "present but empty"})
+        else:
+            rows.append({"tag": name, "state": VALUE, "text": str(raw)})
+    return rows
+
+
+def _naive(value: object) -> datetime | None:
+    """An ISO timestamp with whatever zone it carries thrown away.
+
+    Immich serialises `localDateTime` with a trailing Z, but it is the wall
+    clock where the shutter fired and not a UTC instant -- the Z is an
+    artefact of the transport. Comparing it against DateTimeOriginal, which
+    EXIF also defines as local time with no zone, means comparing the two
+    naively and on purpose.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "").replace("z", "")
+    text = re.sub(r"[+-]\d{2}:?\d{2}$", "", text)
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text[:26], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _instant(value: object) -> float | None:
+    """An ISO timestamp as a POSIX instant, zone respected."""
+    return db.capture_time(value if isinstance(value, str) else None)
+
+
+def verdict(exif: dict, kind: str | None = None) -> dict:
+    """Will Google Photos date this file, or file it under the upload?
+
+    The only question that matters about a file on its way to the phone,
+    and it is decided by one tag: DateTimeOriginal for a still, QuickTime's
+    CreateDate for a video. Everything else in the file is a note.
+
+    A confirmed case sets the bar: PXL_20240105_034733992.jpg carries
+    DateTimeOriginal present and empty, Immich shows it correctly from a
+    Takeout sidecar, and Google Photos filed it under the day it was
+    uploaded -- with a perfectly parseable date sitting in the filename,
+    which Google did not use. So a name is never counted as a date here.
+    """
+    video = is_video(exif, kind)
+    want = VIDEO_DATE if video else PHOTO_DATE
+    spare = VIDEO_SPARE if video else PHOTO_SPARE
+    tag = want[0].split(":")[-1]
+    state, raw, key = date_state(exif, *want)
+
+    others = []
+    for cand in spare:
+        st, value, found = date_state(exif, cand)
+        if st == VALUE:
+            others.append({"tag": label(cand, video), "value": str(value)})
+
+    if state == VALUE:
+        note = (" QuickTime records it in UTC, which is the specification and "
+                "what Google Photos expects of a video."
+                if video else "")
+        return {"dated": True, "level": "ok", "tag": tag, "state": state,
+                "value": str(raw), "others": others,
+                "headline": "Would be dated correctly by Google",
+                "reason": f"{tag} carries {str(raw).strip()}." + note}
+
+    blank = (f"{tag} is in the file but holds nothing but zeros — an mp4 "
+             "whose creation_time was never set, which a re-encode or an "
+             "export strips."
+             if video else
+             f"{tag} is in the file but empty — blank bytes where the date "
+             "should be. That is not a missing tag and it is not a date, and "
+             "it is what a Google Takeout export leaves behind when the date "
+             "lived in the sidecar rather than in the file.")
+    why = {
+        BLANK: blank,
+        MISSING: f"{tag} is not in the file at all.",
+        UNREADABLE: f"{tag} holds {str(raw)!r}, which is not a date.",
+    }[state]
+    extra = ""
+    if others:
+        extra = (" The file does carry a date elsewhere — "
+                 + ", ".join(f"{o['tag']} {o['value'].strip()}" for o in others)
+                 + " — but that is not the tag Google Photos reads.")
+    return {"dated": False, "level": "bad", "tag": tag, "state": state,
+            "value": None if raw is None else str(raw), "others": others,
+            "headline": "Would fall back to upload time",
+            "reason": why + extra + " Google Photos will file it under the day "
+                      "it was uploaded."}
+
+
+def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None:
+    """Having a date is not the same as having the right one.
+
+    Two different comparisons, and swapping them is a five-hour error. A
+    still's DateTimeOriginal is local time with no zone, so it goes against
+    Immich's `localDateTime`, which is the same wall clock. A video's
+    QuickTime CreateDate is UTC by specification, so it goes against
+    `fileCreatedAt`, which is the instant.
+    """
+    if not says.get("ok"):
+        return None
+    video = is_video(exif, kind)
+    state, raw, _ = date_state(exif, *(VIDEO_DATE if video else PHOTO_DATE))
+    if state != VALUE:
+        return None
+
+    if video:
+        mine = _instant(str(raw).replace(":", "-", 2) + "Z")
+        theirs = _instant(says.get("file_created_at"))
+        label = "Immich's fileCreatedAt, the UTC instant"
+    else:
+        a, b = _exif_dt(raw), _naive(says.get("local_date_time"))
+        mine = a.timestamp() if a else None
+        theirs = b.timestamp() if b else None
+        label = "Immich's localDateTime, the wall clock where it was taken"
+    if mine is None or theirs is None:
+        return None
+    if abs(mine - theirs) <= 120:
+        return {"level": "ok", "text":
+                f"The date in the file agrees with {label}."}
+    return {"level": "warn", "text":
+            f"The file says one thing and Immich another: the file's date is "
+            f"{abs(mine - theirs) / 3600:+.2f}h from {label}. Google Photos "
+            "would use the file's."}
 
 
 def _clock_finding(name: str, want: datetime, got: datetime,
@@ -308,7 +580,7 @@ def _clock_finding(name: str, want: datetime, got: datetime,
     reading is not evidence of anything at all.
     """
     drift = (got - want).total_seconds() / 3600
-    zone = exif.get("OffsetTimeOriginal") or exif.get("OffsetTime")
+    zone = pick(exif, "EXIF:OffsetTimeOriginal", "EXIF:OffsetTime")[0]
     off = _offset_hours(zone)
 
     if abs(drift) < 1 / 60:
@@ -357,18 +629,34 @@ def _findings(rep: dict) -> list[dict]:
         if err:
             out.append({"level": "bad", "text": f"Could not read {where}: {err}"})
 
-    # 1. The camera's own name against the file's own clock.
-    want = filename_time(name)
+    kind = asset.get("kind")
     ref = src if src and "error" not in src else dst
-    got = _exif_dt(ref.get("DateTimeOriginal"))
+
+    # 1. The question the whole thing is for: will Google Photos read a date
+    #    out of this, or file it under the upload? Asked of each copy that
+    #    could be read, because the answer is allowed to differ between them
+    #    -- that is the entire point of stamping one on its way past.
+    for where, exif in (("Immich's original", src), ("the outbox copy", dst)):
+        if not exif or "error" in exif:
+            continue
+        v = verdict(exif, kind)
+        out.append({"level": v["level"],
+                    "text": f"{where}: {v['headline']}. {v['reason']}"})
+
+    # 2. And having a date is not the same as having the right one.
+    if ref and "error" not in ref:
+        agree = _agrees_with_immich(ref, rep.get("says") or {}, kind)
+        if agree:
+            out.append(agree)
+
+    # 3. The camera's own name against the file's own clock.
+    want = filename_time(name)
+    got = _exif_dt(pick(ref, *(VIDEO_DATE if is_video(ref, kind)
+                               else PHOTO_DATE))[0])
     if want and got:
         out.append(_clock_finding(name, want, got, ref))
-    elif want and not got:
-        out.append({"level": "warn", "text":
-                    "The file carries no DateTimeOriginal, so Google Photos "
-                    "will date it by its modification time instead."})
 
-    # 2. The two copies against each other -- the question the relay is
+    # 4. The two copies against each other -- the promise the relay is
     #    actually on the hook for.
     a, b = rep.get("immich") or {}, rep.get("outbox") or {}
     if a.get("ok") and b.get("present"):
@@ -377,8 +665,9 @@ def _findings(rep: dict) -> list[dict]:
                         "The outbox copy is byte-for-byte identical to "
                         "Immich's original."})
         else:
-            changed = sorted({k for k in set(_dates(src)) | set(_dates(dst))
-                              if src.get(k) != dst.get(k)})
+            a_d, b_d = _dates(src, kind), _dates(dst, kind)
+            changed = sorted({k for k in set(a_d) | set(b_d)
+                              if a_d.get(k) != b_d.get(k)})
             cfg = settings.load()
             why = ("date rewriting is on and this asset is flagged as corrected"
                    if cfg.fix_dates and asset.get("date_mismatch")
@@ -390,17 +679,18 @@ def _findings(rep: dict) -> list[dict]:
                         + (f" Tags that differ: {', '.join(changed)}."
                            if changed else "")})
 
-    # 3. Whatever exiftool wanted to complain about.
+    # 5. Whatever exiftool wanted to complain about.
     for where, exif in (("Immich's copy", src), ("the outbox copy", dst)):
         w = exif.get("Warning")
         for line in (w if isinstance(w, list) else [w] if w else []):
             out.append({"level": "warn",
                         "text": f"exiftool on {where}: {line}"})
 
-    # 4. What the ledger believes, against what the file says.
+    # 6. What the ledger believes, against what the file says.
     if got and asset.get("exif_taken_at"):
         led = db.capture_time(asset["exif_taken_at"])
-        off = _offset_hours(ref.get("OffsetTimeOriginal") or ref.get("OffsetTime")) or 0
+        off = _offset_hours(pick(ref, "EXIF:OffsetTimeOriginal",
+                                 "EXIF:OffsetTime")[0]) or 0
         file_instant = got.timestamp() - off * 3600 - (
             datetime.utcfromtimestamp(0).timestamp())
         if led is not None and abs(led - file_instant) > 120:
@@ -448,16 +738,24 @@ async def trace(filename: str, send: bool = False) -> dict:
         rep["asset"]["outbox_name"] = row.get("outbox_name")
         rep["asset"]["state"] = row.get("state")
 
+    # What Immich itself holds. A photo imported from a Takeout sidecar can
+    # show a perfectly good date here while the file carries none at all,
+    # and without this side of it there is no way to see that from a screen.
+    rep["says"] = await immich.asset_detail(row["id"])
+
     rep["immich"] = await _immich_copy(row["id"], int(row.get("size") or 0))
     rep["outbox"] = _outbox_copy(row.get("outbox_name"))
     rep["phone"] = await _phone_copy(row.get("outbox_name"))
+    kind = row.get("kind")
     for key in ("immich", "outbox"):
         exif = rep[key].get("exif")
         # Only when there is something to have read. An empty `dates` on a
         # copy that could not be opened reads as "no dates in the file",
         # which is a different and much calmer statement than the truth.
         if isinstance(exif, dict) and "error" not in exif:
-            rep[key]["dates"] = _dates(exif)
+            rep[key]["dates"] = _dates(exif, kind)
+            rep[key]["tags"] = _tag_table(exif, kind)
+            rep[key]["verdict"] = verdict(exif, kind)
     rep["findings"] = _findings(rep)
     return rep
 
