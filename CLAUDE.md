@@ -270,6 +270,25 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
 
+**Blank poisons the fallback; absent does not.** Two files from this
+library, the same route, both stamped with a correct modification time,
+landing nine hundred days apart:
+
+    Snapchat-618209934.jpg   tag absent          -> Jan 1 2024, 6:30 AM
+    PXL_20240101_062038690   tag present, empty  -> today, 12:33 PM
+
+One variable. A blank tag evidently reads to Android's media scanner as
+metadata it cannot parse, and it never reaches the modification time; an
+absent tag falls through cleanly. Which makes the blank-versus-missing
+distinction the thing that *predicts* where a photo lands, not merely a
+description of what is in it — so `verdict()` rescues a MISSING tag with a
+good mtime and never a BLANK one, and says out loud why the correct
+`FileModifyDate` two rows below it does not help.
+
+It also narrows what needs fixing. A file with no date tag at all is
+already landing correctly on the mtime this service stamps. It is the
+blank-tag files that are broken.
+
 **A modification time is a real carrier, and the verdict has to count it.**
 `feeder.stamp_capture_time()` sets every delivered file's mtime to Immich's
 capture instant, Syncthing preserves it to the phone, and Google Photos

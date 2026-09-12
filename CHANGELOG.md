@@ -34,6 +34,20 @@ confirmed case is UTC+0, where the two readings cannot be told apart.
 Only a copy **read in place** is credited with its mtime. Immich's is
 fetched to a temp file moments earlier and is always today.
 
+**And only a tag that is absent.** A blank one is not rescued, which was
+measured rather than reasoned: two files from this library took the same
+route with the same correct modification time and landed nine hundred days
+apart — `Snapchat-618209934.jpg`, tag absent, on Jan 1 2024 6:30 AM, and
+`PXL_20240101_062038690.jpg`, tag present and empty, on today at 12:33 PM.
+A blank tag evidently reads to the media scanner as metadata it cannot
+parse, and it never reaches the mtime.
+
+That makes blank-versus-missing the thing that *predicts* where a photo
+lands rather than just describing what is in it, and it narrows the fault:
+files with no date tag at all are already landing correctly. The report
+now says, on a blank-tag file, why the correct `FileModifyDate` two rows
+below the verdict does not save it.
+
 This also retracts a correction made in 2.7.1. `needs_date_fix()` once said
 a dateless file is safe because its modification time carries the date;
 that was called a disproven premise and removed. It is true, it is

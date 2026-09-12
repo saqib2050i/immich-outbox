@@ -558,8 +558,22 @@ def verdict(exif: dict, kind: str | None = None, *,
     # against Immich rather than assumed: a file downloaded to a temp
     # directory has today's mtime and must not be credited with it, which is
     # why only a copy read in place passes one in.
+    #
+    # MISSING only, and that is measured rather than reasoned. Two files
+    # went the same route with the same correct mtime and landed in
+    # different years:
+    #
+    #   Snapchat-618209934.jpg   tag absent         -> Jan 1 2024, 6:30 AM
+    #   PXL_20240101_062038690   tag present, empty -> today, 12:33 PM
+    #
+    # A blank tag poisons the fallback -- the scanner evidently reads the
+    # file as carrying metadata, fails to parse it, and never reaches the
+    # modification time. An absent tag falls through cleanly. So a blank one
+    # is not rescued here, however good the mtime beside it looks.
     want = db.capture_time(taken_at)
-    if mtime is not None and want is not None and abs(mtime - want) <= 120:
+    rescued = (state == MISSING and mtime is not None and want is not None
+               and abs(mtime - want) <= 120)
+    if rescued:
         when = datetime.fromtimestamp(mtime, timezone.utc).strftime(
                    "%Y-%m-%d %H:%M:%S")
         return {"dated": True, "level": "warn", "tag": tag, "state": state,
@@ -575,6 +589,15 @@ def verdict(exif: dict, kind: str | None = None, *,
                           "it carries no time zone."}
 
     extra = ""
+    if (state == BLANK and mtime is not None and want is not None
+            and abs(mtime - want) <= 120):
+        extra += (" Its modification time is correct — this service stamps "
+                  "every delivered file with Immich's capture instant — and "
+                  "that does not save it. A file with no date tag at all "
+                  "falls through to the mtime and lands on the right day; "
+                  "one carrying a blank tag does not, which is the "
+                  "difference between two files from this library that took "
+                  "the same route and landed nine hundred days apart.")
     if others:
         extra = (" The file does carry a date elsewhere — "
                  + ", ".join(f"{o['tag']} {o['value'].strip()}" for o in others)

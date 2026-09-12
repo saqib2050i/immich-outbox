@@ -909,3 +909,49 @@ def test_the_tag_still_beats_the_modification_time(rig):
                          "IMAGE", mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
     assert v["level"] == "ok"
     assert v["headline"] == "Would be dated correctly by Google"
+
+
+# ---- blank poisons the fallback; absent does not ------------------------
+#
+# Measured, not reasoned. Two files from this library, the same route
+# (Immich -> outbox -> Syncthing -> Pixel -> Google Photos), both stamped
+# with a correct modification time, landing nine hundred days apart:
+#
+#   Snapchat-618209934.jpg   tag absent          -> Jan 1 2024, 6:30 AM
+#   PXL_20240101_062038690   tag present, empty  -> today, 12:33 PM
+#
+# One variable. A blank tag evidently reads to the media scanner as
+# metadata it cannot parse, and it never reaches the modification time.
+
+KARACHI_TAKEN = "2024-01-01T06:20:38.000Z"
+KARACHI_MTIME = _dt.datetime(2024, 1, 1, 6, 20, 38,
+                             tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_a_blank_tag_is_not_rescued_by_a_good_modification_time(rig):
+    """The whole finding in one assertion. This is the file that proved it,
+    and crediting it with its mtime would call a broken file good."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "", "EXIF:CreateDate": ""},
+                         "IMAGE", mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert v["dated"] is False, v
+    assert v["headline"] == "Would fall back to upload time"
+
+
+def test_and_the_report_says_why_the_good_mtime_does_not_help(rig):
+    """The table shows a correct FileModifyDate two lines below the verdict.
+    Without this the reader draws exactly the wrong conclusion from it."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": ""}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert "does not save it" in v["reason"]
+    assert "no date tag at all falls through" in v["reason"]
+
+
+def test_an_absent_tag_with_the_same_mtime_is_rescued(rig):
+    """Same modification time, same everything, one difference."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert v["dated"] is True, v
+    assert "modification time" in v["headline"]
