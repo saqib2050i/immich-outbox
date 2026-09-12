@@ -1121,3 +1121,250 @@ def test_a_genuine_utc_photo_on_its_mtime_is_simply_right(rig):
                          mtime=SNAP_MTIME, taken_at=SNAP_TAKEN, says=says)
     assert v["level"] == "ok"
     assert "lands right" in v["reason"]
+
+
+def test_immichs_copy_is_judged_on_its_metadata_alone(rig):
+    """It is fetched to a temp file, so it has no delivered modification
+    time. Saying only "would fall back to upload time" puts a cross beside a
+    file the pipeline actually handles, one line above the tick saying so."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert v["dated"] is False
+    assert "temporary file" in v["reason"]
+    assert "outbox copy below" in v["reason"]
+
+
+def test_the_delivered_copy_carries_no_such_caveat(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN)
+    assert "temporary file" not in v["reason"]
+
+
+# ---- one wall clock, corrected once -------------------------------------
+#
+# The report stated two different times for one photo, two lines apart:
+# "Immich knows when this was taken -- 06:29:52 in UTC+0" and then "this
+# library's rule applies: +05:00". If the rule applies the wall clock is
+# 11:29:52. It applied the correction to the verdict and not to the time it
+# printed above it.
+
+def test_the_rule_moves_the_clock_it_is_applied_to(rig):
+    from app import diagnose
+    _rule(rig)
+    local, off, kind = diagnose.wall_clock(BLIND_SAYS, {},
+                                           "2024-01-01T06:30:52Z")
+    assert kind == "assumed" and off == 5.0
+    assert local.strftime("%H:%M:%S") == "11:30:52"
+
+
+def test_a_zone_immich_already_knew_is_not_applied_twice(rig):
+    """localDateTime is the wall clock wherever Immich had a zone. Adding
+    the offset again would push a Karachi photo to 16:20."""
+    from app import diagnose
+    _rule(rig)
+    local, off, kind = diagnose.wall_clock(GPS_SAYS, {},
+                                           "2024-01-01T06:20:38Z")
+    assert kind == "gps" and off == 5.0
+    assert local.strftime("%H:%M:%S") == "11:20:38"
+
+
+def test_the_report_prints_the_corrected_clock(rig):
+    """The contradiction, gone."""
+    from app import diagnose
+    _rule(rig)
+    rep = _report({"EXIF:Software": "Picasa"}, name="Snapchat-215438238.jpg",
+                  taken_at="2024-01-01T06:29:52Z")
+    rep["says"] = dict(BLIND_SAYS, local_date_time="2024-01-01T06:29:52.000Z")
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "11:29:52" in said, said
+    assert "06:29:52 in UTC+0" not in said, said
+
+
+def test_immichs_copy_is_not_headed_for_the_upload_date(rig):
+    """It is judged on metadata alone, but the relay stamps what it
+    delivers -- so saying "upload time" full stop describes a hypothetical
+    nobody is in, one line above the tick that says what really happens."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert "stamped with Immich's capture time" in v["reason"]
+    assert "rather than by the upload" in v["reason"]
+
+
+def test_with_no_date_in_the_ledger_the_upload_date_really_is_it(rig):
+    """Nothing to stamp one with, so the hypothetical is the reality."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=None, downloaded=True)
+    assert "upload date really is where this would land" in v["reason"]
+
+
+def test_the_finding_and_the_card_state_the_same_verdict(rig):
+    """_findings recomputed the verdict from the exif alone, dropping the
+    modification time and the zone -- so the finding line said "would fall
+    back to upload time" directly above a card saying "dated by its
+    modification time", about one file."""
+    from app import diagnose
+    rep = _report({"EXIF:Software": "Picasa"}, {"EXIF:Software": "Picasa"})
+    rep["outbox"]["verdict"] = {
+        "dated": True, "level": "warn",
+        "headline": "Dated by its modification time, 5h out",
+        "reason": "…"}
+    rep["immich"]["verdict"] = {
+        "dated": False, "level": "bad",
+        "headline": "Its own metadata would not date it", "reason": "…"}
+    said = [f["text"] for f in diagnose._findings(rep)
+            if f.get("kind") == "verdict"]
+    assert any("Dated by its modification time, 5h out" in t for t in said), said
+    assert not any("fall back to upload time" in t for t in said), said
+
+
+def test_a_stamped_delivery_is_not_told_it_lands_on_the_upload_date(rig):
+    """The clause said the delivered copy carries Immich's capture time and
+    the next sentence said Google Photos would file it under the upload,
+    in one paragraph."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert "under the day it was uploaded" not in v["reason"], v["reason"]
+    assert v["headline"] == "Its own metadata would not date it"
+
+
+def test_but_with_nothing_to_stamp_it_still_says_upload_time(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=None, downloaded=True)
+    assert v["headline"] == "Would fall back to upload time"
+
+
+# ---- phase 2: what a correction would be --------------------------------
+#
+# Nothing here writes. EXIF gives no choice between "correct the time" and
+# "record the zone": DateTimeOriginal is defined as local time with no zone,
+# so the value written IS the wall clock and the offset is what stops it
+# being ambiguous. Writing the instant there with an offset beside it says
+# the photo was taken five hours earlier than it was.
+
+def _traced(exif, says, taken_at, verdict_over=None, kind="IMAGE"):
+    from app import diagnose
+    v = diagnose.verdict(exif, kind, mtime=None, taken_at=taken_at, says=says)
+    if verdict_over:
+        v.update(verdict_over)
+    return {"asset": {"kind": kind, "taken_at": taken_at},
+            "says": says,
+            "outbox": {"present": True, "exif": exif, "verdict": v},
+            "immich": {"ok": True, "exif": exif}}
+
+
+@pytest.mark.parametrize("hours,text", [
+    (5.0, "+05:00"), (-5.0, "-05:00"), (5.5, "+05:30"),
+    (5.75, "+05:45"), (0.0, "+00:00"), (-3.5, "-03:30"),
+])
+def test_an_offset_is_written_from_whole_minutes(hours, text):
+    """India is at +05:30 and Nepal at +05:45. A format that rounds the
+    hour writes +06:30 for the first of those."""
+    from app import diagnose
+    assert diagnose.offset_text(hours) == text
+
+
+def test_a_blank_dated_photo_is_proposed_the_wall_clock(rig):
+    """The value is the wall clock, not the instant. DateTimeOriginal is
+    local by definition and Immich's localDateTime is already local here,
+    because the zone came from the coordinates."""
+    from app import diagnose
+    rep = _traced({"EXIF:DateTimeOriginal": ""}, GPS_SAYS,
+                  "2024-01-01T06:20:38.000Z")
+    p = diagnose.propose(rep)
+    assert p["needed"] is True
+    w = {x["tag"]: x for x in p["writes"]}
+    assert w["DateTimeOriginal"]["value"] == "2024:01:01 11:20:38"
+    assert w["OffsetTimeOriginal"]["value"] == "+05:00"
+    assert "coordinates" in w["OffsetTimeOriginal"]["from"]
+
+
+def test_a_no_zone_photo_has_the_rule_added_to_the_clock(rig):
+    """Immich reports UTC because it has nothing to go on, so its
+    localDateTime is the instant and the wall clock is that plus the rule.
+    Proposing localDateTime unchanged would write the fault back in."""
+    from app import diagnose
+    _rule(rig)
+    rep = _traced({"EXIF:Software": "Picasa"}, BLIND_SAYS,
+                  "2024-01-01T06:30:52.000Z")
+    p = diagnose.propose(rep)
+    w = {x["tag"]: x for x in p["writes"]}
+    assert w["DateTimeOriginal"]["value"] == "2024:01:01 11:30:52"
+    assert w["OffsetTimeOriginal"]["value"] == "+05:00"
+    assert "rule" in w["OffsetTimeOriginal"]["from"]
+
+
+def test_every_proposed_value_names_where_it_came_from(rig):
+    """The whole point of a proposal you are meant to review."""
+    from app import diagnose
+    rep = _traced({"EXIF:DateTimeOriginal": ""}, GPS_SAYS,
+                  "2024-01-01T06:20:38.000Z")
+    for w in diagnose.propose(rep)["writes"]:
+        assert w["tag"] and w["value"] and w["from"], w
+
+
+def test_a_file_that_is_already_right_is_proposed_nothing(rig):
+    from app import diagnose
+    rep = _traced({"EXIF:DateTimeOriginal": "2024:01:01 11:20:38",
+                   "EXIF:OffsetTimeOriginal": "+05:00"}, GPS_SAYS,
+                  "2024-01-01T06:20:38.000Z")
+    p = diagnose.propose(rep)
+    assert p["needed"] is False
+    assert p["writes"] == []
+    assert "Nothing to correct" in p["why"]
+
+
+def test_without_a_zone_nothing_is_proposed_and_it_says_why(rig):
+    """The instant is known and the wall clock is not, so there is no
+    honest value for a tag defined as local time."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "", "assume_zone_offset": ""})
+    rep = _traced({"EXIF:Software": "Picasa"}, BLIND_SAYS,
+                  "2024-01-01T06:30:52.000Z")
+    p = diagnose.propose(rep)
+    assert p["needed"] is False
+    assert "time zone is not known" in p["why"]
+    assert "instant is known and the wall clock is not" in p["why"]
+
+
+def test_a_video_is_proposed_the_instant_and_no_offset(rig):
+    """QuickTime records CreateDate in UTC by specification -- the opposite
+    of a still, and the one place the instant is the right value."""
+    from app import diagnose
+    rep = _traced({"File:MIMEType": "video/mp4",
+                   "QuickTime:CreateDate": "0000:00:00 00:00:00"},
+                  GPS_SAYS, "2024-01-01T06:20:38.000Z", kind="VIDEO")
+    p = diagnose.propose(rep)
+    assert p["needed"] is True
+    assert [w["tag"] for w in p["writes"]] == ["QuickTime:CreateDate"]
+    assert p["writes"][0]["value"] == "2024:01:01 06:20:38"
+    assert "fileCreatedAt" in p["writes"][0]["from"]
+
+
+def test_a_proposal_is_never_a_write(rig):
+    """Phase 2 is a description. Nothing in this module's proposal path
+    touches a file or the ledger."""
+    import inspect
+    from app import diagnose
+    body = inspect.getsource(diagnose.propose)
+    for forbidden in ("subprocess", "open(", "os.utime", "UPDATE", "exiftool"):
+        assert forbidden not in body, forbidden
+
+
+async def test_the_trace_carries_the_proposal(rig):
+    """The button reveals it rather than fetching it: it reads nothing the
+    trace has not already read, so a second round trip would only buy a
+    second download of Immich's copy."""
+    from app import db, diagnose
+    db.upsert_assets([asset(1, name="IMG_0001.jpg")])
+    rep = await diagnose.trace("IMG_0001.jpg")
+    assert "proposal" in rep
+    # No Immich here, so there is nothing to propose from -- and it says so
+    # rather than returning an empty box.
+    assert rep["proposal"]["needed"] is False
+    assert rep["proposal"]["why"]

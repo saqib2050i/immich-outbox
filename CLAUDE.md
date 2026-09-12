@@ -270,6 +270,33 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
 
+**Proposing a correction (phase 2).** `diagnose.propose()` describes what
+would be written and writes nothing -- a test asserts its source contains
+no `subprocess`, no `open(`, no `os.utime` and no `UPDATE`. It rides on the
+trace rather than a second endpoint, because it reads nothing the trace has
+not already read, and the button in Tools only reveals it.
+
+EXIF gives no choice between correcting the time and recording the zone.
+`DateTimeOriginal` is *defined* as local time with no zone, so the value
+written is the wall clock and `OffsetTimeOriginal` is what stops it being
+ambiguous. Writing the UTC instant there with an offset beside it says the
+photo was taken five hours earlier than it was.
+
+The wall clock is derived two different ways and using the wrong one is the
+five-hour error again:
+
+    zone from GPS or the file   localDateTime is already the wall clock
+    zone from the owner's rule  localDateTime is the INSTANT, so add the offset
+
+The second holds because Immich reports UTC when it has nothing to go on,
+so its `localDateTime` is the instant wearing a local label. A video is the
+third case and the opposite of both: QuickTime's `CreateDate` is UTC by
+specification, so it takes `fileCreatedAt` and no offset belongs beside it.
+
+Where the zone cannot be established at all, nothing is proposed and the
+report says why -- the instant is known and the wall clock is not, and
+there is no honest value for a tag defined as local time.
+
 **A zone Immich reports is not always a zone Immich knows.** It derives one
 from GPS when the file carries no offset tag, and reports UTC when it has
 neither -- the same string, opposite facts, five hours apart for most of

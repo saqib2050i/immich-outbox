@@ -10,6 +10,77 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.9.0
+
+**Phase 2: the trace can propose a correction, and writes nothing.** Where
+the verdict says a file's timestamp needs correcting, Tools shows a *Suggest
+a correction* button, and it lays out every tag that would be written, its
+value, and which Immich field the value came from. A test asserts the
+proposal's own source contains no `subprocess`, no `open(`, no `os.utime`
+and no `UPDATE`: it is a description.
+
+EXIF gives no choice between correcting the time and recording the zone.
+`DateTimeOriginal` is *defined* as local time with no zone, so the value
+written is the wall clock and `OffsetTimeOriginal` is what stops it being
+ambiguous. Writing the instant there with an offset beside it would say the
+photo was taken five hours earlier than it was.
+
+The wall clock comes from two different places depending on what is known,
+and using the wrong one is that same five-hour error:
+
+| zone known from | what `localDateTime` is | proposed value |
+|---|---|---|
+| the file, or GPS | the wall clock | as it stands |
+| the owner's rule | the **instant** | plus the offset |
+
+Because Immich reports UTC when it has nothing to go on. A video is the
+third case and the opposite of both — QuickTime's `CreateDate` is UTC by
+specification, so it takes `fileCreatedAt` and no offset goes beside it.
+
+Where no zone can be established, nothing is proposed and the report says
+why: the instant is known and the wall clock is not, and there is no honest
+value for a tag defined as local time.
+
+Offsets are formatted from whole minutes, so India comes out at `+05:30`
+and Nepal at `+05:45` rather than being rounded to the hour.
+
+## 2.8.2
+
+**The report stated two different times for one photo, and two opposite
+verdicts about it.**
+
+`_findings()` recomputed the verdict from the EXIF alone rather than using
+the one `trace()` had already worked out, so it dropped the modification
+time and the zone — and the finding line read *would fall back to upload
+time* directly above a card reading *dated by its modification time*, about
+the same file. There is one verdict per copy now and both places print it.
+
+The wall clock had the same shape of fault. Immich's `localDateTime` is the
+wall clock only where Immich knows the zone; where it does not, it is the
+instant wearing a local label, so the owner's rule has to be *added* to it.
+The report printed the raw value beside the rule that contradicts it —
+"taken 06:29:52 in UTC+0" two lines above "this library's rule applies, so
++05:00". `wall_clock()` applies the correction once, and the findings and
+the page both take it from there.
+
+And Immich's own copy is no longer told it will land on the upload date.
+It is judged on its metadata alone because it was fetched to a temporary
+file — but the copy this service delivers is stamped with Immich's capture
+time, so where the ledger has a date, the upload date never comes into it.
+Saying otherwise put a cross beside a file the pipeline handles, one line
+above the tick that said so.
+
+## 2.8.1
+
+**A cross beside a file the pipeline handles.** Tracing an undated file
+showed two verdicts: *Immich's original — would fall back to upload time*
+with a cross, and *In the outbox — dated by its modification time* with a
+tick, one line apart on the same photo. Both true, and the first read as a
+fault. Immich's copy is fetched here to a temporary file, so it has no
+delivered modification time to be judged on; that verdict is about its
+metadata alone, and it now says so and points at the copy the phone
+actually receives.
+
 ## 2.8.0
 
 **The modification-time fallback is only ever right at UTC, and most of
