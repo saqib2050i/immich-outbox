@@ -28,6 +28,12 @@ class Relay(private val context: Context, private val prefs: Prefs) {
         val reason: String,
         val labels: List<String>,
         val confirmLabels: List<String>,
+        // What marks Google Photos' backup panel, and how long to stand in
+        // front of it afterwards. Both are the server's decision: dwelling
+        // costs screen time on the phone, and the person who wants it off is
+        // at a dashboard rather than at the shelf.
+        val backupLabels: List<String>,
+        val dwellSeconds: Int,
         val nextPollSeconds: Int,
         // What the server has on offer at /app. Blank when it carries no
         // build. Only ever displayed -- see MainActivity for why this app
@@ -52,6 +58,10 @@ class Relay(private val context: Context, private val prefs: Prefs) {
             reason = reply.optString("reason", ""),
             labels = strings(reply, "labels"),
             confirmLabels = strings(reply, "confirm_labels"),
+            backupLabels = strings(reply, "backup_labels"),
+            // Clamped: a typo in a text field must not park the phone with
+            // its screen on for an hour.
+            dwellSeconds = reply.optInt("dwell_seconds", 0).coerceIn(0, 900),
             // Never faster than a minute, whatever the server says: a
             // misconfigured interval must not turn into a hot loop on a
             // phone.
@@ -61,13 +71,23 @@ class Relay(private val context: Context, private val prefs: Prefs) {
     }
 
     fun report(requestId: String, ok: Boolean, detail: String,
-               items: Int, freedBytes: Long): Boolean {
+               items: Int, freedBytes: Long, backup: Labels.Backup?): Boolean {
         val body = JSONObject()
             .put("request_id", requestId)
             .put("ok", ok)
             .put("detail", detail)
             .put("items", items)
             .put("freed_bytes", freedBytes)
+        // What Google Photos said about its own backup. The server treats
+        // this as a note and never as evidence -- a file is backed up when
+        // it disappears from the outbox, not when a screen says so.
+        if (backup != null) {
+            body.put("backup", JSONObject()
+                .put("active", backup.active)
+                .put("remaining", backup.remaining)
+                .put("eta_minutes", backup.etaMinutes)
+                .put("detail", backup.detail))
+        }
         return post("/api/companion/report", body) != null
     }
 

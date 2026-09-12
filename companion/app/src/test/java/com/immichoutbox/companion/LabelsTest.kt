@@ -109,6 +109,86 @@ class LabelsTest {
         assertFalse(Labels.isFreeUpScreen(emptyList(), Labels.ENTRY))
     }
 
+    // ---- how far along the backup is -------------------------------------
+    //
+    // These four lines were read off the Pixel while it was actually
+    // uploading. The panel is the only place Google Photos says any of
+    // this -- it posts nothing to its backup notification channel -- so
+    // this is the whole of what the server can ever know about it.
+
+    private val PANEL = listOf(
+        "Backing up 250 photos",
+        "2 hours, 26 min remaining",
+        "Keep the app open for faster backup")
+
+    @Test fun `the panel is read for a count and a time`() {
+        val b = Labels.backupState(PANEL, Labels.BACKUP)
+        assertTrue(b.active)
+        assertEquals(250, b.remaining)
+        assertEquals(146, b.etaMinutes)
+    }
+
+    @Test fun `the collapsed pill still says a backup is running`() {
+        val b = Labels.backupState(listOf("Backing up photos"), Labels.BACKUP)
+        assertTrue(b.active)
+        assertEquals(0, b.remaining)
+    }
+
+    @Test fun `a home screen with no panel is a backup that is not running`() {
+        val b = Labels.backupState(
+            listOf("Photos", "Collections", "Create", "Search", "Selfies"),
+            Labels.BACKUP)
+        assertFalse(b.active)
+        assertEquals(0, b.remaining)
+    }
+
+    @Test fun `minutes on their own are read`() {
+        assertEquals(26, Labels.backupState(
+            listOf("Backing up 4 photos", "26 min remaining"),
+            Labels.BACKUP).etaMinutes)
+    }
+
+    @Test fun `hours on their own are read`() {
+        assertEquals(180, Labels.backupState(
+            listOf("Backing up 900 videos", "3 hours remaining"),
+            Labels.BACKUP).etaMinutes)
+    }
+
+    @Test fun `a grouped count parses`() {
+        assertEquals(1518, Labels.backupState(
+            listOf("Backing up 1,518 items"), Labels.BACKUP).remaining)
+    }
+
+    @Test fun `a size remaining is not a time remaining`() {
+        // The free-up screen says things like "902 MB remaining". Everything
+        // in the ETA pattern is optional, so the bare word matches it --
+        // only an hours or minutes figure may count.
+        val b = Labels.backupState(
+            listOf("Backing up 3 photos", "902 MB remaining"), Labels.BACKUP)
+        assertEquals(0, b.etaMinutes)
+    }
+
+    @Test fun `the screen is quoted back so a rename is visible`() {
+        // The labels are a setting for a reason. When Google renames this,
+        // the dashboard should show what it actually said rather than
+        // quietly reporting nothing at all.
+        val b = Labels.backupState(PANEL, Labels.BACKUP)
+        assertTrue(b.detail, b.detail.contains("Backing up 250 photos"))
+        assertTrue(b.detail, b.detail.contains("26 min remaining"))
+    }
+
+    @Test fun `a renamed marker from the server is honoured`() {
+        val b = Labels.backupState(
+            listOf("Sichern von 12 Fotos"), listOf("sichern von"))
+        assertTrue(b.active)
+    }
+
+    @Test fun `the free-up screens are not mistaken for a backup`() {
+        assertFalse(Labels.backupState(
+            listOf("Free up 29.80 MB", "You freed up 29.80 MB",
+                   "Nothing to free up"), Labels.BACKUP).active)
+    }
+
     // ---- sizes -----------------------------------------------------------
 
     @Test fun `sizes parse in every unit Photos uses`() {

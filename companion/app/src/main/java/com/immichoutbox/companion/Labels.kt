@@ -42,6 +42,69 @@ object Labels {
     val MENU = listOf(
         "account and settings", "account", "profile", "signed in", "open account menu")
 
+    // ---- how far along Google Photos says its own backup is --------------
+    //
+    // Read off a Pixel 1. Collapsed, the pill on Photos' home screen says
+    // "Backing up photos". Expanded it becomes a panel:
+    //
+    //     Backing up 250 photos
+    //     2 hours, 26 min remaining
+    //     Keep the app open for faster backup
+    //
+    // That last line is Google's own argument for dwelling, and the count is
+    // the diagnostic: a slow backup and a stopped one are indistinguishable
+    // from the server until you can watch the figure fail to move.
+
+    /** Marks the backup panel. Used when the relay sends none. */
+    val BACKUP = listOf("backing up", "backup in progress", "uploading")
+
+    /** "Backing up 250 photos". */
+    val BACKING = Regex("""backing up\s+([\d,]+)\s+(?:photo|video|item|file)s?""",
+                        RegexOption.IGNORE_CASE)
+
+    /** "2 hours, 26 min remaining", or just "26 min remaining". */
+    val ETA = Regex(
+        """(?:(\d+)\s*h(?:ou)?rs?)?[\s,]*(?:(\d+)\s*min(?:ute)?s?)?\s*remaining""",
+        RegexOption.IGNORE_CASE)
+
+    class Backup(
+        val active: Boolean,
+        val remaining: Int,
+        val etaMinutes: Int,
+        /** What the screen actually said, carried back so a renamed label
+         *  shows up in the dashboard as text rather than as silence. */
+        val detail: String,
+    )
+
+    fun backupState(texts: List<String>, marks: List<String>): Backup {
+        val words = marks.ifEmpty { BACKUP }
+        var active = false
+        var remaining = 0
+        var eta = 0
+        val said = LinkedHashSet<String>()
+
+        for (text in texts) {
+            var hit = false
+            if (matches(text, words)) { active = true; hit = true }
+            BACKING.find(text)?.let {
+                active = true; hit = true
+                remaining = it.groupValues[1].replace(",", "").toIntOrNull() ?: 0
+            }
+            ETA.find(text)?.let { m ->
+                val h = m.groupValues[1].toIntOrNull()
+                val mins = m.groupValues[2].toIntOrNull()
+                // Everything in the pattern is optional, so the bare word
+                // "remaining" matches it. Only a figure counts -- and a
+                // storage screen's "902 MB remaining" carries no h or min.
+                if (h != null || mins != null) {
+                    eta = (h ?: 0) * 60 + (mins ?: 0); hit = true
+                }
+            }
+            if (hit) said.add(text)
+        }
+        return Backup(active, remaining, eta, said.take(3).joinToString(" · "))
+    }
+
     fun matches(text: String, words: List<String>): Boolean {
         val lower = text.lowercase()
         return words.any { it.isNotBlank() && lower.contains(it.lowercase()) }

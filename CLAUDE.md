@@ -293,6 +293,40 @@ opened a slideshow. There is no API to fall back on either — Photos'
 included, and no deep-link activity reaches the storage screen. Driving the
 UI is the only route there is.
 
+**Deciding to ask is the server's job, not the phone's.** It used to live
+inside `companion.poll()`, which runs only when the phone checks in — so the
+condition was evaluated *by the phone asking*, and `request()` is what
+writes the log line. A phone that had gone quiet produced no entry of any
+kind, and fifteen hours of a stalled pipeline left nothing to diagnose from
+but an absence. `companion.consider()` runs from `feeder.housekeeping()`
+now. Only the battery check stays at poll time, because the phone is the
+only one who knows it.
+
+**A free-up is worth asking for whenever the outbox holds anything**, not
+only when work is queued behind it. The old rule tested throughput, and the
+thing that actually needs the phone is confirmation: a file in the outbox is
+not backed up until it disappears, and only Google Photos clearing it makes
+it disappear. Once a library is fully queued there is nothing behind the
+outbox at all, so the old rule declined and the last batch of every run sat
+there for Smart Storage's thirty days.
+
+**What Google Photos says about itself is a note and never evidence.** Its
+home screen carries the only progress it reports anywhere — "Backing up 250
+photos", "2 hours, 26 min remaining"; it posts nothing to its backup
+notification channel, so there is no cheaper route. The companion reads that
+during a dwell and sends it back, and it changes what the dashboard shows
+and when the server asks. It must never change an asset's state:
+confirmation stays in `feeder.reconcile()`, derived from absence. A string
+scraped off somebody else's screen that could confirm an asset would forge
+the only proof this system has, and a renamed label would do it silently.
+
+**Dwelling is Google's own suggestion.** The same panel says "Keep the app
+open for faster backup". A foreground app escapes both Doze and the standby
+bucket an app sinks into when nobody opens it, which is why a shelf phone
+uploads nothing all day and then starts the moment it is picked up. It is
+off by default and gated from the server, because it costs screen time and
+the person who wants it off is at a dashboard rather than at the shelf.
+
 Two things about the app that cost a release each. Its reported version
 must come from the package manager, never a constant — a `const val VERSION`
 sat beside a `versionName` read from the file and the two drifted, so a

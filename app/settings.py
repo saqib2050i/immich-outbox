@@ -58,8 +58,10 @@ SPEC: dict[str, tuple[type, object]] = {
     # outbox drains in minutes rather than on Smart Storage's 30-day clock.
     # It never deletes anything itself -- see companion.py.
     "companion_enabled": (bool, False),
-    # Ask by itself when the outbox is full with work behind it, which is
-    # the only moment freeing space actually buys anything.
+    # Ask by itself whenever the outbox is holding anything the phone could
+    # let go of. Not only when work is queued behind it: the files already
+    # in the outbox are not backed up until they disappear, and a free-up is
+    # the only thing that makes them disappear.
     "companion_auto": (bool, True),
     "companion_min_battery": (int, 30),
     # How long a manual "free up now" can sit before the phone hears about
@@ -70,14 +72,28 @@ SPEC: dict[str, tuple[type, object]] = {
     # slower one. Charging is the axis because charging is the cost.
     "companion_charging_poll_minutes": (int, 1),
     "companion_idle_poll_minutes": (int, 30),
-    # One free-up unblocks roughly one outbox's worth. Asking again before
-    # Google Photos has uploaded the replacements just wakes the phone.
+    # A floor between automatic runs, not a schedule. One free-up unblocks
+    # roughly one outbox's worth, and asking again before Google Photos has
+    # uploaded the replacements just wakes the phone for nothing.
     "companion_cooldown_minutes": (int, 60),
-    "companion_offline_hours": (int, 12),
+    # Minutes, not hours. It was twelve hours, set when the phone checked in
+    # twice an hour. A phone on a charger now checks in every minute, so
+    # twelve hours is 720 missed check-ins before anyone is told.
+    "companion_offline_minutes": (int, 60),
+    # Stay in Google Photos after a run so its upload can get going. Off by
+    # default, and decided here rather than on the phone: it costs screen
+    # time, and the server is where you can switch it off without walking to
+    # the shelf. Google Photos asks for this itself, in as many words --
+    # "Keep the app open for faster backup".
+    "companion_dwell_enabled": (bool, False),
+    "companion_dwell_seconds": (int, 120),
     # Empty means "use the built-in list". Editable because Google renames
     # these buttons, and a rename should not need a new APK.
     "companion_labels": (str, ""),
     "companion_confirm_labels": (str, ""),
+    # What marks Google Photos' backup panel, so the phone can read how far
+    # along it is while it is in there. Same reasoning as the two above.
+    "companion_backup_labels": (str, ""),
     # Housekeeping
     "backup_enabled": (bool, True),
 }
@@ -111,9 +127,12 @@ class Settings:
     companion_charging_poll_minutes: int
     companion_idle_poll_minutes: int
     companion_cooldown_minutes: int
-    companion_offline_hours: int
+    companion_offline_minutes: int
+    companion_dwell_enabled: bool
+    companion_dwell_seconds: int
     companion_labels: str
     companion_confirm_labels: str
+    companion_backup_labels: str
     backup_enabled: bool
 
     @property

@@ -48,6 +48,11 @@ from . import config, db, settings
 DEFAULT_LABELS = ("free up space on this device", "free up space",
                   "free up device storage")
 DEFAULT_CONFIRM = ("free up", "allow", "delete", "ok", "continue")
+# What marks the backup panel on Google Photos' own home screen. Read off a
+# Pixel 1: collapsed it says "Backing up photos"; expanded it adds
+# "Backing up 250 photos", "2 hours, 26 min remaining" and, in Google's own
+# words, "Keep the app open for faster backup".
+DEFAULT_BACKUP = ("backing up", "backup in progress", "uploading")
 
 # A run the phone never reported back on. Long enough to cover a slow sweep
 # of a large library, short enough that a wedged run does not block the next
@@ -158,12 +163,18 @@ def token_ok(raw: str | None) -> bool:
     return bool(raw) and hmac.compare_digest(str(raw), ensure_token())
 
 
+def _split(raw: str, fallback: tuple) -> list[str]:
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    return parts or list(fallback)
+
+
 def labels(cfg) -> tuple[list[str], list[str]]:
-    def split(raw: str, fallback: tuple) -> list[str]:
-        parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
-        return parts or list(fallback)
-    return (split(cfg.companion_labels, DEFAULT_LABELS),
-            split(cfg.companion_confirm_labels, DEFAULT_CONFIRM))
+    return (_split(cfg.companion_labels, DEFAULT_LABELS),
+            _split(cfg.companion_confirm_labels, DEFAULT_CONFIRM))
+
+
+def backup_labels(cfg) -> list[str]:
+    return _split(cfg.companion_backup_labels, DEFAULT_BACKUP)
 
 
 # ---- asking for a run ---------------------------------------------------
@@ -185,23 +196,42 @@ def cancel_request() -> None:
     db.set_meta("companion_request", "")
 
 
-def _blocked(cfg) -> tuple[bool, str]:
-    """Is the outbox stopped for want of space, with work behind it?
+def _worth_asking(cfg) -> tuple[bool, str]:
+    """Would a free-up achieve anything?
 
-    Deliberately the same test the dashboard shows as "full": free space
-    reaching zero is not the condition -- the next file no longer fitting
-    is. Asking the phone to free space when nothing is waiting would just
-    wake it up for nothing.
+    Two cases, and the second is the one this missed for a long time.
+
+    The first is throughput: the outbox is full and files are waiting
+    behind it, so nothing new goes out until the phone lets go of
+    something. Free space reaching zero is not the test -- the next file
+    no longer fitting is, which is the same thing the dashboard calls
+    "full".
+
+    The second is the tail, and it used to be answered "no". Once the
+    library is fully queued there is nothing waiting behind the outbox at
+    all, so the old test stopped at its first line and declined. But the
+    files *in* the outbox are not backed up yet: in this system a file is
+    backed up when it disappears, and only Google Photos clearing it off
+    the phone makes it disappear. So the last outbox-full of every run sat
+    there untouched until Smart Storage's thirty-day clock reached it --
+    which is the exact wait this companion exists to remove. Measured
+    once: 1,518 files, 15.3 GB, twelve hours, and not one request made.
     """
+    # From the ledger, not the `outbox_files` meta: that is written by
+    # reconcile() and so undercounts everything top_up() has added since.
+    # This is the same figure the belt shows as "in the outbox".
+    holding = db.counts().get("queued", 0)
     used = int(db.get_meta("outbox_used", "0"))
+    if holding <= 0:
+        return False, "the outbox is empty"
+
     free = max(cfg.outbox_max_bytes - used, 0)
     smallest = db.smallest_sendable(cfg.eligibility)
-    if smallest is None:
-        return False, "nothing is waiting to be sent"
-    if free >= smallest:
-        return False, "the outbox still has room"
-    waiting = sum(m["asked"] + m["eligible"] for m in db.waiting_breakdown())
-    return True, f"outbox full, {waiting} file(s) waiting"
+    if smallest is not None and free < smallest:
+        waiting = sum(m["asked"] + m["eligible"] for m in db.waiting_breakdown())
+        return True, f"outbox full, {waiting} file(s) waiting behind it"
+    return True, (f"{holding} file(s) in the outbox with nothing behind them — "
+                  "only a free-up will clear these")
 
 
 def _idle_seconds(cfg, report: dict) -> int:
@@ -234,6 +264,39 @@ def _cooldown_left(cfg) -> float:
     return max(0.0, cfg.companion_cooldown_minutes - age)
 
 
+def consider() -> dict | None:
+    """Decide whether to ask for a free-up. Called from the feeder cycle.
+
+    This used to live inside poll(), which runs only when the phone checks
+    in -- so the condition was evaluated *by the phone asking*. A phone
+    that had gone quiet meant it was never evaluated, request() was never
+    called, and request() is what writes the log line. Twelve hours of a
+    stalled pipeline therefore produced no entry of any kind, because the
+    code that would have written one never ran. An absence is the worst
+    thing to have to diagnose from, and it was the only thing on offer.
+
+    Now the server decides on its own clock and the phone only collects.
+    The one judgement left at poll time is the battery, because that is the
+    only fact the phone knows and the server does not.
+    """
+    cfg = settings.load()
+    if not cfg.companion_enabled or not cfg.companion_auto:
+        return None
+    # Already asked, or already running: either way, not again.
+    if _json("companion_request").get("id") or _json("companion_inflight").get("id"):
+        return None
+
+    worth, why = _worth_asking(cfg)
+    if not worth:
+        return None
+    left = _cooldown_left(cfg)
+    if left > 0:
+        # Deliberately not logged. This is the common case, once an hour,
+        # and a log line every cycle would bury everything else.
+        return None
+    return request("auto", why)
+
+
 # ---- the phone checking in ----------------------------------------------
 
 def poll(report: dict) -> dict:
@@ -257,6 +320,11 @@ def poll(report: dict) -> dict:
         "labels": trigger,
         "confirm_labels": confirm,
         "next_poll_seconds": _idle_seconds(cfg, report),
+        # What marks the backup panel, and how long to stand in front of it.
+        # Zero means do not linger -- the phone never decides this.
+        "backup_labels": backup_labels(cfg),
+        "dwell_seconds": (cfg.companion_dwell_seconds
+                          if cfg.companion_dwell_enabled else 0),
         # Told on every check-in, so the phone finds out about a new build
         # without anyone having to go looking. The app only ever reports
         # this to its own screen -- installing is the browser's job and the
@@ -284,19 +352,12 @@ def poll(report: dict) -> dict:
         db.set_meta("companion_inflight", "")
         db.log("companion", "previous free-up never reported back — giving up on it")
 
+    # Whatever the server queued on its own cycle. See consider().
     pending = _json("companion_request")
-    if not pending.get("id") and cfg.companion_auto:
-        blocked, why = _blocked(cfg)
-        left = _cooldown_left(cfg)
-        if blocked and left <= 0:
-            pending = request("auto", why)
-        elif blocked:
-            answer["reason"] = f"{why} — waiting {left:.0f} min before asking again"
-            answer["next_poll_seconds"] = max(60, int(left * 60))
-            return answer
-
     if not pending.get("id"):
-        answer["reason"] = "nothing to do"
+        left = _cooldown_left(cfg)
+        answer["reason"] = (f"waiting {left:.0f} min before asking again"
+                            if left > 0 else "nothing to do")
         return answer
 
     # The phone decides nothing; the server does the refusing, so the reason
@@ -319,6 +380,53 @@ def poll(report: dict) -> dict:
     return answer
 
 
+def _ago(minutes: float) -> str:
+    if minutes < 90:
+        return f"{minutes:.0f} minutes"
+    if minutes < 60 * 36:
+        return f"{minutes/60:.0f} hours"
+    return f"{minutes/1440:.0f} days"
+
+
+def _record_backup(raw) -> None:
+    """What Google Photos said about its own backup — a note, never evidence.
+
+    Read off Photos' own home screen while the phone is standing in front
+    of it: "Backing up 250 photos", "2 hours, 26 min remaining". This is
+    the thing that was missing when the pipeline went quiet for fifteen
+    hours and nothing on the dashboard could say whether Google Photos was
+    working, stopped, or had never started.
+
+    It changes what the dashboard says and when the server bothers asking.
+    It never changes what any asset's state is. Confirmation stays exactly
+    where it has always been -- in feeder.reconcile(), derived from files
+    that are no longer on disk (invariant 1). A string scraped off somebody
+    else's screen that could mark an asset backed up would forge the only
+    proof this system has, and a renamed label would do it silently.
+    """
+    if not isinstance(raw, dict):
+        return
+    was = _json("companion_backup")
+    now = {
+        "active": bool(raw.get("active")),
+        "remaining": int(raw.get("remaining") or 0),
+        "eta_minutes": int(raw.get("eta_minutes") or 0),
+        "detail": str(raw.get("detail", ""))[:200],
+        "at": db.now(),
+    }
+    # The count moving is what separates a slow backup from a stopped one,
+    # so the clock restarts only when it does.
+    moved = (not was.get("active")) or was.get("remaining") != now["remaining"]
+    now["since"] = db.now() if moved else (was.get("since") or db.now())
+    db.set_meta("companion_backup", json.dumps(now))
+
+    if now["active"] and moved:
+        db.log("companion", f"Google Photos: {now['detail'] or 'backing up'}")
+    elif was.get("active") and not now["active"]:
+        db.log("companion", "Google Photos has finished backing up what is "
+                            "on the phone")
+
+
 def record(result: dict) -> dict:
     """The phone reporting how a run went."""
     inflight = _json("companion_inflight")
@@ -333,6 +441,7 @@ def record(result: dict) -> dict:
     db.set_meta("companion_inflight", "")
     db.set_meta("companion_last_run", json.dumps(run))
     db.set_meta("companion_last_run_at", run["at"])
+    _record_backup(result.get("backup"))
 
     if run["ok"]:
         db.set_meta("companion_last_ok_at", run["at"])
@@ -358,9 +467,9 @@ def snapshot() -> dict:
         state, line = "off", "Not in use."
     elif seen_age is None:
         state, line = "waiting", "Waiting for the phone to check in for the first time."
-    elif seen_age > cfg.companion_offline_hours * 60:
-        state, line = "offline", (f"The phone has not checked in for "
-                                  f"{seen_age/60:.0f} hours.")
+    elif seen_age > cfg.companion_offline_minutes:
+        state, line = "offline", ("The phone has not checked in for "
+                                  f"{_ago(seen_age)}.")
     elif inflight.get("id"):
         state, line = "running", "Freeing space on the phone now."
     elif pending.get("id"):
@@ -374,6 +483,9 @@ def snapshot() -> dict:
     running = (device or {}).get("app_version") or ""
     return {
         "apk": apk,
+        # Only ever displayed. See _record_backup for why it can never be
+        # allowed to mean more than that.
+        "backup": _json("companion_backup"),
         # A phone on an older build than the server is serving. Only ever a
         # note: nothing refuses to work across a version gap.
         "update_available": bool(apk["available"] and running

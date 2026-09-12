@@ -866,6 +866,7 @@
     <div class="row"><span>Last check-in</span><span id="cpSeen">—</span></div>
     <div class="row"><span>Battery</span><span id="cpBatt">—</span></div>
     <div class="row"><span>Free on phone</span><span id="cpFree">—</span></div>
+    <div class="row" id="cpRowBackup" hidden><span>Google Photos</span><span id="cpBackup">—</span></div>
     <div class="row" id="cpRowLast" hidden><span>Last run</span><span id="cpLast">—</span></div>
     <div class="controls" style="margin:12px 0 0">
       <button id="btnFreeNow">Free up space now</button>
@@ -1106,13 +1107,16 @@
       </div>
       <div class="field">
         <div class="lab"><label for="s_companion_auto">Free up space automatically</label>
-          <span class="hint">Only when the outbox is full with files waiting behind
-            it — the one moment it buys anything.</span></div>
+          <span class="hint">Whenever the outbox is holding anything. Files in the
+            outbox are not backed up until they disappear, and a free-up is the only
+            thing that makes them disappear — so this fires for the last batch too,
+            not just when work is queued behind it.</span></div>
         <input type="checkbox" id="s_companion_auto">
       </div>
       <div class="field">
-        <div class="lab"><label for="s_companion_cooldown_minutes">Minutes between automatic runs</label>
-          <span class="hint">One run clears roughly one outbox. Asking again before
+        <div class="lab"><label for="s_companion_cooldown_minutes">Shortest gap between automatic runs, minutes</label>
+          <span class="hint">A floor, not a schedule — nothing happens on this clock
+            by itself. One run clears roughly one outbox, and asking again before
             Google Photos has uploaded the replacements just wakes the phone.</span></div>
         <input type="number" id="s_companion_cooldown_minutes" min="5" max="1440">
       </div>
@@ -1135,8 +1139,24 @@
         <input type="number" id="s_companion_idle_poll_minutes" min="1" max="240">
       </div>
       <div class="field">
-        <div class="lab"><label for="s_companion_offline_hours">Warn if silent for, hours</label></div>
-        <input type="number" id="s_companion_offline_hours" min="1" max="168">
+        <div class="lab"><label for="s_companion_offline_minutes">Warn if silent for, minutes</label>
+          <span class="hint">Minutes, because a phone on its charger checks in every
+            one. This was twelve hours, which is 720 missed check-ins before anybody
+            hears about it.</span></div>
+        <input type="number" id="s_companion_offline_minutes" min="5" max="10080">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_dwell_enabled">Stay in Google Photos after a run</label>
+          <span class="hint">Google Photos uploads faster in the foreground and says
+            so itself — “Keep the app open for faster backup”. Costs screen time on
+            the phone, so it is off until you want it.</span></div>
+        <input type="checkbox" id="s_companion_dwell_enabled">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_dwell_seconds">How long to stay, seconds</label>
+          <span class="hint">Also how long the phone has to read how far along the
+            backup is, which is the only place that figure appears.</span></div>
+        <input type="number" id="s_companion_dwell_seconds" min="10" max="900">
       </div>
       <div class="field">
         <div class="lab"><label for="s_companion_labels">Button labels</label>
@@ -1144,6 +1164,12 @@
             Change this if Google renames the button — no new app needed. Blank
             uses the built-in list.</span></div>
         <input type="text" id="s_companion_labels" placeholder="Free up space, Free up device storage">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_backup_labels">Backup panel labels</label>
+          <span class="hint">What marks Google Photos' backup panel, so the phone can
+            read how far along it is. Blank uses the built-in list.</span></div>
+        <input type="text" id="s_companion_backup_labels" placeholder="Backing up, Uploading">
       </div>
       <div class="field">
         <div class="lab"><label for="s_companion_confirm_labels">Confirmation labels</label>
@@ -1487,7 +1513,7 @@ function setDirty(v){
 
 const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
                "backup_enabled",
-               "companion_enabled","companion_auto",
+               "companion_enabled","companion_auto","companion_dwell_enabled",
                "fix_dates"];
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
@@ -2824,6 +2850,12 @@ function renderCompanionSettings(cp){
 //
 // Two things matter on a glance: is it still there, and did the last press
 // of the button work. Everything else is detail.
+function fmtMins(m){
+  if (m < 60) return m + " min left";
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? h + "h " + r + "m left" : h + "h left";
+}
+
 function renderPhone(cp){
   if (!cp || !cp.enabled){ cardPhone.hidden = true; return; }
   cardPhone.hidden = false;
@@ -2846,6 +2878,22 @@ function renderPhone(cp){
     : mins < 60  ? Math.round(mins) + " min ago"
     : mins < 1440 ? Math.round(mins / 60) + " h ago"
     : Math.round(mins / 1440) + " days ago";
+
+  // What Google Photos says about its own backup, read off its screen while
+  // the phone was standing in front of it. A note and nothing more: files
+  // are confirmed by leaving the outbox, never by this line. But it is the
+  // only place the figure exists, and its absence is what made "is it
+  // uploading, or has it stopped?" unanswerable for fifteen hours.
+  const bk = cp.backup || {};
+  const hasBk = !!(bk.at && (bk.active || bk.detail));
+  cpRowBackup.hidden = !hasBk;
+  if (hasBk){
+    cpBackup.textContent = !bk.active ? "backup finished"
+      : bk.remaining ? fmtNum(bk.remaining) + " to go"
+                       + (bk.eta_minutes ? " · " + fmtMins(bk.eta_minutes) : "")
+      : "backing up";
+    cpBackup.title = bk.detail || "";
+  }
 
   const dev = cp.device || {};
   cpBatt.textContent = dev.battery == null ? "—"

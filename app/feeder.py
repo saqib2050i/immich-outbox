@@ -637,6 +637,16 @@ async def housekeeping() -> None:
     except Exception as exc:  # noqa: BLE001
         db.log("error", f"capture-time repair failed: {exc}")
 
+    # Deciding whether to ask the phone to free space belongs here, not in
+    # the phone's check-in. It used to run only when the phone called, so a
+    # phone that had gone quiet meant the question was never asked and no
+    # log line was ever written -- see companion.consider().
+    try:
+        from . import companion
+        companion.consider()
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"companion check failed: {exc}")
+
     try:
         await alerts.check_and_notify()
     except Exception as exc:  # noqa: BLE001
