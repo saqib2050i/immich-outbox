@@ -601,6 +601,20 @@
     font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
   .tracegrid > div.k{color:var(--dim)}
   .tracegrid > div.differs{color:var(--alarm)}
+  /* Present-and-empty against not-there-at-all. Drawing both as an
+     em-dash is what let a blanked date read as a clean file. */
+  .tracegrid > div.blank{color:var(--alarm);font-style:italic}
+  .tracegrid > div.absent{color:var(--dim);opacity:.55}
+  .vlist{display:grid;gap:8px;margin-top:14px}
+  .vrow{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:start;
+    border:1px solid var(--rule);border-radius:var(--r-sm);padding:10px 12px;
+    font-size:12.5px;line-height:1.55}
+  .vrow.bad{border-color:var(--alarm)}
+  .vrow .vm{font-weight:700}
+  .vrow.good .vm{color:var(--done)}
+  .vrow.bad .vm{color:var(--alarm)}
+  .vrow b{display:block;margin-bottom:2px}
+  .vrow span{color:var(--dim)}
   .tracesum{margin:0 0 10px;font-size:12.5px;color:var(--dim);line-height:1.6}
   .warnbox{border:1px solid var(--alarm);border-radius:var(--r-sm);
            padding:12px 14px;margin-top:14px;font-size:12.5px;color:var(--dim);
@@ -1382,8 +1396,10 @@
     <h3>Trace one file</h3>
     <p>Follows a single file from Immich into the outbox and reports what is in
        all three copies, so a file that arrived damaged and a file this service
-       damaged stop looking the same. Nothing is written; Immich's copy is
-       fetched, read and thrown away.</p>
+       damaged stop looking the same. It also answers the one question that
+       decides where a photo lands: will Google Photos read a date out of this
+       file, or file it under the day it was uploaded? Nothing is written;
+       Immich's copy is fetched, read and thrown away.</p>
     <div class="act">
       <input type="text" id="traceName" placeholder="PXL_20230101_025759225.jpg"
              style="flex:1 1 20rem;min-width:0">
@@ -2957,30 +2973,97 @@ function renderTrace(d){
   });
   traceOut.appendChild(checks);
 
-  // The dates themselves, so the finding above can be checked rather than
-  // taken on trust.
-  const src = (d.immich || {}).dates || {};
-  const dst = (d.outbox || {}).dates || {};
-  const keys = [...new Set([...Object.keys(src), ...Object.keys(dst)])].sort();
+  // The answer, per copy: will Google Photos read a date out of this, or
+  // file it under the day it was uploaded? It is allowed to differ between
+  // the two, which is the whole point of stamping one on its way past.
+  const copies = [["Immich's original", d.immich], ["In the outbox", d.outbox]];
+  const vl = document.createElement("div");
+  vl.className = "vlist";
+  copies.forEach(([who, copy]) => {
+    const v = (copy || {}).verdict;
+    if (!v) return;
+    const row = document.createElement("div");
+    row.className = "vrow " + (v.dated ? "good" : "bad");
+    const mark = document.createElement("span");
+    mark.className = "vm";
+    mark.textContent = v.dated ? "✓" : "✕";
+    const body = document.createElement("div");
+    const head = document.createElement("b");
+    head.textContent = who + " — " + v.headline;
+    const why = document.createElement("span");
+    why.textContent = v.reason;
+    body.append(head, why);
+    row.append(mark, body);
+    vl.appendChild(row);
+  });
+  if (vl.children.length) traceOut.appendChild(vl);
+
+  // The tags themselves, so the verdict can be checked rather than taken on
+  // trust. A tag that is there and empty is drawn differently from one that
+  // is not there: they have the same consequence and different causes, and
+  // showing both as an em-dash is what let the fault hide.
+  const rows = c => {
+    const m = {};
+    ((c || {}).tags || []).forEach(r => { m[r.tag] = r; });
+    return m;
+  };
+  const src = rows(d.immich), dst = rows(d.outbox);
+  const order = [...((d.immich || {}).tags || []).map(r => r.tag),
+                 ...((d.outbox || {}).tags || []).map(r => r.tag)];
+  const keys = [...new Set(order)];
   if (keys.length){
     const g = document.createElement("div");
     g.className = "tracegrid";
-    ["", "In Immich", "In the outbox"].forEach(h => {
+    const unread = c => !Object.keys(c).length;
+    ["", unread(src) ? "In Immich (not read)" : "In Immich",
+     unread(dst) ? "In the outbox (not read)" : "In the outbox"].forEach(h => {
       const c = document.createElement("div");
       c.className = "h"; c.textContent = h; g.appendChild(c);
     });
+    const cell = r => {
+      if (!r) return ["—", "absent"];
+      if (r.state === "missing") return ["not in the file", "absent"];
+      if (r.state === "blank") return ["present but empty", "blank"];
+      return [r.text, ""];
+    };
+    // Only when both copies were actually read. Marking every row as
+    // differing because Immich could not be reached paints the whole table
+    // red over a network error, which is the opposite of informative.
+    const both = Object.keys(src).length > 0 && Object.keys(dst).length > 0;
     keys.forEach(k => {
-      const differs = (src[k] || "—") !== (dst[k] || "—")
-                      && Object.keys(dst).length > 0;
-      [[k, "k"], [src[k] || "—", differs ? "differs" : ""],
-       [dst[k] || "—", differs ? "differs" : ""]].forEach(([t, cls]) => {
+      const [at, ac] = cell(src[k]), [bt, bc] = cell(dst[k]);
+      const differs = both && at !== bt;
+      const kc = document.createElement("div");
+      kc.className = "k"; kc.textContent = k; g.appendChild(kc);
+      [[at, ac], [bt, bc]].forEach(([t, cls]) => {
         const c = document.createElement("div");
-        if (cls) c.className = cls;
+        c.className = differs && !cls ? "differs" : cls;
         c.textContent = t;
         g.appendChild(c);
       });
     });
     traceOut.appendChild(g);
+  }
+
+  // What Immich holds, which is not what the file holds and is the whole
+  // reason a photo can look right on one screen and land on today in
+  // Google Photos. localDateTime is the wall clock where the shutter
+  // fired; fileCreatedAt is the same moment as an instant.
+  const says = d.says || {};
+  if (says.ok){
+    const bits = [];
+    if (says.local_date_time)
+      bits.push("taken " + says.local_date_time.replace("T", " ").slice(0, 19));
+    if (says.time_zone) bits.push("zone " + says.time_zone);
+    else bits.push("no zone recorded");
+    if (says.make || says.model)
+      bits.push([says.make, says.model].filter(Boolean).join(" "));
+    traceOut.appendChild(traceLine("Immich holds: " + bits.join(" · ")
+      + ". That is Immich's own record, which for a Takeout import came "
+      + "from the sidecar rather than from the file."));
+  } else if (says.error){
+    traceOut.appendChild(traceLine("Immich could not be asked what it holds: "
+      + says.error));
   }
 
   // The phone is confirmed, never read: the companion declares no storage

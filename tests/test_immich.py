@@ -126,3 +126,70 @@ async def test_normalise_survives_a_missing_filename(rig):
     row = immich._normalise({"id": "abc", "type": "VIDEO"})
     assert row["filename"] == "abc.bin"
     assert row["size"] == 0
+
+
+async def test_asset_detail_keeps_the_three_dates_apart(rig, monkeypatch):
+    """Immich holds three different answers and they are not interchangeable:
+    localDateTime is the wall clock, fileCreatedAt the instant, timeZone
+    often null. Flattening them is a five-hour error."""
+    from app import immich
+
+    class Resp:
+        status_code = 200
+        @staticmethod
+        def json():
+            return {"id": "a", "type": "IMAGE",
+                    "localDateTime": "2024-01-05T08:47:33.000Z",
+                    "fileCreatedAt": "2024-01-05T03:47:33.000Z",
+                    "exifInfo": {"timeZone": "Asia/Karachi", "make": "Google",
+                                 "model": "Pixel 6 Pro",
+                                 "dateTimeOriginal": "2024-01-05T03:47:33.000Z"}}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, path): return Resp()
+
+    monkeypatch.setattr(immich, "_client", lambda *a, **k: Client())
+    d = await immich.asset_detail("a")
+    assert d["ok"] is True
+    assert d["local_date_time"] == "2024-01-05T08:47:33.000Z"
+    assert d["file_created_at"] == "2024-01-05T03:47:33.000Z"
+    assert d["time_zone"] == "Asia/Karachi"
+    assert d["model"] == "Pixel 6 Pro"
+
+
+async def test_asset_detail_falls_back_to_the_older_route(rig, monkeypatch):
+    """Immich called this /api/asset/{id} before 1.106."""
+    from app import immich
+    seen = []
+
+    class Resp:
+        def __init__(self, code): self.status_code = code
+        @staticmethod
+        def json(): return {"id": "a", "type": "IMAGE"}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, path):
+            seen.append(path)
+            return Resp(404 if path == "/api/assets/a" else 200)
+
+    monkeypatch.setattr(immich, "_client", lambda *a, **k: Client())
+    assert (await immich.asset_detail("a"))["ok"] is True
+    assert seen == ["/api/assets/a", "/api/asset/a"]
+
+
+async def test_asset_detail_never_takes_the_trace_down_with_it(rig, monkeypatch):
+    """A trace that could not reach Immich still has two copies to compare."""
+    from app import immich
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, path): raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(immich, "_client", lambda *a, **k: Client())
+    d = await immich.asset_detail("a")
+    assert d["ok"] is False and "connection refused" in d["error"]

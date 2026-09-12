@@ -193,6 +193,35 @@ almost every photo in it. So `_clock_finding` tries both readings, asserts
 neither, and calls a fault only when neither fits; a file carrying no zone
 at all is reported as unverifiable rather than accused.
 
+**A tag can be present and say nothing.** Much of this library carries
+`DateTimeOriginal` in the file with its bytes blank — the date lived in a
+Google Takeout sidecar, Immich read it into its own database at import, and
+the file went to Google Photos carrying an empty field. Immich shows the
+right date; Google reads the file, finds none, and dates the photo to the
+upload. It does not fall back to the filename: `PXL_20240105_034733992.jpg`
+landed on today with a perfectly good date in its own name.
+
+`is_blank` covers the three shapes real files use — a NUL-filled tag
+(exiftool renders `""`), a space-filled one, and an mp4 whose
+`creation_time` is zero (`0000:00:00 00:00:00`) — and blank is kept
+separate from missing throughout, because they have one consequence and two
+causes. `_dates()` used to drop anything falsy, which made the fault
+invisible in the one tool built to find it.
+
+**A still and a video are judged by different clocks.** `DateTimeOriginal`
+is local time with no zone, so it is compared against Immich's
+`localDateTime`, the wall clock. QuickTime's `CreateDate` is UTC by
+specification, so it is compared against `fileCreatedAt`, the instant.
+Swapping them shifts every GMT+5 photo in this library by five hours, which
+is the same error the filename check had to be corrected for.
+
+**exiftool is read with `-G`.** Without it `EXIF:DateTimeOriginal` and
+`XMP:DateTimeOriginal` both come back as `DateTimeOriginal` and the second
+silently wins — reporting a date in the tag Google reads when the value came
+from one it does not. `label()` strips the group only for the file's own
+(EXIF for a still, QuickTime for a video), so two different tags can never
+collapse onto one row.
+
 Separately, and still true: `rewrite_capture_date` writes
 `datetime.fromtimestamp(stamp, timezone.utc)` into `-AllDates`, which puts a
 UTC wall clock into `DateTimeOriginal` — a field EXIF defines as local time.
