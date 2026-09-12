@@ -34,7 +34,7 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import config, db, feeder, immich, settings
 
@@ -222,6 +222,9 @@ def _outbox_copy(outbox_name: str | None) -> dict:
                         "mounted"}
     return {"present": True, "name": outbox_name, "path": path,
             "bytes": os.path.getsize(path), "sha256": _sha(path),
+            # Read in place, so this is a fact about the delivered file and
+            # is what Google Photos falls back to.
+            "mtime": os.path.getmtime(path),
             "modified": datetime.utcfromtimestamp(
                 os.path.getmtime(path)).isoformat(timespec="seconds") + "Z",
             "exif": read_exif(path)}
@@ -487,7 +490,9 @@ def _instant(value: object) -> float | None:
     return db.capture_time(value if isinstance(value, str) else None)
 
 
-def verdict(exif: dict, kind: str | None = None) -> dict:
+def verdict(exif: dict, kind: str | None = None, *,
+            mtime: float | None = None, taken_at: str | None = None,
+            says: dict | None = None) -> dict:
     """Will Google Photos date this file, or file it under the upload?
 
     The only question that matters about a file on its way to the phone,
@@ -499,6 +504,20 @@ def verdict(exif: dict, kind: str | None = None) -> dict:
     Takeout sidecar, and Google Photos filed it under the day it was
     uploaded -- with a perfectly parseable date sitting in the filename,
     which Google did not use. So a name is never counted as a date here.
+
+    A *modification time* is counted, though, because Google Photos does
+    fall back to one and this service deliberately sets it:
+    `feeder.stamp_capture_time()` stamps every delivered file with Immich's
+    capture instant, and Syncthing preserves it all the way to the phone.
+    Snapchat-618209934.jpg has no date tag of any kind and Google Photos
+    still dated it Jan 1 2024, 6:30 AM -- the same second as the outbox
+    copy's mtime. Calling that file "would fall back to upload time" was
+    this function being wrong, out loud, about a file that was fine.
+
+    The fallback is weaker than the tag and is reported as such: an mtime
+    survives nothing that rewrites the file, and it carries no zone, so what
+    Google Photos displays for a photo taken outside UTC is not settled by
+    anything here.
     """
     video = is_video(exif, kind)
     want = VIDEO_DATE if video else PHOTO_DATE
@@ -534,7 +553,91 @@ def verdict(exif: dict, kind: str | None = None) -> dict:
         MISSING: f"{tag} is not in the file at all.",
         UNREADABLE: f"{tag} holds {str(raw)!r}, which is not a date.",
     }[state]
+
+    # No tag, but Google Photos falls back to the modification time and this
+    # service sets that to the capture instant on the way out. Checked
+    # against Immich rather than assumed: a file downloaded to a temp
+    # directory has today's mtime and must not be credited with it, which is
+    # why only a copy read in place passes one in.
+    #
+    # MISSING only, and that is measured rather than reasoned. Two files
+    # went the same route with the same correct mtime and landed in
+    # different years:
+    #
+    #   Snapchat-618209934.jpg   tag absent         -> Jan 1 2024, 6:30 AM
+    #   PXL_20240101_062038690   tag present, empty -> today, 12:33 PM
+    #
+    # A blank tag poisons the fallback -- the scanner evidently reads the
+    # file as carrying metadata, fails to parse it, and never reaches the
+    # modification time. An absent tag falls through cleanly. So a blank one
+    # is not rescued here, however good the mtime beside it looks.
+    want = db.capture_time(taken_at)
+    rescued = (state == MISSING and mtime is not None and want is not None
+               and abs(mtime - want) <= 120)
+    if rescued:
+        when = datetime.fromtimestamp(mtime, timezone.utc).strftime(
+                   "%Y-%m-%d %H:%M:%S")
+        base = (why + f" Its modification time is {when}Z, which is Immich's "
+                "capture time — this service stamps every delivered file with "
+                "it and Syncthing carries it to the phone, and Google Photos "
+                "falls back to it when there is no tag.")
+        # True of all three readings below, so it is said in all three
+        # rather than only in the happy one.
+        frail = (" The mtime is the weaker carrier either way: it does not "
+                 "survive anything that rewrites the file.")
+
+        # An mtime is an instant with no zone, and Google Photos shows it as
+        # UTC: Snapchat-618209934.jpg came back labelled GMT+00:00. So the
+        # moment is right and the clock on screen is the capture zone's
+        # offset out -- which is nothing at UTC and five hours across most of
+        # this library.
+        kindz, zone = zone_source(exif, says or {}, taken_at)
+        off = zone_hours(kindz, zone, taken_at)
+        if off is None:
+            return {"dated": True, "level": "warn", "tag": tag, "state": state,
+                    "value": None, "others": others,
+                    "headline": "Dated by its modification time, zone unknown",
+                    "reason": base + " Google Photos shows that instant as "
+                              "UTC. Nothing here knows which zone the photo "
+                              "was taken in, so whether the time on screen is "
+                              "the time on the clock cannot be said." + frail}
+        if abs(off) < 1 / 60:
+            return {"dated": True, "level": "ok", "tag": tag, "state": state,
+                    "value": None, "others": others,
+                    "headline": "Dated by its modification time, not its metadata",
+                    "reason": base + " This photo was taken at UTC, so the "
+                              "instant and the wall clock are the same number "
+                              "and it lands right." + frail}
+
+        local = _naive((says or {}).get("local_date_time"))
+        crosses = local is not None and (
+            local.hour + local.minute / 60 < off if off > 0
+            else local.hour + local.minute / 60 >= 24 + off)
+        day = (" And it was taken within that of midnight, so Google Photos "
+               "puts it on the wrong day as well." if crosses else
+               " The day is right; the time of day is not.")
+        return {"dated": True, "level": "warn", "tag": tag, "state": state,
+                "value": None, "others": others,
+                "headline": f"Dated by its modification time, {abs(off):g}h out",
+                "reason": base + " But an mtime is an instant with no zone and "
+                          f"Google Photos shows it as UTC, while this photo "
+                          f"was taken at {zone} — so it appears {abs(off):g} "
+                          f"hours {'early' if off > 0 else 'late'} there."
+                          + day
+                          + (" That zone is this library's rule for a photo of "
+                             "this age rather than anything in the file."
+                             if kindz == "assumed" else "") + frail}
+
     extra = ""
+    if (state == BLANK and mtime is not None and want is not None
+            and abs(mtime - want) <= 120):
+        extra += (" Its modification time is correct — this service stamps "
+                  "every delivered file with Immich's capture instant — and "
+                  "that does not save it. A file with no date tag at all "
+                  "falls through to the mtime and lands on the right day; "
+                  "one carrying a blank tag does not, which is the "
+                  "difference between two files from this library that took "
+                  "the same route and landed nine hundred days apart.")
     if others:
         extra = (" The file does carry a date elsewhere — "
                  + ", ".join(f"{o['tag']} {o['value'].strip()}" for o in others)
@@ -544,6 +647,82 @@ def verdict(exif: dict, kind: str | None = None) -> dict:
             "headline": "Would fall back to upload time",
             "reason": why + extra + " Google Photos will file it under the day "
                       "it was uploaded."}
+
+
+# A zone Immich reports as UTC on a file with no coordinates is a default,
+# not a finding. Told apart because the consequence differs by five hours.
+UTC_ISH = ("utc", "utc+0", "utc+00:00", "+00:00", "+0000", "z", "gmt", "gmt+0")
+
+
+def _assumed(taken_at: str | None) -> tuple[str, str] | None:
+    """The owner's own rule for a photo that carries no zone.
+
+    Not readable from any file: it is where they were living, and this
+    library spans a move. Configured rather than constant, and off unless
+    both halves are set.
+    """
+    cfg = settings.load()
+    before, offset = (cfg.assume_zone_before or "").strip(), \
+        (cfg.assume_zone_offset or "").strip()
+    if not before or not offset or _offset_hours(offset) is None:
+        return None
+    when = db.capture_time(taken_at)
+    edge = db.capture_time(before)
+    if when is None or edge is None or when >= edge:
+        return None
+    return offset, before
+
+
+def zone_source(exif: dict, says: dict,
+                taken_at: str | None = None) -> tuple[str, str | None]:
+    """Where the time zone came from, and what it was.
+
+    Three provenances with three different weights. The file's own
+    `OffsetTimeOriginal` is the photographer's camera saying what it was set
+    to. GPS is Immich deriving a zone from where the shutter was pressed --
+    just as good. Neither is the third case, where Immich has nothing and
+    reports UTC, and the wall clock it then shows is the UTC instant wearing
+    a local label.
+    """
+    own = pick(exif, "EXIF:OffsetTimeOriginal", "EXIF:OffsetTime")[0]
+    if isinstance(own, str) and not is_blank(own) and _offset_hours(own) is not None:
+        return "file", own.strip()
+    zone = says.get("time_zone")
+    if says.get("latitude") is not None and says.get("longitude") is not None:
+        return "gps", zone
+    if zone and str(zone).strip().lower() not in UTC_ISH:
+        return "immich", str(zone).strip()
+    guess = _assumed(taken_at)
+    if guess:
+        return "assumed", guess[0]
+    return "none", zone
+
+
+def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | None:
+    """The zone as a number of hours, or None when it is not known.
+
+    A named zone is resolved at the capture instant rather than today, so
+    the answer is right across a DST boundary. "none" is deliberately not
+    zero: not knowing the offset and knowing it to be zero are different,
+    and conflating them is the whole of this section.
+    """
+    if kind == "none" or not zone:
+        return None
+    direct = _offset_hours(zone)
+    if direct is not None:
+        return direct
+    text = str(zone).strip()
+    if text.lower() in UTC_ISH:
+        return 0.0
+    when = db.capture_time(taken_at)
+    if when is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        off = datetime.fromtimestamp(when, ZoneInfo(text)).utcoffset()
+        return off.total_seconds() / 3600 if off else 0.0
+    except Exception:  # noqa: BLE001  -- missing tzdata, or not a zone name
+        return None
 
 
 def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None:
@@ -638,6 +817,14 @@ def _findings(rep: dict) -> list[dict]:
     dst = (rep.get("outbox") or {}).get("exif") or {}
     name = rep.get("filename") or ""
 
+    # What the send did, when one was asked for. First, because it is the
+    # thing the reader just pressed a button to make happen, and a refusal
+    # explains everything underneath it.
+    sent = rep.get("sent")
+    if sent:
+        out.append({"level": "ok" if sent.get("ok") else "bad",
+                    "text": sent["text"]})
+
     for where, block in (("Immich", rep.get("immich") or {}),
                          ("the outbox", rep.get("outbox") or {})):
         err = (block.get("exif") or {}).get("error") or block.get("error")
@@ -690,14 +877,51 @@ def _findings(rep: dict) -> list[dict]:
                         "same sidecar, so they agree, and a library of "
                         "undated files reads as zero."})
 
-    # 4. The camera's own name against the file's own clock.
+    # 4. Whether the zone is known at all. A wall clock with no zone behind
+    #    it is a number, not a time, and this library spans a move.
+    if ref and "error" not in ref and (rep.get("says") or {}).get("ok"):
+        src_kind, zone = zone_source(ref, rep["says"], asset.get("taken_at"))
+        place = (rep["says"] or {}).get("place")
+        if src_kind == "file":
+            out.append({"level": "ok", "text":
+                        f"The file records its own time zone ({zone}), which "
+                        "settles the reading whatever else is missing."})
+        elif src_kind == "gps":
+            out.append({"level": "ok", "text":
+                        f"The zone is {zone}, which Immich derived from the "
+                        "coordinates in the file"
+                        + (f" ({place})." if place else ".")})
+        elif src_kind == "immich":
+            out.append({"level": "ok", "text":
+                        f"Immich holds the zone as {zone}."})
+        elif src_kind == "assumed":
+            out.append({"level": "warn", "text":
+                        f"No zone in the file and no coordinates, so this "
+                        f"library's own rule applies: taken before "
+                        f"{settings.load().assume_zone_before}, so "
+                        f"{zone}. That is a decision about where its owner "
+                        "was living, not a reading — it is right for a photo "
+                        "taken at home and wrong for one taken on a trip."})
+        else:
+            out.append({"level": "warn", "text":
+                        "No time zone anywhere: not in the file, and no "
+                        "coordinates for Immich to derive one from. Immich "
+                        "reports UTC because it has nothing else, so the "
+                        "time it displays is the UTC instant wearing a local "
+                        "label — a photo taken at 11:20 in Karachi reads as "
+                        "06:20 here and in Google Photos, and the two agreeing "
+                        "is not evidence either is right. Only the date it "
+                        "was taken can settle this, and that is a decision "
+                        "rather than a reading."})
+
+    # 5. The camera's own name against the file's own clock.
     want = filename_time(name)
     got = _exif_dt(pick(ref, *(VIDEO_DATE if is_video(ref, kind)
                                else PHOTO_DATE))[0])
     if want and got:
         out.append(_clock_finding(name, want, got, ref))
 
-    # 5. The two copies against each other -- the promise the relay is
+    # 6. The two copies against each other -- the promise the relay is
     #    actually on the hook for.
     a, b = rep.get("immich") or {}, rep.get("outbox") or {}
     if a.get("ok") and b.get("present"):
@@ -720,14 +944,14 @@ def _findings(rep: dict) -> list[dict]:
                         + (f" Tags that differ: {', '.join(changed)}."
                            if changed else "")})
 
-    # 6. Whatever exiftool wanted to complain about.
+    # 7. Whatever exiftool wanted to complain about.
     for where, exif in (("Immich's copy", src), ("the outbox copy", dst)):
         w = exif.get("Warning")
         for line in (w if isinstance(w, list) else [w] if w else []):
             out.append({"level": "warn",
                         "text": f"exiftool on {where}: {line}"})
 
-    # 7. What the ledger believes, against what the file says.
+    # 8. What the ledger believes, against what the file says.
     if got and asset.get("exif_taken_at"):
         led = db.capture_time(asset["exif_taken_at"])
         off = _offset_hours(pick(ref, "EXIF:OffsetTimeOriginal",
@@ -772,8 +996,8 @@ async def trace(filename: str, send: bool = False) -> dict:
                      "exif_taken_at", "date_mismatch", "forced", "outbox_name",
                      "attempts", "last_error", "missing_at")}
 
-    if send and not row.get("outbox_name"):
-        rep["sent"] = await _send_now(row["id"])
+    if send:
+        rep["sent"] = await _send_now(row)
         row = dict(db.connect().execute(
             "SELECT * FROM assets WHERE id = ?", (row["id"],)).fetchone())
         rep["asset"]["outbox_name"] = row.get("outbox_name")
@@ -797,24 +1021,163 @@ async def trace(filename: str, send: bool = False) -> dict:
             got = key == "immich"      # fetched to a temp file, not read in place
             rep[key]["dates"] = _dates(exif, kind, downloaded=got)
             rep[key]["tags"] = _tag_table(exif, kind, downloaded=got)
-            rep[key]["verdict"] = verdict(exif, kind)
+            # Only a copy read in place has a modification time worth
+            # anything; Immich's was downloaded moments ago.
+            rep[key]["verdict"] = verdict(exif, kind,
+                                          mtime=rep[key].get("mtime"),
+                                          taken_at=row.get("taken_at"),
+                                          says=rep.get("says"))
     rep["findings"] = _findings(rep)
     return rep
 
 
-async def _send_now(asset_id: str) -> dict:
-    """Push this one asset through, so there is a second copy to compare."""
+def _why_not_sendable(row: dict) -> str | None:
+    """The reason this asset will not go out, or None if it will.
+
+    `forced` bypasses the date window and nothing else: claim_batch still
+    excludes confirmed assets, motion components, video when video is off,
+    anything over the size ceiling and anything held back by a date
+    mismatch. Every one of those made the button do nothing, and it said so
+    nowhere -- which is the exact failure this tool was built to end,
+    committed by the tool itself.
+    """
+    cfg = settings.load()
+    state = row.get("state")
+    # A confirmed asset may be sent again from here, and only from here.
+    #
+    # Invariant 4 exists because re-sending duplicates a photo. That is true
+    # of a file whose bytes have changed and false of one whose have not:
+    # Google Photos matches an upload against what it already holds, so an
+    # identical file is recognised, not added, and Free up space clears it
+    # again on the next run. Which makes a deliberate re-send the only way
+    # to see what actually leaves this building for a file whose outbox copy
+    # was cleared months ago -- and those are the files worth asking about,
+    # since a wrong date is noticed in Google Photos, long after the fact.
+    #
+    # The condition is the bytes, so that is what is checked. Nothing
+    # automatic re-sends anything: claim_batch still excludes 'confirmed',
+    # and this is a button in Tools pressed at one named file.
+    if state == "confirmed" and cfg.fix_dates and feeder.needs_date_fix(
+            row.get("taken_at"), row.get("exif_taken_at")):
+        return ("it is already confirmed and 'Write corrected dates' would "
+                "alter it on the way out. A changed file is a new photo to "
+                "Google Photos, so this one really would arrive as a "
+                "duplicate rather than being recognised. Turn that setting "
+                "off to send it untouched")
+    if row.get("missing_at"):
+        return ("Immich no longer serves the original: the asset is in the "
+                "ledger but its file is offline or moved out of an external "
+                "library")
+    if db.motion_parts_among([row["id"]]):
+        return ("it is the video half of a motion photo. The still carries "
+                "the clip inside it, and relaying the component on its own "
+                "would put a stray video in Google Photos")
+    if (row.get("kind") or "").upper() == "VIDEO" and not cfg.include_video:
+        return "video is switched off in Settings"
+    size = int(row.get("size") or 0)
+    if size and size > cfg.max_asset_bytes:
+        return (f"it is {size / 1e6:.0f} MB, over the {cfg.max_asset_mb} MB "
+                "per-file ceiling in Settings")
+    if row.get("date_mismatch") and not cfg.fix_dates:
+        return ("its date was corrected in Immich and 'Write corrected "
+                "dates' is off, so sending it would hand Google Photos the "
+                "stale date — which it then keeps")
+    if cfg.paused:
+        return "the relay is paused"
+    ready, detail = feeder.outbox_ready()
+    if not ready:
+        return f"the outbox is not there: {detail}"
+    return None
+
+
+async def _send_now(row: dict) -> dict:
+    """Push this one asset through, so there is a second copy to compare.
+
+    It used to return ok:True whether or not a byte moved, and the page
+    never showed the answer either way. A file blocked by any of nine
+    different conditions came back looking exactly like a file that had
+    never been asked for.
+    """
+    # A name in the ledger is not a file in the outbox. A confirmed asset
+    # keeps its `outbox_name` for good -- the file left the outbox because
+    # Google Photos cleared it off the phone, which is *how* it was
+    # confirmed -- so asking the ledger here would announce "already in the
+    # outbox" about a file that demonstrably is not, and on exactly the
+    # kind of file somebody traces: one they found in Google Photos wearing
+    # the wrong date.
+    name = row.get("outbox_name")
+    if name and os.path.exists(os.path.join(config.OUTBOX_DIR, name)):
+        return {"ok": True, "moved": False, "text":
+                f"Already in the outbox as {name}, so nothing was sent — the "
+                "two copies below are the ones already there."}
+
+    why = _why_not_sendable(row)
+    if why:
+        text = f"Not sent, because {why}"
+        return {"ok": False, "moved": False,
+                "text": text if text.endswith(".") else text + "."}
+
     c = db.connect()
     with db._lock:  # noqa: SLF001
+        # Unconditionally 'pending', confirmed included. That CASE was the
+        # guard, and _why_not_sendable is the guard now -- a narrower one,
+        # testing whether the bytes will change rather than whether the file
+        # has been somewhere.
         c.execute("UPDATE assets SET forced=1, attempts=0, last_error=NULL, "
-                  "state=CASE WHEN state='confirmed' THEN state ELSE 'pending' END "
-                  "WHERE id = ?", (asset_id,))
+                  "state='pending' WHERE id = ?", (row["id"],))
         c.commit()
         db._bump()  # noqa: SLF001
     try:
         async with feeder.CYCLE_LOCK:
             _, used = feeder.reconcile()
             await feeder.top_up(used)
-        return {"ok": True}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return {"ok": False, "moved": False, "text":
+                f"The send failed: {type(exc).__name__}: {str(exc)[:200]}"}
+
+    # Did anything actually move? top_up reports no per-asset outcome, and
+    # the cap can decline this file without raising anything at all.
+    #
+    # The name is not the evidence -- `outbox_name` is recorded when the
+    # transfer is set up and survives the download failing, so a file that
+    # never arrived still carries one. Only the file being on disk means it
+    # was sent. (Nothing is at risk from that either way: confirmation
+    # needs state='queued' AND seen_on_phone=1, and a failed asset is
+    # neither. But reporting "Sent" over an empty outbox is its own lie.)
+    after = db.connect().execute("SELECT * FROM assets WHERE id = ?",
+                                 (row["id"],)).fetchone()
+    after = dict(after) if after else {}
+    if after.get("last_error") or after.get("state") == "failed":
+        return {"ok": False, "moved": False, "text":
+                "The send failed: "
+                + (after.get("last_error") or "no reason was recorded")}
+    name = after.get("outbox_name")
+    if name and os.path.exists(os.path.join(config.OUTBOX_DIR, name)):
+        again = (" This one was confirmed already, so it has gone out a "
+                 "second time — byte for byte the same file, which Google "
+                 "Photos recognises rather than adds, and Free up space "
+                 "clears again on its next run."
+                 if row.get("state") == "confirmed" else "")
+        return {"ok": True, "moved": True, "text":
+                f"Sent. It is in the outbox as {name}." + again}
+    if name:
+        return {"ok": False, "moved": False, "text":
+                f"The ledger reserved the name {name} but no file is in the "
+                "outbox, and nothing recorded an error — check the log for "
+                "this cycle."}
+
+    # list_outbox, not reconcile: reconcile is what confirms assets from
+    # their absence, and running it a second time to read a byte count
+    # would be doing the ledger's most consequential work for a number.
+    cfg = settings.load()
+    _, used = feeder.list_outbox()
+    if used + int(row.get("size") or 0) > cfg.outbox_max_bytes:
+        return {"ok": False, "moved": False, "text":
+                f"The outbox is full — {used / config.GB:.1f} of "
+                f"{cfg.outbox_max_gb} GB in use, and this file needs "
+                f"{int(row.get('size') or 0) / 1e6:.0f} MB. It makes room as "
+                "Google Photos clears the phone, so try again after a "
+                "free-up."}
+    return {"ok": False, "moved": False, "text":
+            "Nothing was written and nothing recorded an error, which should "
+            "not happen — check the log for this cycle."}

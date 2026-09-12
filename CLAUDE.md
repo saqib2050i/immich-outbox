@@ -57,8 +57,27 @@ promise. Nothing the phone reports is ever treated as confirmation —
 **3. Immich is read-only.** Three permissions: `asset.read`,
 `asset.download`, `server.about`. Never add a write scope.
 
-**4. Already-confirmed assets are never re-sent.** They are in Google
-Photos; re-sending creates a duplicate.
+**4. Nothing automatic re-sends a confirmed asset.** They are in Google
+Photos, and `claim_batch` excludes `state='confirmed'` outright, so no
+cycle, window, sweep or setting can put one back in the queue.
+
+The reason behind the rule is narrower than the rule, and the one exception
+turns on it. Re-sending duplicates a photo *when the bytes have changed*:
+Google Photos matches an upload against what it already holds, so a file
+that is byte for byte identical is recognised rather than added, and Free
+up space clears it again on its next run. So `diagnose._send_now()` — one
+button, in Tools, aimed at one named file — will send a confirmed asset
+again, and refuses only when the file would be altered on the way out
+(`fix_dates` and a real date mismatch), which is the case where it really
+would arrive as a second photo.
+
+That exception exists because a wrong date is noticed *in Google Photos*,
+months after the fact, by which time the outbox copy is long gone — and
+without it there is no way to see what actually left the building for
+precisely the files worth asking about. Note the trap in the other
+direction: once anything starts stamping files on their way out, a re-sent
+file is no longer identical, and this exception has to be re-examined
+rather than inherited.
 
 ## Architecture
 
@@ -182,6 +201,20 @@ companion holds no storage permission, which is what makes "it cannot
 delete a photo" an Android guarantee. Syncthing hashes every block it
 moves, so a device it lists as holding a file has a byte-identical copy.
 
+**The send button must account for itself.** `forced` bypasses the date
+window and *nothing else*: `claim_batch` still excludes confirmed assets,
+motion components, video when video is off, oversized files and anything a
+date mismatch holds back, and `top_up` declines when paused, unmounted, or
+at the cap. `_why_not_sendable()` checks each by name before the ledger is
+touched, because all nine used to return `ok: True` into a field the page
+never rendered.
+
+And `outbox_name` is not evidence a file arrived — it is recorded when the
+transfer is set up and survives the download failing. Ask the filesystem.
+The ledger itself is safe either way (confirmation needs `state='queued'`
+**and** `seen_on_phone=1`), but a report that says "Sent" over an empty
+outbox is the failure this tool exists to catch, wearing its own uniform.
+
 **Never assume which clock a filename was written by.** The Pixel camera
 names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
 with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a
@@ -236,6 +269,91 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 `exifInfo.make` and `.model` come back as `""` rather than null on a file
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
+
+**A zone Immich reports is not always a zone Immich knows.** It derives one
+from GPS when the file carries no offset tag, and reports UTC when it has
+neither -- the same string, opposite facts, five hours apart for most of
+this library:
+
+    PXL_20240101_062038690   Model Town, Punjab, Pakistan  -> Asia/Karachi
+    Snapchat-618209934       no coordinates at all         -> "UTC+0"
+
+`zone_source()` separates them into four: the file's own offset (best --
+honour it whatever the date), GPS-derived, something else Immich holds, and
+nothing at all. In that last case the wall clock Immich shows *is* the UTC
+instant wearing a local label, so a photo taken at 11:20 in Karachi reads
+as 06:20 in Immich and 06:20 in Google Photos -- and the two agreeing is
+not evidence either is right. It is the same number twice.
+
+Which is why "Snapchat-618209934.jpg is correctly dated" was a weaker claim
+than it looked: Google Photos and Immich agree because both are displaying
+the same UTC instant, not because anybody established the photo was taken
+at Greenwich. It was taken in Pakistan, and it is five hours early on both
+screens.
+
+That is a decision rather than a reading, so it lives in two settings --
+`assume_zone_before` and `assume_zone_offset`, here 2026-03-04 and +05:00,
+the date its owner left Pakistan. A file carrying a zone of its own is
+honoured whatever its date, coordinates outrank the rule because a photo
+taken on a trip says so itself, and the rule applies only when there is
+nothing else. Blank either half and it assumes nothing.
+
+**The modification-time fallback is only ever right at UTC.** An mtime is
+an instant with no zone and Google Photos displays it as UTC -- the
+Snapchat file came back labelled GMT+00:00. So every file relying on that
+fallback shows its capture zone's offset early: nothing at Greenwich, five
+hours across most of this library, and a day early as well for anything
+taken between midnight and 05:00 local. `verdict()` says which of the three
+it is, and says when the zone it used came from the rule rather than the
+file.
+
+**Blank poisons the fallback; absent does not.** Two files from this
+library, the same route, both stamped with a correct modification time,
+landing nine hundred days apart:
+
+    Snapchat-618209934.jpg   tag absent          -> Jan 1 2024, 6:30 AM
+    PXL_20240101_062038690   tag present, empty  -> today, 12:33 PM
+
+One variable. A blank tag evidently reads to Android's media scanner as
+metadata it cannot parse, and it never reaches the modification time; an
+absent tag falls through cleanly. Which makes the blank-versus-missing
+distinction the thing that *predicts* where a photo lands, not merely a
+description of what is in it — so `verdict()` rescues a MISSING tag with a
+good mtime and never a BLANK one, and says out loud why the correct
+`FileModifyDate` two rows below it does not help.
+
+It also narrows what needs fixing — with one caveat not yet measured. A
+file with no date tag at all falls through to the mtime, and the one
+observed doing so landed correctly. But that file was taken at UTC+0, where
+the instant and the wall clock are the same number. An mtime is an absolute
+instant carrying no zone, so a Karachi-era photo taken at 11:20:38 +05:00
+is stamped 06:20:38Z, and Google Photos showed the Snapchat file's mtime
+as GMT+00:00 — which predicts that such a photo displays five hours early,
+and on the wrong day entirely when it was taken before 05:00 local. That is
+a prediction from two data points, not a measurement. Until somebody looks
+up an absent-tag Karachi file in Google Photos, "no tag is fine" is only
+established for UTC.
+
+**A modification time is a real carrier, and the verdict has to count it.**
+`feeder.stamp_capture_time()` sets every delivered file's mtime to Immich's
+capture instant, Syncthing preserves it to the phone, and Google Photos
+falls back to it when a file has no date tag. That is not a theory:
+`Snapchat-618209934.jpg` carries no date tag of any kind — nothing but
+`Software: Picasa` — and Google Photos dated it Jan 1 2024, 6:30 AM, the
+same second as the outbox copy's mtime.
+
+`verdict()` said "would fall back to upload time" about that file, which
+was this tool being wrong out loud about a file that was fine — the exact
+failure it exists to prevent, pointed the other way. A missing tag is now
+checked against the delivered copy's mtime before any such claim is made.
+
+Two things follow. Only a copy **read in place** may be credited with its
+mtime: Immich's is fetched to a temp file and is always today. And the
+fallback is weaker than the tag in two specific ways — an mtime does not
+survive anything that rewrites the file, and it carries no zone, so what
+Google Photos displays for a photo taken outside UTC is not settled by
+anything here. The confirmed case happens to be UTC+0, where the two
+readings are indistinguishable.
 
 **The mismatch figures cannot see this fault, by construction.**
 `needs_date_fix()` compares `fileCreatedAt` against

@@ -582,3 +582,542 @@ def test_a_file_blanked_all_the_way_through(rig):
     assert v["dated"] is False and v["state"] == diagnose.BLANK
     assert v["others"] == [], "nothing in this file is a date"
     assert "carry a date elsewhere" not in v["reason"]
+
+
+# ---- "Send it, then trace" ----------------------------------------------
+#
+# `forced` bypasses the date window and nothing else. claim_batch still
+# excludes confirmed assets, motion components, video when video is off,
+# anything over the size ceiling and anything a date mismatch holds back;
+# top_up declines when paused, when the outbox is not mounted, and when the
+# cap is reached. Every one of those made the button do nothing, and
+# _send_now returned ok:True regardless -- which the page then did not
+# render at all. Nine ways to press a button and be told nothing.
+
+def _row(**over):
+    from app import db
+    db.upsert_assets([asset(1, name="IMG_0001.jpg")])
+    c = db.connect()
+    if over:
+        sets = ", ".join(f"{k}=?" for k in over)
+        c.execute(f"UPDATE assets SET {sets} WHERE id='asset-1'",
+                  tuple(over.values()))
+        c.commit()
+    return dict(c.execute("SELECT * FROM assets WHERE id='asset-1'").fetchone())
+
+
+async def test_a_confirmed_asset_can_be_sent_again_from_here(rig, monkeypatch):
+    """Invariant 4 exists because re-sending duplicates a photo. That is
+    true of a file whose bytes changed and false of one whose have not:
+    Google Photos matches an upload against what it holds, so an identical
+    file is recognised rather than added, and Free up space clears it again.
+
+    Which makes this the only way to see what actually leaves the building
+    for a file whose outbox copy was cleared months ago -- and those are the
+    ones worth asking about, since a wrong date is noticed in Google Photos
+    long after the fact.
+    """
+    from conftest import fake_download
+    from app import db, diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row(state="confirmed",
+                                        outbox_name="IMG_0001.jpg"))
+    assert out["ok"] is True and out["moved"] is True
+    assert "second time" in out["text"]
+    assert "recognises rather than adds" in out["text"]
+    after = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-1'").fetchone())
+    assert after["state"] == "queued"
+
+
+async def test_a_confirmed_asset_that_would_be_altered_is_refused(rig):
+    """The one case where it really would duplicate: a changed file is a new
+    photo to Google Photos, so dedupe cannot save it."""
+    from app import diagnose, settings
+    settings.save({"fix_dates": True})
+    out = await diagnose._send_now(_row(
+        state="confirmed", taken_at="2024-01-05T03:47:33Z",
+        exif_taken_at="2019-01-01T00:00:00Z"))
+    assert out["ok"] is False and out["moved"] is False
+    assert "really would arrive as a duplicate" in out["text"]
+
+
+async def test_nothing_automatic_re_sends_a_confirmed_asset(rig):
+    """The narrower guard must not have widened the automatic path. This is
+    invariant 4 where it actually lives."""
+    from app import db
+    db.upsert_assets([asset(1)])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='confirmed', forced=1 WHERE id='asset-1'")
+    c.commit()
+    from app import settings
+    rows = db.claim_batch(10 ** 9, 10, settings.load().eligibility)
+    assert [r["id"] for r in rows] == []
+
+
+async def test_a_motion_component_is_refused_and_says_why(rig):
+    """The still carries the clip. Relaying the component alone puts a
+    stray video in the library."""
+    from app import db, diagnose
+    row = _row()
+    db.connect().execute("INSERT OR IGNORE INTO motion_parts (id) VALUES (?)",
+                         (row["id"],))
+    db.connect().commit()
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False
+    assert "motion photo" in out["text"]
+
+
+async def test_video_switched_off_is_a_reason_not_a_silence(rig):
+    from app import db, diagnose, settings
+    settings.save({"include_video": False})
+    db.upsert_assets([asset(2, kind="VIDEO", name="VID_0002.mp4")])
+    row = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-2'").fetchone())
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False
+    assert "video is switched off" in out["text"]
+
+
+async def test_over_the_size_ceiling_is_a_reason(rig):
+    from app import diagnose, settings
+    settings.save({"max_asset_mb": 1})
+    out = await diagnose._send_now(_row(size=50 * 1024 * 1024))
+    assert out["ok"] is False
+    assert "ceiling" in out["text"]
+
+
+async def test_a_held_back_date_mismatch_is_a_reason(rig):
+    """Sending it would hand Google Photos the stale date, which it keeps."""
+    from app import diagnose, settings
+    settings.save({"fix_dates": False})
+    out = await diagnose._send_now(_row(date_mismatch=1))
+    assert out["ok"] is False
+    assert "corrected in Immich" in out["text"]
+
+
+async def test_paused_is_a_reason(rig):
+    from app import diagnose, settings
+    settings.save({"paused": True})
+    out = await diagnose._send_now(_row())
+    assert out["ok"] is False and "paused" in out["text"]
+
+
+async def test_an_outbox_that_is_not_there_is_a_reason(rig):
+    """The condition invariant 1 rests on, and it used to be silent here.
+
+    The guard only fires when the ledger says files should be in the outbox
+    and none are -- an empty unmarked directory with nothing in flight is a
+    fresh start, and outbox_ready() claims it."""
+    from app import config, db, diagnose
+    db.upsert_assets([asset(9, name="IMG_0009.jpg")])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='queued', outbox_name='IMG_0009.jpg' "
+              "WHERE id='asset-9'")
+    c.commit()
+    row = _row()
+
+    gone = rig.root / "not-mounted"
+    gone.mkdir()
+    config.OUTBOX_DIR = str(gone)
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False, out
+    assert "outbox is not there" in out["text"], out
+
+
+async def test_an_asset_immich_cannot_serve_is_a_reason(rig):
+    from app import diagnose
+    out = await diagnose._send_now(_row(missing_at="2026-01-01T00:00:00Z"))
+    assert out["ok"] is False
+    assert "no longer serves" in out["text"]
+
+
+async def test_already_in_the_outbox_says_so_rather_than_nothing(rig):
+    """The commonest case by far: the file traced a moment ago is still
+    there, and the button did nothing without a word."""
+    import os
+    from app import config, diagnose
+    row = _row(outbox_name="IMG_0001.jpg")
+    open(os.path.join(config.OUTBOX_DIR, "IMG_0001.jpg"), "wb").write(b"x")
+    out = await diagnose._send_now(row)
+    assert out["ok"] is True and out["moved"] is False
+    assert "Already in the outbox" in out["text"]
+
+
+async def test_a_confirmed_file_is_not_called_still_in_the_outbox(rig):
+    """A confirmed asset keeps its outbox_name for good: the file left the
+    outbox because Google Photos cleared it off the phone, which is *how*
+    it was confirmed. Reading the ledger here announced "already in the
+    outbox" about a file that demonstrably was not -- and on exactly the
+    kind of file somebody traces, one they found in Google Photos wearing
+    the wrong date.
+
+    The send itself then fails for want of a download stub, which is not
+    what this is testing. What it tests is that the precondition asks the
+    filesystem rather than the ledger."""
+    import os
+    from app import config, diagnose
+    row = _row(state="confirmed", outbox_name="IMG_0001.jpg")
+    assert not os.path.exists(os.path.join(config.OUTBOX_DIR, "IMG_0001.jpg"))
+
+    out = await diagnose._send_now(row)
+    assert "Already in the outbox" not in out["text"], out
+
+
+async def test_a_queued_file_whose_copy_went_missing_can_be_sent_again(rig,
+                                                                       monkeypatch):
+    """Not confirmed, and the file is not there. That is not a reason to
+    refuse -- it is the reason to send."""
+    from conftest import fake_download
+    from app import diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row(outbox_name="IMG_0001.jpg"))
+    assert out["moved"] is True, out
+
+
+async def test_a_send_that_works_says_where_it_went(rig, monkeypatch):
+    from conftest import fake_download
+    from app import diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row())
+    assert out["ok"] is True and out["moved"] is True
+    assert "IMG_0001.jpg" in out["text"]
+
+
+async def test_a_full_outbox_is_reported_rather_than_shrugged_at(rig,
+                                                                 monkeypatch):
+    """top_up declines without raising, so this used to come back ok:True
+    over an outbox that had refused the file."""
+    from conftest import fake_download
+    from app import diagnose, immich, settings
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    settings.save({"outbox_max_gb": 0})
+    out = await diagnose._send_now(_row(size=5_000_000))
+    assert out["ok"] is False and out["moved"] is False
+    assert "outbox is full" in out["text"]
+
+
+async def test_the_send_result_reaches_the_report(rig):
+    """It was returned and then dropped on the floor: the page never read
+    it, so a refusal looked identical to a file that was never asked for."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59"})
+    rep["sent"] = {"ok": False, "moved": False, "text": "Not sent, because X."}
+    assert any("Not sent, because X." in f["text"]
+               for f in diagnose._findings(rep))
+
+
+async def test_a_failed_download_is_not_reported_as_sent(rig, monkeypatch):
+    """`outbox_name` is recorded when the transfer is set up and survives
+    the download failing, so the name is not evidence the file arrived.
+    Reporting "Sent" over an empty outbox was the tool telling the exact
+    kind of lie it exists to catch.
+
+    Nothing is at risk from the row itself: confirmation needs
+    state='queued' AND seen_on_phone=1, and a failed asset is neither.
+    """
+    import os
+    from app import config, db, diagnose, immich
+
+    async def explode(asset_id):
+        raise RuntimeError("Name or service not known")
+    monkeypatch.setattr(immich, "stream_original", explode)
+
+    out = await diagnose._send_now(_row())
+    after = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-1'").fetchone())
+
+    assert after["outbox_name"], "the name is recorded even so"
+    assert not os.path.exists(
+        os.path.join(config.OUTBOX_DIR, after["outbox_name"]))
+    assert out["ok"] is False and out["moved"] is False
+    assert "failed" in out["text"]
+    assert after["state"] != "confirmed"
+
+
+async def test_the_send_is_the_first_thing_the_report_says(rig):
+    """It is what the reader just pressed a button to make happen, and a
+    refusal explains everything underneath it."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59"})
+    rep["immich"] = {"ok": False, "error": "connection refused"}
+    rep["sent"] = {"ok": False, "moved": False, "text": "Not sent, because X."}
+    assert diagnose._findings(rep)[0]["text"] == "Not sent, because X."
+
+
+# ---- the modification time is a real carrier ----------------------------
+#
+# Snapchat-618209934.jpg has no date tag of any kind -- not DateTimeOriginal,
+# not CreateDate, nothing but Software: Picasa -- and Google Photos dated it
+# Jan 1 2024, 6:30 AM, the same second as the outbox copy's mtime. The
+# verdict called that file "would fall back to upload time", which was this
+# tool being wrong out loud about a file that was fine.
+#
+# feeder.stamp_capture_time() sets every delivered file's mtime to Immich's
+# capture instant, and Syncthing preserves it to the phone. It was built for
+# exactly this and predates all of the above.
+
+import datetime as _dt
+
+SNAP_TAKEN = "2024-01-01T06:30:52.000Z"
+SNAP_MTIME = _dt.datetime(2024, 1, 1, 6, 30, 52,
+                          tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_a_stamped_modification_time_dates_the_file(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert v["dated"] is True, v
+    assert v["level"] == "warn"
+    assert "modification time" in v["headline"]
+    assert "2024-01-01 06:30:52" in v["reason"]
+
+
+def test_the_weakness_of_that_carrier_is_stated(rig):
+    """It works, and it is not as good as the tag. Both are true and the
+    report says both."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert "does not survive" in v["reason"]
+    assert "falls back to it when there is no tag" in v["reason"]
+
+
+def test_a_downloaded_copy_is_never_credited_with_its_mtime(rig):
+    """Immich's copy is fetched to a temp file moments earlier, so its mtime
+    is today. trace() passes one only for a copy read in place."""
+    from app import diagnose
+    import time
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=time.time(), taken_at=SNAP_TAKEN)
+    assert v["dated"] is False, v
+    assert "upload time" in v["headline"]
+
+
+def test_no_mtime_means_the_old_answer_still_stands(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE")
+    assert v["dated"] is False
+    assert v["headline"] == "Would fall back to upload time"
+
+
+def test_the_tag_still_beats_the_modification_time(rig):
+    """A real DateTimeOriginal is the strong answer and stays the headline."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "2024:01:01 06:30:52"},
+                         "IMAGE", mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert v["level"] == "ok"
+    assert v["headline"] == "Would be dated correctly by Google"
+
+
+# ---- blank poisons the fallback; absent does not ------------------------
+#
+# Measured, not reasoned. Two files from this library, the same route
+# (Immich -> outbox -> Syncthing -> Pixel -> Google Photos), both stamped
+# with a correct modification time, landing nine hundred days apart:
+#
+#   Snapchat-618209934.jpg   tag absent          -> Jan 1 2024, 6:30 AM
+#   PXL_20240101_062038690   tag present, empty  -> today, 12:33 PM
+#
+# One variable. A blank tag evidently reads to the media scanner as
+# metadata it cannot parse, and it never reaches the modification time.
+
+KARACHI_TAKEN = "2024-01-01T06:20:38.000Z"
+KARACHI_MTIME = _dt.datetime(2024, 1, 1, 6, 20, 38,
+                             tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_a_blank_tag_is_not_rescued_by_a_good_modification_time(rig):
+    """The whole finding in one assertion. This is the file that proved it,
+    and crediting it with its mtime would call a broken file good."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "", "EXIF:CreateDate": ""},
+                         "IMAGE", mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert v["dated"] is False, v
+    assert v["headline"] == "Would fall back to upload time"
+
+
+def test_and_the_report_says_why_the_good_mtime_does_not_help(rig):
+    """The table shows a correct FileModifyDate two lines below the verdict.
+    Without this the reader draws exactly the wrong conclusion from it."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": ""}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert "does not save it" in v["reason"]
+    assert "no date tag at all falls through" in v["reason"]
+
+
+def test_an_absent_tag_with_the_same_mtime_is_rescued(rig):
+    """Same modification time, same everything, one difference."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
+    assert v["dated"] is True, v
+    assert "modification time" in v["headline"]
+
+
+# ---- is the zone known, or merely reported? ------------------------------
+#
+# Immich derives a zone from GPS when the file carries no offset tag, and
+# reports UTC when it has neither. Those are the same string and opposite
+# facts, five hours apart for most of this library:
+#
+#   PXL_20240101_062038690   Model Town, Punjab, Pakistan  -> Asia/Karachi
+#   Snapchat-618209934       no coordinates at all         -> "UTC+0"
+
+GPS_SAYS = {"ok": True, "time_zone": "Asia/Karachi",
+            "latitude": 31.459011, "longitude": 74.37055,
+            "place": "Model Town, Punjab, Pakistan",
+            "local_date_time": "2024-01-01T11:20:38.000Z"}
+BLIND_SAYS = {"ok": True, "time_zone": "UTC+0", "latitude": None,
+              "longitude": None, "place": None,
+              "local_date_time": "2024-01-01T06:30:52.000Z"}
+
+
+def test_a_zone_derived_from_coordinates_is_a_finding(rig):
+    from app import diagnose
+    assert diagnose.zone_source({}, GPS_SAYS) == ("gps", "Asia/Karachi")
+
+
+def test_utc_on_a_file_with_no_coordinates_is_a_default(rig):
+    """Immich saying it does not know, not saying the photo was taken at
+    Greenwich. Reading the second as the first is how a Karachi photo comes
+    to look correct at five hours early."""
+    from app import diagnose
+    assert diagnose.zone_source({}, BLIND_SAYS)[0] == "none"
+
+
+def test_the_file_s_own_offset_outranks_everything(rig):
+    """Any pic that carries zone information is honoured regardless of when
+    it was taken."""
+    from app import diagnose
+    assert diagnose.zone_source(
+        {"EXIF:OffsetTimeOriginal": "+05:00"}, BLIND_SAYS) == ("file", "+05:00")
+
+
+def test_a_blank_offset_is_not_zone_information(rig):
+    """It is present and empty, like everything else in that file."""
+    from app import diagnose
+    assert diagnose.zone_source(
+        {"EXIF:OffsetTimeOriginal": ""}, BLIND_SAYS)[0] == "none"
+
+
+def test_a_file_with_no_zone_anywhere_is_said_to_have_none(rig):
+    from app import diagnose
+    rep = _report({"EXIF:Software": "Picasa"}, name="Snapchat-618209934.jpg")
+    rep["says"] = BLIND_SAYS
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "No time zone anywhere" in said, said
+    assert "not evidence either is right" in said, said
+
+
+def test_a_gps_zone_is_reported_as_settled(rig):
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": ""},
+                  name="PXL_20240101_062038690.jpg")
+    rep["says"] = GPS_SAYS
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "derived from the coordinates" in said, said
+    assert "Model Town" in said, said
+
+
+# ---- the owner's rule for a photo with no zone --------------------------
+#
+# Not readable from any file: it is where they were living, and this
+# library spans a move on 4 March 2026. Configured, so it is a fact about a
+# person rather than a constant in a diagnostic.
+
+def _rule(rig):
+    from app import settings
+    settings.save({"assume_zone_before": "2026-03-04",
+                   "assume_zone_offset": "+05:00"})
+
+
+def test_a_photo_older_than_the_move_is_read_at_the_offset(rig):
+    from app import diagnose
+    _rule(rig)
+    kind, zone = diagnose.zone_source({}, BLIND_SAYS, "2024-01-01T06:30:52Z")
+    assert (kind, zone) == ("assumed", "+05:00")
+
+
+def test_a_photo_after_the_move_is_not(rig):
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source(
+        {}, BLIND_SAYS, "2026-06-01T12:00:00Z")[0] == "none"
+
+
+def test_the_file_s_own_zone_still_wins_over_the_rule(rig):
+    """Any pic that contains timezone info, regardless of time period, is
+    honoured."""
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source({"EXIF:OffsetTimeOriginal": "+01:00"},
+                                BLIND_SAYS, "2024-01-01T06:30:52Z") == (
+        "file", "+01:00")
+
+
+def test_coordinates_still_win_over_the_rule(rig):
+    """A photo taken on a trip has GPS saying so, and that outranks a guess
+    about where its owner lived."""
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source({}, GPS_SAYS, "2024-01-01T06:20:38Z")[0] == "gps"
+
+
+def test_the_rule_is_off_until_both_halves_are_set(rig):
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2026-03-04",
+                   "assume_zone_offset": ""})
+    assert diagnose.zone_source({}, BLIND_SAYS, "2024-01-01T06:30:52Z")[0] == "none"
+
+
+# ---- and what that means for a file riding on its mtime -----------------
+
+def test_a_named_zone_resolves_to_hours_at_the_capture_instant(rig):
+    """Asia/Karachi, resolved then rather than now, so a DST boundary in
+    between cannot move it."""
+    from app import diagnose
+    assert diagnose.zone_hours("gps", "Asia/Karachi",
+                               "2024-01-01T06:20:38Z") == 5.0
+
+
+def test_not_knowing_the_offset_is_not_knowing_it_to_be_zero(rig):
+    """Conflating those is the whole of this section."""
+    from app import diagnose
+    assert diagnose.zone_hours("none", "UTC+0", "2024-01-01T06:20:38Z") is None
+
+
+def test_an_mtime_file_taken_in_karachi_shows_five_hours_early(rig):
+    """The correction this forces. Google Photos shows an mtime as UTC --
+    Snapchat-618209934.jpg came back labelled GMT+00:00 -- so the instant is
+    right and the clock on screen is the offset out."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN,
+                         says=GPS_SAYS)
+    assert v["level"] == "warn"
+    assert "5h out" in v["headline"]
+    assert "appears 5 hours early" in v["reason"]
+    assert "day is right" in v["reason"]
+
+
+def test_a_photo_taken_before_dawn_lands_on_the_wrong_day_too(rig):
+    """Local 02:00 at +05:00 is 21:00 the previous day in UTC."""
+    from app import diagnose
+    says = dict(GPS_SAYS, local_date_time="2024-01-01T02:00:00.000Z")
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=_dt.datetime(2023, 12, 31, 21, 0,
+                                            tzinfo=_dt.timezone.utc).timestamp(),
+                         taken_at="2023-12-31T21:00:00.000Z", says=says)
+    assert "wrong day" in v["reason"], v["reason"]
+
+
+def test_a_genuine_utc_photo_on_its_mtime_is_simply_right(rig):
+    from app import diagnose
+    says = dict(BLIND_SAYS, time_zone="UTC+0", latitude=51.5, longitude=0.0)
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN, says=says)
+    assert v["level"] == "ok"
+    assert "lands right" in v["reason"]

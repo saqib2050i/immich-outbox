@@ -323,6 +323,15 @@ async def asset_detail(asset_id: str) -> dict:
         "make": exif.get("make") or None,
         "model": exif.get("model") or None,
         "type": (item.get("type") or "").upper(),
+        # Where the zone came from. Immich derives one from GPS when the
+        # file carries no offset tag, and falls back to UTC when it has
+        # neither -- so "UTC+0" on a file with no coordinates is Immich
+        # saying it does not know, not saying the photo was taken at
+        # Greenwich. Without this the two are the same string.
+        "latitude": exif.get("latitude"),
+        "longitude": exif.get("longitude"),
+        "place": ", ".join(str(exif[k]) for k in ("city", "state", "country")
+                           if exif.get(k)) or None,
     }
 
 

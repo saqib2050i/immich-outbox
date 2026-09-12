@@ -10,6 +10,148 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.8.0
+
+**The modification-time fallback is only ever right at UTC, and most of
+this library is not.** An mtime is an instant carrying no zone, and Google
+Photos displays it as UTC — `Snapchat-618209934.jpg` came back labelled
+`GMT+00:00`. So a photo taken at 11:30 in Karachi and riding on its mtime
+shows 06:30, on both that screen and Immich's, and the two agreeing is not
+evidence either is right. It is the same number twice.
+
+Which retracts, again, half of what 2.7.3 concluded. That file was called
+correctly dated on the strength of Immich and Google Photos matching. They
+match because both are showing the same instant. The date is right; the
+time of day is five hours out.
+
+The verdict now separates the three readings of a file riding on its mtime:
+right at UTC, *N* hours out with the zone named, or zone unknown and so not
+answerable. Where the photo was taken before dawn, it says the day is wrong
+too — local 02:00 at +05:00 is 21:00 the day before.
+
+**Two new settings say where its owner was living**, because nothing in a
+file without a zone or coordinates can. `assume_zone_before` and
+`assume_zone_offset` — 2026-03-04 and +05:00 here, the date the move
+happened. The precedence is strict and each step outranks the next: the
+file's own `OffsetTimeOriginal`, honoured whatever the date; coordinates,
+since a photo taken on a trip says so itself; anything else Immich holds;
+then the rule. Blank either half and nothing is assumed.
+
+`zone_source()` also tells apart two things that were one string before.
+Immich derives a zone from GPS when the file has no offset tag and reports
+UTC when it has neither, so `Asia/Karachi` on a photo with coordinates is a
+finding and `UTC+0` on one without is Immich saying it does not know.
+
+## 2.7.3
+
+**The verdict was wrong about a file that was fine.**
+`Snapchat-618209934.jpg` carries no date tag of any kind — nothing but
+`Software: Picasa` — and the trace said *would fall back to upload time*.
+Google Photos had already dated it **Jan 1 2024, 6:30 AM**, correctly, to
+the same second as the outbox copy's modification time.
+
+`feeder.stamp_capture_time()` has always set every delivered file's mtime
+to Immich's capture instant, precisely because Google Photos falls back to
+one when there is no tag; Syncthing preserves it to the phone. That is what
+it was built for and it works. The verdict simply did not look.
+
+It looks now. A file with no usable tag whose delivered copy carries the
+capture instant as its mtime is reported as *dated by its modification
+time, not its metadata* — dated, with the mechanism named, and with its two
+specific weaknesses stated: an mtime does not survive anything that
+rewrites the file, and it carries no zone, so what Google Photos displays
+for a photo taken outside UTC is not settled by anything here. The
+confirmed case is UTC+0, where the two readings cannot be told apart.
+
+Only a copy **read in place** is credited with its mtime. Immich's is
+fetched to a temp file moments earlier and is always today.
+
+**And only a tag that is absent.** A blank one is not rescued, which was
+measured rather than reasoned: two files from this library took the same
+route with the same correct modification time and landed nine hundred days
+apart — `Snapchat-618209934.jpg`, tag absent, on Jan 1 2024 6:30 AM, and
+`PXL_20240101_062038690.jpg`, tag present and empty, on today at 12:33 PM.
+A blank tag evidently reads to the media scanner as metadata it cannot
+parse, and it never reaches the mtime.
+
+That makes blank-versus-missing the thing that *predicts* where a photo
+lands rather than just describing what is in it, and it narrows the fault:
+files with no date tag at all fall through to the mtime, and the one
+observed doing so landed correctly — though that file was UTC+0, where the
+instant and the wall clock are the same number, so "no tag is fine" is not
+yet established for a photo taken anywhere else. The report
+now says, on a blank-tag file, why the correct `FileModifyDate` two rows
+below the verdict does not save it.
+
+This also retracts a correction made in 2.7.1. `needs_date_fix()` once said
+a dateless file is safe because its modification time carries the date;
+that was called a disproven premise and removed. It is true, it is
+implemented, and it is back — with the caveat that a weaker carrier is not
+no carrier, and treating it as none overstates how much of this library is
+actually mis-dated.
+
+## 2.7.2
+
+**"Send it, then trace" had nine ways to do nothing and reported none of
+them.** `forced` bypasses the date window and nothing else, so `claim_batch`
+still excludes a confirmed asset, a motion component, video when video is
+off, anything over the size ceiling and anything a date mismatch holds
+back; `top_up` declines when the relay is paused, when the outbox is not
+mounted, and when the cap is reached. And a file already in the outbox
+skipped the send branch entirely. Each of those returned `ok: True`, and
+the page never read that field anyway — so the button was pressed, nothing
+happened, and the report said nothing about it. That is the exact failure
+this tool was built to end, committed by the tool itself.
+
+Each condition is now checked by name and the reason is the first line of
+the report, above everything else, because it explains what is underneath
+it.
+
+**It also called a failed download a success.** `outbox_name` is recorded
+when the transfer is set up and survives the download failing, so a file
+that never arrived still carries a name — and the check asked for the name
+rather than the file. Pressing send with Immich unreachable reported *Sent.
+It is in the outbox as never_sent.jpg* over an empty outbox. It looks at
+the file on disk now.
+
+Nothing was ever at risk from that row: confirmation requires
+`state='queued' AND seen_on_phone=1`, and a failed asset is neither. The
+ledger was right; the report was lying about it.
+
+**"Send it, then trace" will now re-send a confirmed file.** It refused,
+on the strength of invariant 4 — already-confirmed assets are never
+re-sent, because that duplicates the photo. But the reason is narrower than
+the rule: duplication happens when the *bytes* change. Google Photos
+matches an upload against what it already holds, so a byte-identical file
+is recognised rather than added, and Free up space clears it again on its
+next run.
+
+Which matters, because a wrong date is noticed *in Google Photos*, months
+later, by which time the outbox copy is long gone. Refusing meant there was
+no way to see what actually left the building for exactly the files worth
+asking about. It refuses only when the file would be altered on the way out
+— `fix_dates` together with a real date mismatch — which is the one case
+where it genuinely would arrive as a second photo.
+
+Nothing automatic changed: `claim_batch` still excludes `state='confirmed'`
+outright, and a test says so. This is one button, in Tools, aimed at one
+named file.
+
+**And a name in the ledger is not a file in the outbox.** A confirmed asset
+keeps its `outbox_name` for good — the file left the outbox *because*
+Google Photos cleared it off the phone, which is how it was confirmed — so
+reading the ledger announced "already in the outbox" about a file that
+demonstrably was not, while the outbox section three lines below correctly
+said it was gone. And it did so on exactly the kind of file somebody
+traces: one found in Google Photos wearing the wrong date, which is how it
+came to anyone's attention in the first place. That file now gets the
+reason it deserves — verified, cleared, never re-sent, and only Immich's
+original left to read.
+
+Also: `_send_now` was calling `reconcile()` a second time to read a byte
+count. That is the function that confirms assets from their absence, and it
+is not a way to ask how full the outbox is. It uses `list_outbox()`.
+
 ## 2.7.1
 
 The first trace of a real broken file, `PXL_20240101_062038690.jpg`, and
@@ -40,8 +182,7 @@ Also in this release, written before the merge and missed by it:
   compare `fileCreatedAt` against `exifInfo.dateTimeOriginal`, and on a
   Takeout import both were filled from the same sidecar, so they agree. A
   library of undated files reads as zero there. `needs_date_fix()` also
-  carried a premise this disproved — that a dateless file is safe because
-  its modification time carries the date — and it no longer claims that.
+  explains which fault it can and cannot see.
 - Checked against the live Immich response, which carries three traps in
   one payload: `localDateTime` is the wall clock with a misleading `Z`,
   `exifInfo.dateTimeOriginal` is a UTC instant despite its name, and

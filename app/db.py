@@ -135,11 +135,16 @@ def needs_date_fix(taken_at: str | None, exif_taken_at: str | None) -> bool:
     library of them. `diagnose.verdict()` reads the file instead, which is
     the only thing that can tell them apart.
 
-    A file with no date of its own is left alone here, and the reason once
-    given for that -- that its modification time carries the date for Google
-    Photos to fall back on -- is not true. A blank-dated photo uploaded from
-    the phone landed on the day it was uploaded, with a correct date sitting
-    unused in its own filename.
+    A file with no date of its own is left alone here, and the reason given
+    for that holds: `feeder.stamp_capture_time()` sets every delivered
+    file's modification time to Immich's capture instant, Syncthing carries
+    it to the phone, and Google Photos falls back to it. Confirmed on
+    Snapchat-618209934.jpg, which has no date tag of any kind and which
+    Google Photos dated to the same second as that mtime.
+
+    It is a weaker carrier than the tag -- no zone, and gone the moment
+    anything rewrites the file -- but it is not nothing, and treating it as
+    nothing overstates how much of this library is actually mis-dated.
     """
     want = capture_time(taken_at)
     have = capture_time(exif_taken_at)
