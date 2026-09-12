@@ -492,7 +492,7 @@ def _instant(value: object) -> float | None:
 
 def verdict(exif: dict, kind: str | None = None, *,
             mtime: float | None = None, taken_at: str | None = None,
-            says: dict | None = None) -> dict:
+            says: dict | None = None, downloaded: bool = False) -> dict:
     """Will Google Photos date this file, or file it under the upload?
 
     The only question that matters about a file on its way to the phone,
@@ -629,6 +629,16 @@ def verdict(exif: dict, kind: str | None = None, *,
                              if kindz == "assumed" else "") + frail}
 
     extra = ""
+    # Immich's copy is fetched to a temp file, so it has no delivered
+    # modification time to be judged on and this verdict is about its
+    # metadata alone. Saying only "would fall back to upload time" puts a
+    # cross beside a file the pipeline actually handles, one line above the
+    # tick that says so.
+    if downloaded:
+        extra += (" That is Immich's copy judged on its metadata alone: it "
+                  "was fetched here to a temporary file, so it has no "
+                  "delivered modification time to be read. What the phone "
+                  "receives is the outbox copy below.")
     if (state == BLANK and mtime is not None and want is not None
             and abs(mtime - want) <= 120):
         extra += (" Its modification time is correct — this service stamps "
@@ -1026,7 +1036,8 @@ async def trace(filename: str, send: bool = False) -> dict:
             rep[key]["verdict"] = verdict(exif, kind,
                                           mtime=rep[key].get("mtime"),
                                           taken_at=row.get("taken_at"),
-                                          says=rep.get("says"))
+                                          says=rep.get("says"),
+                                          downloaded=got)
     rep["findings"] = _findings(rep)
     return rep
 

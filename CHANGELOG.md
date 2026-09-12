@@ -10,6 +10,17 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.8.1
+
+**A cross beside a file the pipeline handles.** Tracing an undated file
+showed two verdicts: *Immich's original — would fall back to upload time*
+with a cross, and *In the outbox — dated by its modification time* with a
+tick, one line apart on the same photo. Both true, and the first read as a
+fault. Immich's copy is fetched here to a temporary file, so it has no
+delivered modification time to be judged on; that verdict is about its
+metadata alone, and it now says so and points at the copy the phone
+actually receives.
+
 ## 2.8.0
 
 **The modification-time fallback is only ever right at UTC, and most of

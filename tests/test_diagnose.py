@@ -1121,3 +1121,22 @@ def test_a_genuine_utc_photo_on_its_mtime_is_simply_right(rig):
                          mtime=SNAP_MTIME, taken_at=SNAP_TAKEN, says=says)
     assert v["level"] == "ok"
     assert "lands right" in v["reason"]
+
+
+def test_immichs_copy_is_judged_on_its_metadata_alone(rig):
+    """It is fetched to a temp file, so it has no delivered modification
+    time. Saying only "would fall back to upload time" puts a cross beside a
+    file the pipeline actually handles, one line above the tick saying so."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert v["dated"] is False
+    assert "temporary file" in v["reason"]
+    assert "outbox copy below" in v["reason"]
+
+
+def test_the_delivered_copy_carries_no_such_caveat(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN)
+    assert "temporary file" not in v["reason"]
