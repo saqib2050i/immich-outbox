@@ -182,6 +182,20 @@ companion holds no storage permission, which is what makes "it cannot
 delete a photo" an Android guarantee. Syncthing hashes every block it
 moves, so a device it lists as holding a file has a byte-identical copy.
 
+**The send button must account for itself.** `forced` bypasses the date
+window and *nothing else*: `claim_batch` still excludes confirmed assets,
+motion components, video when video is off, oversized files and anything a
+date mismatch holds back, and `top_up` declines when paused, unmounted, or
+at the cap. `_why_not_sendable()` checks each by name before the ledger is
+touched, because all nine used to return `ok: True` into a field the page
+never rendered.
+
+And `outbox_name` is not evidence a file arrived — it is recorded when the
+transfer is set up and survives the download failing. Ask the filesystem.
+The ledger itself is safe either way (confirmation needs `state='queued'`
+**and** `seen_on_phone=1`), but a report that says "Sent" over an empty
+outbox is the failure this tool exists to catch, wearing its own uniform.
+
 **Never assume which clock a filename was written by.** The Pixel camera
 names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
 with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a

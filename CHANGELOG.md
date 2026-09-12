@@ -10,6 +10,38 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.7.2
+
+**"Send it, then trace" had nine ways to do nothing and reported none of
+them.** `forced` bypasses the date window and nothing else, so `claim_batch`
+still excludes a confirmed asset, a motion component, video when video is
+off, anything over the size ceiling and anything a date mismatch holds
+back; `top_up` declines when the relay is paused, when the outbox is not
+mounted, and when the cap is reached. And a file already in the outbox
+skipped the send branch entirely. Each of those returned `ok: True`, and
+the page never read that field anyway — so the button was pressed, nothing
+happened, and the report said nothing about it. That is the exact failure
+this tool was built to end, committed by the tool itself.
+
+Each condition is now checked by name and the reason is the first line of
+the report, above everything else, because it explains what is underneath
+it.
+
+**It also called a failed download a success.** `outbox_name` is recorded
+when the transfer is set up and survives the download failing, so a file
+that never arrived still carries a name — and the check asked for the name
+rather than the file. Pressing send with Immich unreachable reported *Sent.
+It is in the outbox as never_sent.jpg* over an empty outbox. It looks at
+the file on disk now.
+
+Nothing was ever at risk from that row: confirmation requires
+`state='queued' AND seen_on_phone=1`, and a failed asset is neither. The
+ledger was right; the report was lying about it.
+
+Also: `_send_now` was calling `reconcile()` a second time to read a byte
+count. That is the function that confirms assets from their absence, and it
+is not a way to ask how full the outbox is. It uses `list_outbox()`.
+
 ## 2.7.1
 
 The first trace of a real broken file, `PXL_20240101_062038690.jpg`, and

@@ -638,6 +638,14 @@ def _findings(rep: dict) -> list[dict]:
     dst = (rep.get("outbox") or {}).get("exif") or {}
     name = rep.get("filename") or ""
 
+    # What the send did, when one was asked for. First, because it is the
+    # thing the reader just pressed a button to make happen, and a refusal
+    # explains everything underneath it.
+    sent = rep.get("sent")
+    if sent:
+        out.append({"level": "ok" if sent.get("ok") else "bad",
+                    "text": sent["text"]})
+
     for where, block in (("Immich", rep.get("immich") or {}),
                          ("the outbox", rep.get("outbox") or {})):
         err = (block.get("exif") or {}).get("error") or block.get("error")
@@ -772,8 +780,8 @@ async def trace(filename: str, send: bool = False) -> dict:
                      "exif_taken_at", "date_mismatch", "forced", "outbox_name",
                      "attempts", "last_error", "missing_at")}
 
-    if send and not row.get("outbox_name"):
-        rep["sent"] = await _send_now(row["id"])
+    if send:
+        rep["sent"] = await _send_now(row)
         row = dict(db.connect().execute(
             "SELECT * FROM assets WHERE id = ?", (row["id"],)).fetchone())
         rep["asset"]["outbox_name"] = row.get("outbox_name")
@@ -802,19 +810,119 @@ async def trace(filename: str, send: bool = False) -> dict:
     return rep
 
 
-async def _send_now(asset_id: str) -> dict:
-    """Push this one asset through, so there is a second copy to compare."""
+def _why_not_sendable(row: dict) -> str | None:
+    """The reason this asset will not go out, or None if it will.
+
+    `forced` bypasses the date window and nothing else: claim_batch still
+    excludes confirmed assets, motion components, video when video is off,
+    anything over the size ceiling and anything held back by a date
+    mismatch. Every one of those made the button do nothing, and it said so
+    nowhere -- which is the exact failure this tool was built to end,
+    committed by the tool itself.
+    """
+    cfg = settings.load()
+    state = row.get("state")
+    if state == "confirmed":
+        return ("it is already confirmed — in Google Photos — and this "
+                "service never re-sends a confirmed asset, because that "
+                "would put a duplicate in the library")
+    if row.get("missing_at"):
+        return ("Immich no longer serves the original: the asset is in the "
+                "ledger but its file is offline or moved out of an external "
+                "library")
+    if db.motion_parts_among([row["id"]]):
+        return ("it is the video half of a motion photo. The still carries "
+                "the clip inside it, and relaying the component on its own "
+                "would put a stray video in Google Photos")
+    if (row.get("kind") or "").upper() == "VIDEO" and not cfg.include_video:
+        return "video is switched off in Settings"
+    size = int(row.get("size") or 0)
+    if size and size > cfg.max_asset_bytes:
+        return (f"it is {size / 1e6:.0f} MB, over the {cfg.max_asset_mb} MB "
+                "per-file ceiling in Settings")
+    if row.get("date_mismatch") and not cfg.fix_dates:
+        return ("its date was corrected in Immich and 'Write corrected "
+                "dates' is off, so sending it would hand Google Photos the "
+                "stale date — which it then keeps")
+    if cfg.paused:
+        return "the relay is paused"
+    ready, detail = feeder.outbox_ready()
+    if not ready:
+        return f"the outbox is not there: {detail}"
+    return None
+
+
+async def _send_now(row: dict) -> dict:
+    """Push this one asset through, so there is a second copy to compare.
+
+    It used to return ok:True whether or not a byte moved, and the page
+    never showed the answer either way. A file blocked by any of nine
+    different conditions came back looking exactly like a file that had
+    never been asked for.
+    """
+    if row.get("outbox_name"):
+        return {"ok": True, "moved": False, "text":
+                f"Already in the outbox as {row['outbox_name']}, so nothing "
+                "was sent — the two copies below are the ones already there."}
+
+    why = _why_not_sendable(row)
+    if why:
+        return {"ok": False, "moved": False, "text":
+                f"Not sent, because {why}."}
+
     c = db.connect()
     with db._lock:  # noqa: SLF001
         c.execute("UPDATE assets SET forced=1, attempts=0, last_error=NULL, "
                   "state=CASE WHEN state='confirmed' THEN state ELSE 'pending' END "
-                  "WHERE id = ?", (asset_id,))
+                  "WHERE id = ?", (row["id"],))
         c.commit()
         db._bump()  # noqa: SLF001
     try:
         async with feeder.CYCLE_LOCK:
             _, used = feeder.reconcile()
             await feeder.top_up(used)
-        return {"ok": True}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return {"ok": False, "moved": False, "text":
+                f"The send failed: {type(exc).__name__}: {str(exc)[:200]}"}
+
+    # Did anything actually move? top_up reports no per-asset outcome, and
+    # the cap can decline this file without raising anything at all.
+    #
+    # The name is not the evidence -- `outbox_name` is recorded when the
+    # transfer is set up and survives the download failing, so a file that
+    # never arrived still carries one. Only the file being on disk means it
+    # was sent. (Nothing is at risk from that either way: confirmation
+    # needs state='queued' AND seen_on_phone=1, and a failed asset is
+    # neither. But reporting "Sent" over an empty outbox is its own lie.)
+    after = db.connect().execute("SELECT * FROM assets WHERE id = ?",
+                                 (row["id"],)).fetchone()
+    after = dict(after) if after else {}
+    if after.get("last_error") or after.get("state") == "failed":
+        return {"ok": False, "moved": False, "text":
+                "The send failed: "
+                + (after.get("last_error") or "no reason was recorded")}
+    name = after.get("outbox_name")
+    if name and os.path.exists(os.path.join(config.OUTBOX_DIR, name)):
+        return {"ok": True, "moved": True, "text":
+                f"Sent. It is in the outbox as {name}."}
+    if name:
+        return {"ok": False, "moved": False, "text":
+                f"The ledger reserved the name {name} but no file is in the "
+                "outbox, and nothing recorded an error — check the log for "
+                "this cycle."}
+
+    # list_outbox, not reconcile: reconcile is what confirms assets from
+    # their absence, and running it a second time to read a byte count
+    # would be doing the ledger's most consequential work for a number.
+    cfg = settings.load()
+    _, used = feeder.list_outbox()
+    if used + int(row.get("size") or 0) > cfg.outbox_max_bytes:
+        return {"ok": False, "moved": False, "text":
+                f"The outbox is full — {used / config.GB:.1f} of "
+                f"{cfg.outbox_max_gb} GB in use, and this file needs "
+                f"{int(row.get('size') or 0) / 1e6:.0f} MB. It makes room as "
+                "Google Photos clears the phone, so try again after a "
+                "free-up."}
+    return {"ok": False, "moved": False, "text":
+            "Nothing was written and nothing recorded an error, which should "
+            "not happen — check the log for this cycle."}

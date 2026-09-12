@@ -582,3 +582,190 @@ def test_a_file_blanked_all_the_way_through(rig):
     assert v["dated"] is False and v["state"] == diagnose.BLANK
     assert v["others"] == [], "nothing in this file is a date"
     assert "carry a date elsewhere" not in v["reason"]
+
+
+# ---- "Send it, then trace" ----------------------------------------------
+#
+# `forced` bypasses the date window and nothing else. claim_batch still
+# excludes confirmed assets, motion components, video when video is off,
+# anything over the size ceiling and anything a date mismatch holds back;
+# top_up declines when paused, when the outbox is not mounted, and when the
+# cap is reached. Every one of those made the button do nothing, and
+# _send_now returned ok:True regardless -- which the page then did not
+# render at all. Nine ways to press a button and be told nothing.
+
+def _row(**over):
+    from app import db
+    db.upsert_assets([asset(1, name="IMG_0001.jpg")])
+    c = db.connect()
+    if over:
+        sets = ", ".join(f"{k}=?" for k in over)
+        c.execute(f"UPDATE assets SET {sets} WHERE id='asset-1'",
+                  tuple(over.values()))
+        c.commit()
+    return dict(c.execute("SELECT * FROM assets WHERE id='asset-1'").fetchone())
+
+
+async def test_a_confirmed_asset_is_never_re_sent_and_says_why(rig):
+    """Invariant 4. Re-sending puts a duplicate in Google Photos."""
+    from app import diagnose
+    out = await diagnose._send_now(_row(state="confirmed"))
+    assert out["ok"] is False and out["moved"] is False
+    assert "already confirmed" in out["text"]
+    assert "duplicate" in out["text"]
+
+
+async def test_a_motion_component_is_refused_and_says_why(rig):
+    """The still carries the clip. Relaying the component alone puts a
+    stray video in the library."""
+    from app import db, diagnose
+    row = _row()
+    db.connect().execute("INSERT OR IGNORE INTO motion_parts (id) VALUES (?)",
+                         (row["id"],))
+    db.connect().commit()
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False
+    assert "motion photo" in out["text"]
+
+
+async def test_video_switched_off_is_a_reason_not_a_silence(rig):
+    from app import db, diagnose, settings
+    settings.save({"include_video": False})
+    db.upsert_assets([asset(2, kind="VIDEO", name="VID_0002.mp4")])
+    row = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-2'").fetchone())
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False
+    assert "video is switched off" in out["text"]
+
+
+async def test_over_the_size_ceiling_is_a_reason(rig):
+    from app import diagnose, settings
+    settings.save({"max_asset_mb": 1})
+    out = await diagnose._send_now(_row(size=50 * 1024 * 1024))
+    assert out["ok"] is False
+    assert "ceiling" in out["text"]
+
+
+async def test_a_held_back_date_mismatch_is_a_reason(rig):
+    """Sending it would hand Google Photos the stale date, which it keeps."""
+    from app import diagnose, settings
+    settings.save({"fix_dates": False})
+    out = await diagnose._send_now(_row(date_mismatch=1))
+    assert out["ok"] is False
+    assert "corrected in Immich" in out["text"]
+
+
+async def test_paused_is_a_reason(rig):
+    from app import diagnose, settings
+    settings.save({"paused": True})
+    out = await diagnose._send_now(_row())
+    assert out["ok"] is False and "paused" in out["text"]
+
+
+async def test_an_outbox_that_is_not_there_is_a_reason(rig):
+    """The condition invariant 1 rests on, and it used to be silent here.
+
+    The guard only fires when the ledger says files should be in the outbox
+    and none are -- an empty unmarked directory with nothing in flight is a
+    fresh start, and outbox_ready() claims it."""
+    from app import config, db, diagnose
+    db.upsert_assets([asset(9, name="IMG_0009.jpg")])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='queued', outbox_name='IMG_0009.jpg' "
+              "WHERE id='asset-9'")
+    c.commit()
+    row = _row()
+
+    gone = rig.root / "not-mounted"
+    gone.mkdir()
+    config.OUTBOX_DIR = str(gone)
+    out = await diagnose._send_now(row)
+    assert out["ok"] is False, out
+    assert "outbox is not there" in out["text"], out
+
+
+async def test_an_asset_immich_cannot_serve_is_a_reason(rig):
+    from app import diagnose
+    out = await diagnose._send_now(_row(missing_at="2026-01-01T00:00:00Z"))
+    assert out["ok"] is False
+    assert "no longer serves" in out["text"]
+
+
+async def test_already_in_the_outbox_says_so_rather_than_nothing(rig):
+    """The commonest case by far: the file traced a moment ago is still
+    there, and the button did nothing without a word."""
+    from app import diagnose
+    out = await diagnose._send_now(_row(outbox_name="IMG_0001.jpg"))
+    assert out["ok"] is True and out["moved"] is False
+    assert "Already in the outbox" in out["text"]
+
+
+async def test_a_send_that_works_says_where_it_went(rig, monkeypatch):
+    from conftest import fake_download
+    from app import diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row())
+    assert out["ok"] is True and out["moved"] is True
+    assert "IMG_0001.jpg" in out["text"]
+
+
+async def test_a_full_outbox_is_reported_rather_than_shrugged_at(rig,
+                                                                 monkeypatch):
+    """top_up declines without raising, so this used to come back ok:True
+    over an outbox that had refused the file."""
+    from conftest import fake_download
+    from app import diagnose, immich, settings
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    settings.save({"outbox_max_gb": 0})
+    out = await diagnose._send_now(_row(size=5_000_000))
+    assert out["ok"] is False and out["moved"] is False
+    assert "outbox is full" in out["text"]
+
+
+async def test_the_send_result_reaches_the_report(rig):
+    """It was returned and then dropped on the floor: the page never read
+    it, so a refusal looked identical to a file that was never asked for."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59"})
+    rep["sent"] = {"ok": False, "moved": False, "text": "Not sent, because X."}
+    assert any("Not sent, because X." in f["text"]
+               for f in diagnose._findings(rep))
+
+
+async def test_a_failed_download_is_not_reported_as_sent(rig, monkeypatch):
+    """`outbox_name` is recorded when the transfer is set up and survives
+    the download failing, so the name is not evidence the file arrived.
+    Reporting "Sent" over an empty outbox was the tool telling the exact
+    kind of lie it exists to catch.
+
+    Nothing is at risk from the row itself: confirmation needs
+    state='queued' AND seen_on_phone=1, and a failed asset is neither.
+    """
+    import os
+    from app import config, db, diagnose, immich
+
+    async def explode(asset_id):
+        raise RuntimeError("Name or service not known")
+    monkeypatch.setattr(immich, "stream_original", explode)
+
+    out = await diagnose._send_now(_row())
+    after = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-1'").fetchone())
+
+    assert after["outbox_name"], "the name is recorded even so"
+    assert not os.path.exists(
+        os.path.join(config.OUTBOX_DIR, after["outbox_name"]))
+    assert out["ok"] is False and out["moved"] is False
+    assert "failed" in out["text"]
+    assert after["state"] != "confirmed"
+
+
+async def test_the_send_is_the_first_thing_the_report_says(rig):
+    """It is what the reader just pressed a button to make happen, and a
+    refusal explains everything underneath it."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": "2023:01:01 07:57:59"})
+    rep["immich"] = {"ok": False, "error": "connection refused"}
+    rep["sent"] = {"ok": False, "moved": False, "text": "Not sent, because X."}
+    assert diagnose._findings(rep)[0]["text"] == "Not sent, because X."
