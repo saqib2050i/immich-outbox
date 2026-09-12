@@ -615,6 +615,25 @@
   .vrow.bad .vm{color:var(--alarm)}
   .vrow b{display:block;margin-bottom:2px}
   .vrow span{color:var(--dim)}
+  .propbox{margin-top:14px;border:1px solid var(--transit);
+    border-radius:var(--r-sm);padding:12px 14px}
+  .propbox h4{margin:0 0 4px;font-size:12.5px}
+  .propbox > p{margin:0 0 10px;font-size:12.5px;color:var(--dim);
+    line-height:1.55}
+  .propgrid{display:grid;grid-template-columns:minmax(9rem,auto) minmax(8rem,auto) 1fr;
+    gap:1px;background:var(--rule);border:1px solid var(--rule);
+    border-radius:var(--r-sm);overflow:hidden;font-size:12.5px}
+  .propgrid > div{background:var(--panel);padding:7px 10px;min-width:0;
+    overflow-wrap:anywhere}
+  .propgrid > div.h{background:var(--panel-2);font-weight:600;font-size:11px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .propgrid > div.v{color:var(--transit)}
+  .propgrid > div.src{color:var(--dim);font-size:11.5px;line-height:1.5}
+  .propwhy{margin:10px 0 0;font-size:11.5px;color:var(--dim);line-height:1.6}
+  @media (max-width:640px){
+    .propgrid{grid-template-columns:1fr}
+    .propgrid > div.h:not(:first-child){display:none}
+  }
   .tracesum{margin:0 0 10px;font-size:12.5px;color:var(--dim);line-height:1.6}
   .warnbox{border:1px solid var(--alarm);border-radius:var(--r-sm);
            padding:12px 14px;margin-top:14px;font-size:12.5px;color:var(--dim);
@@ -3015,6 +3034,64 @@ function renderTrace(d){
     vl.appendChild(row);
   });
   if (vl.children.length) traceOut.appendChild(vl);
+
+  // Phase 2: what a correction would be. Computed with the trace and kept
+  // behind a button, because it is a proposal and reading one is a
+  // deliberate act. Nothing here writes anything.
+  const prop = d.proposal || {};
+  if (prop.needed){
+    const act = document.createElement("div");
+    act.className = "act";
+    act.style.marginTop = "12px";
+    const btn = document.createElement("button");
+    btn.textContent = "Suggest a correction";
+    const box = document.createElement("div");
+    box.hidden = true;
+    btn.onclick = () => {
+      box.hidden = !box.hidden;
+      btn.textContent = box.hidden ? "Suggest a correction" : "Hide the suggestion";
+    };
+    act.appendChild(btn);
+    traceOut.append(act, box);
+
+    box.className = "propbox";
+    const h = document.createElement("h4");
+    h.textContent = "What would be written to the outbox copy";
+    const lead = document.createElement("p");
+    lead.textContent = prop.why
+      ? prop.why + ". Nothing is written by this page — this is the proposal."
+      : "Nothing is written by this page — this is the proposal.";
+    box.append(h, lead);
+
+    const g = document.createElement("div");
+    g.className = "propgrid";
+    ["Tag", "Value", "Where the value comes from"].forEach(t => {
+      const c = document.createElement("div");
+      c.className = "h"; c.textContent = t; g.appendChild(c);
+    });
+    (prop.writes || []).forEach(w => {
+      [[w.tag, "k"], [w.value, "v"], [w.from, "src"]].forEach(([t, cls]) => {
+        const c = document.createElement("div");
+        c.className = cls; c.textContent = t; g.appendChild(c);
+      });
+    });
+    box.appendChild(g);
+
+    (prop.writes || []).filter(w => w.why).forEach(w => {
+      const p = document.createElement("p");
+      p.className = "propwhy";
+      p.textContent = w.tag + " — " + w.why;
+      box.appendChild(p);
+    });
+    if (prop.untouched){
+      const p = document.createElement("p");
+      p.className = "propwhy";
+      p.textContent = prop.untouched;
+      box.appendChild(p);
+    }
+  } else if (prop.why){
+    traceOut.appendChild(traceLine("Correction: " + prop.why));
+  }
 
   // The tags themselves, so the verdict can be checked rather than taken on
   // trust. A tag that is there and empty is drawn differently from one that

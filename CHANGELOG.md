@@ -10,6 +10,40 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.9.0
+
+**Phase 2: the trace can propose a correction, and writes nothing.** Where
+the verdict says a file's timestamp needs correcting, Tools shows a *Suggest
+a correction* button, and it lays out every tag that would be written, its
+value, and which Immich field the value came from. A test asserts the
+proposal's own source contains no `subprocess`, no `open(`, no `os.utime`
+and no `UPDATE`: it is a description.
+
+EXIF gives no choice between correcting the time and recording the zone.
+`DateTimeOriginal` is *defined* as local time with no zone, so the value
+written is the wall clock and `OffsetTimeOriginal` is what stops it being
+ambiguous. Writing the instant there with an offset beside it would say the
+photo was taken five hours earlier than it was.
+
+The wall clock comes from two different places depending on what is known,
+and using the wrong one is that same five-hour error:
+
+| zone known from | what `localDateTime` is | proposed value |
+|---|---|---|
+| the file, or GPS | the wall clock | as it stands |
+| the owner's rule | the **instant** | plus the offset |
+
+Because Immich reports UTC when it has nothing to go on. A video is the
+third case and the opposite of both — QuickTime's `CreateDate` is UTC by
+specification, so it takes `fileCreatedAt` and no offset goes beside it.
+
+Where no zone can be established, nothing is proposed and the report says
+why: the instant is known and the wall clock is not, and there is no honest
+value for a tag defined as local time.
+
+Offsets are formatted from whole minutes, so India comes out at `+05:30`
+and Nepal at `+05:45` rather than being rounded to the hour.
+
 ## 2.8.2
 
 **The report stated two different times for one photo, and two opposite

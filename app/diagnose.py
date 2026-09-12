@@ -1034,6 +1034,148 @@ def _findings(rep: dict) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: what a correction would be. Nothing here writes, and nothing
+# here is reachable from a write path -- it returns a description.
+# ---------------------------------------------------------------------------
+
+def offset_text(hours: float) -> str:
+    """5.0 as "+05:00", and 5.75 as "+05:45".
+
+    Formatted from whole minutes rather than a rounded hour: India is at
+    +05:30 and Nepal at +05:45, and a format that rounds the hour writes
+    +06:30 for the first of those.
+    """
+    sign = "-" if hours < 0 else "+"
+    total = int(round(abs(hours) * 60))
+    return f"{sign}{total // 60:02d}:{total % 60:02d}"
+
+
+def _needs_correction(v: dict) -> bool:
+    """Does the delivered copy carry a date Google Photos will read right?
+
+    Two populations fail, and they fail differently. A tag that is blank or
+    missing leaves nothing to read -- some of those are rescued by the
+    modification time and some are not. And a file rescued by its mtime is
+    still wrong by the capture zone's offset, because an mtime is an instant
+    and Google Photos shows it as UTC.
+    """
+    if not v:
+        return False
+    if v.get("state") == VALUE:
+        return False
+    # Undated, or dated only by an mtime that is the wrong number of hours.
+    return not v.get("dated") or v.get("level") == "warn"
+
+
+def propose(rep: dict) -> dict:
+    """Exactly what would be written, and where each value came from.
+
+    EXIF gives no choice between "correct the time" and "record the zone":
+    DateTimeOriginal is defined as local time with no zone, so the value
+    written *is* the wall clock and the offset is what stops it being
+    ambiguous. Writing the UTC instant there and an offset beside it says
+    the photo was taken five hours earlier than it was.
+    """
+    out: dict = {"needed": False, "writes": []}
+    asset = rep.get("asset") or {}
+    says = rep.get("says") or {}
+    ob = rep.get("outbox") or {}
+    v = ob.get("verdict") or (rep.get("immich") or {}).get("verdict")
+
+    if not v:
+        out["why"] = ("Neither copy could be read, so there is nothing to "
+                      "base a correction on.")
+        return out
+    if not _needs_correction(v):
+        out["why"] = (f"Nothing to correct: {v['headline'].lower()}.")
+        return out
+    if not says.get("ok"):
+        out["why"] = ("Immich could not be asked what it holds, and every "
+                      "value a correction would use comes from there.")
+        return out
+
+    ref = (ob.get("exif") if isinstance(ob.get("exif"), dict) else None) or \
+        ((rep.get("immich") or {}).get("exif") or {})
+    taken_at = asset.get("taken_at")
+    local, off, zkind = wall_clock(says, ref, taken_at)
+    zone = zone_source(ref, says, taken_at)[1]
+
+    if is_video(ref, asset.get("kind")):
+        # QuickTime's CreateDate is UTC by specification -- the opposite of
+        # a still, and the one place the instant is the right value.
+        when = db.capture_time(taken_at)
+        if when is None:
+            out["why"] = "Immich holds no capture date for this video."
+            return out
+        out["needed"] = True
+        out["kind"] = "video"
+        out["writes"] = [{
+            "tag": "QuickTime:CreateDate",
+            "value": datetime.fromtimestamp(when, timezone.utc).strftime(EXIF_FMT),
+            "from": "Immich's fileCreatedAt, the UTC instant",
+            "why": "QuickTime records this in UTC by specification, unlike "
+                   "every EXIF date tag, so the instant is the right value "
+                   "and no offset belongs beside it."}]
+        out["why"] = v["headline"]
+        return out
+
+    if local is None:
+        out["why"] = ("Immich holds no capture date for this file, so there "
+                      "is nothing to write.")
+        return out
+    if off is None:
+        out["why"] = (
+            "The time zone is not known: the file carries none, Immich has "
+            "no coordinates to derive one from, and this library's rule "
+            "does not cover a photo of this date. DateTimeOriginal is local "
+            "time, so without a zone there is no way to say what to write — "
+            "the instant is known and the wall clock is not. Set the rule in "
+            "Settings, or leave this one alone.")
+        return out
+
+    src = {
+        "file": "the file's own OffsetTimeOriginal",
+        "gps": f"Immich's timeZone ({says.get('time_zone')}), derived from "
+               f"the coordinates in the file",
+        "immich": f"Immich's timeZone ({says.get('time_zone')})",
+        "assumed": f"this library's rule — taken before "
+                   f"{settings.load().assume_zone_before}, so {zone}",
+    }[zkind]
+    clock = ("Immich's localDateTime, the wall clock, with its Z discarded"
+             if zkind != "assumed" else
+             f"Immich's localDateTime plus {zone}; Immich reports UTC for "
+             "this file because it has nothing to go on, so what it shows is "
+             "the instant and the wall clock is that plus the offset")
+    stamp = offset_text(off)
+
+    out["needed"] = True
+    out["kind"] = "photo"
+    out["why"] = v["headline"]
+    out["writes"] = [
+        {"tag": "DateTimeOriginal", "value": local.strftime(EXIF_FMT),
+         "from": clock,
+         "why": "EXIF defines this as local time with no zone, which is why "
+                "the value is the wall clock and not the instant. This is "
+                "the tag Google Photos reads."},
+        {"tag": "OffsetTimeOriginal", "value": stamp, "from": src,
+         "why": "What stops the line above being ambiguous. Without it the "
+                "file is right only for as long as somebody remembers where "
+                "it was taken."},
+        {"tag": "CreateDate", "value": local.strftime(EXIF_FMT),
+         "from": clock,
+         "why": "The digitised date, same clock and same rule. Written so "
+                "the offset below modifies a tag that exists."},
+        {"tag": "OffsetTimeDigitized", "value": stamp, "from": src,
+         "why": "The pair of the line above."},
+    ]
+    out["untouched"] = (
+        "Nothing else. The image data is not re-encoded, no other tag is "
+        "written, and a file whose DateTimeOriginal already holds a value "
+        "is never overwritten.")
+    return out
+
+
 async def trace(filename: str, send: bool = False) -> dict:
     """The whole report for one file."""
     rep: dict = {"filename": (filename or "").strip(), "asked_at": db.now()}
@@ -1105,6 +1247,10 @@ async def trace(filename: str, send: bool = False) -> dict:
         rep["says"]["zone_from"] = zkind
 
     rep["findings"] = _findings(rep)
+    # Computed every time and revealed on request: it reads nothing the
+    # trace has not already read, so a second round trip would only buy a
+    # second download of Immich's copy.
+    rep["proposal"] = propose(rep)
     return rep
 
 
