@@ -168,6 +168,38 @@ It is used on a phone, so the narrow breakpoints are not an afterthought:
 a year's figures are one unbreakable ~400px string, and left inline they
 took the whole page's horizontal scrollbar with them.
 
+## Tracing one file
+
+`app/diagnose.py`, reachable from Tools. It fetches Immich's original to a
+temp file, reads the outbox copy, and puts the date tags side by side.
+Reach for it before believing anything about where a file's metadata went
+wrong — "it arrived damaged" and "this service damaged it" look identical
+from every other screen here, and telling them apart by hand costs a USB
+cable and an afternoon.
+
+The phone's copy is confirmed rather than read, and must stay that way: the
+companion holds no storage permission, which is what makes "it cannot
+delete a photo" an Android guarantee. Syncthing hashes every block it
+moves, so a device it lists as holding a file has a byte-identical copy.
+
+**Never assume which clock a filename was written by.** The Pixel camera
+names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
+with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a
+correct file — the name being five hours behind is the file being right.
+Older Google Camera builds, Samsung and most everything else wrote the local
+wall clock into the name. Reading the first convention as the second turned
+an entirely correct library into a five-hour fault and would have fired on
+almost every photo in it. So `_clock_finding` tries both readings, asserts
+neither, and calls a fault only when neither fits; a file carrying no zone
+at all is reported as unverifiable rather than accused.
+
+Separately, and still true: `rewrite_capture_date` writes
+`datetime.fromtimestamp(stamp, timezone.utc)` into `-AllDates`, which puts a
+UTC wall clock into `DateTimeOriginal` — a field EXIF defines as local time.
+That shifts every file it touches by the zone's offset. It is latent only
+because `fix_dates` is off; switching it on without fixing that would break
+correct files.
+
 ## Bugs that keep recurring
 
 Partial string edits have twice left **duplicate route definitions** where
