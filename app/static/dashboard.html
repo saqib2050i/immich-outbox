@@ -1820,11 +1820,26 @@ const tlOpenMonths = new Set();
 // itself after each exclusion and had to be reopened to do the next one.
 const tlOpenFiles = new Set();
 
-// The last payload we drew. The feeder writes to the ledger once per file,
-// and every write pushes an event, so this ran dozens of times a minute and
-// rebuilt the whole tree each time. Nothing to redraw means nothing to do.
+// The last payload we drew, and the last *shape* of it. They are two
+// separate things because they change at wildly different rates: which
+// years and months exist changes when a scan turns something up, perhaps
+// daily. The figures on them change on every file that moves -- several
+// times a second while a month is going out.
+//
+// Rebuilding the tree for a figure change made Library unusable at exactly
+// the moment it was most interesting. Every <details> was replaced, so each
+// open month slammed shut; restoring `open` fired `toggle`, which refetched
+// the body; and the feeder writes once per file, so pressing "Send the
+// whole month" meant watching the month you were reading collapse and
+// reload, over and over, until the send finished.
 let tlSignature = "";
+let tlStructure = "";
 let tlDrawing = false;
+
+// month key -> the parts of a row that hold a figure, so numbers can be
+// written into the page without rebuilding anything around them.
+const tlMonthRows = new Map();
+const tlYearRows = new Map();
 
 async function renderTimeline(){
   if (tlDrawing) return;
@@ -1849,7 +1864,6 @@ async function drawTimeline(){
   const signature = JSON.stringify(months);
   if (signature === tlSignature) return;   // identical data: leave the DOM alone
   tlSignature = signature;
-  monthCache.clear();                      // month bodies may have moved too
 
   const openYears = tlOpenYears, openMonths = tlOpenMonths;
 
@@ -1885,6 +1899,19 @@ async function drawTimeline(){
     years.get(y).push(m);
   });
 
+  // Same months as last time, different numbers on them. Write the numbers
+  // and leave the DOM exactly where it is: nothing collapses, no month body
+  // is refetched, nothing you had scrolled to moves.
+  const structure = [...years.keys()].join(",") + "|"
+                  + months.map(m => m.month).join(",");
+  if (structure === tlStructure && tlMonthRows.size){
+    paintFigures(months, years);
+    return;
+  }
+  tlStructure = structure;
+  tlMonthRows.clear();
+  tlYearRows.clear();
+
   // Open the newest year holding something that is going out, the first
   // time this is drawn. Otherwise the page opens on nothing actionable and
   // every visit starts with the same two clicks.
@@ -1896,12 +1923,6 @@ async function drawTimeline(){
 
   tlBody.innerHTML = "";
   for (const [year, list] of years){
-    const tot  = list.reduce((a, m) => a + m.total, 0);
-    const conf = list.reduce((a, m) => a + m.confirmed, 0);
-    const byt  = list.reduce((a, m) => a + m.bytes, 0);
-    const gain = list.reduce((a, m) => a + m.gain_bytes, 0);
-    const dism = list.reduce((a, m) => a + (m.dismissed || 0), 0);
-
     const yd = document.createElement("details");
     yd.className = "tl-yr";
     yd.dataset.year = year;
@@ -1916,17 +1937,12 @@ async function drawTimeline(){
     yn.className = "yn"; yn.textContent = year;
     const yf = document.createElement("span");
     yf.className = "yf";
-    const rest = list.reduce((a, m) => a + (m.resting || 0), 0);
-    yf.textContent = fmtNum(tot) + " files · " + fmtBytes(byt) + " · "
-                   + Math.round(tot ? (conf / tot) * 100 : 0) + "% done"
-                   + (rest ? " · " + fmtNum(rest) + " only if you ask" : "")
-                   + (dism ? " · " + fmtNum(dism) + " not being sent" : "")
-                   + (gain ? " · " + fmtBytes(gain) + " worth upgrading" : "");
     const yb = document.createElement("span");
     yb.className = "yb";
     const yi = document.createElement("i");
-    yi.style.width = (tot ? (conf / tot) * 100 : 0) + "%";
     yb.appendChild(yi);
+    paintYearFigures({yf, yi}, list);
+    tlYearRows.set(year, {yf, yi});
     // No spacer: `summary::before` is itself the first grid item, and a
     // fourth span pushed the figures onto a second row.
     ys.append(yn, yf, yb);
@@ -1934,6 +1950,90 @@ async function drawTimeline(){
 
     list.forEach(m => yd.appendChild(monthNode(m, openMonths)));
     tlBody.appendChild(yd);
+  }
+}
+
+// ---- the figures, written on their own -------------------------------
+//
+// Split out of the builders so the same code can either fill a row being
+// created or update one already on screen. Everything below writes text and
+// widths and nothing else: no element is replaced, so no <details> closes
+// and no `toggle` fires to refetch a body.
+
+function monthFigureText(m){
+  const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " done"];
+  if (m.sending)   bits.push(fmtNum(m.sending) + " to send");
+  if (m.resting)   bits.push(fmtNum(m.resting) + " only if you ask");
+  if (m.queued)    bits.push(m.queued + " in outbox");
+  if (m.dismissed) bits.push(fmtNum(m.dismissed) + " not being sent");
+  return bits.join(" · ");
+}
+
+function paintMonthTags(tags, m){
+  tags.textContent = "";
+  if (m.gain_bytes > 0){
+    const g = document.createElement("span");
+    g.className = "badge";
+    g.textContent = fmtBytes(m.gain_bytes) + " to upgrade";
+    tags.appendChild(g);
+  }
+}
+
+// Three states in the order the pipeline runs: backed up, in the outbox,
+// going out. What is left unpainted is resting or excluded -- which is the
+// point, since an empty bar means nothing is going to happen here.
+function paintMonthBar(bar, m){
+  bar.textContent = "";
+  const seg = (n, cls) => {
+    if (!n) return;
+    const i = document.createElement("i");
+    i.className = cls;
+    i.style.width = (m.total ? (n / m.total) * 100 : 0) + "%";
+    bar.appendChild(i);
+  };
+  seg(m.confirmed, "done");
+  seg(m.queued, "moving");
+  seg(m.sending, "go");
+}
+
+function paintYearFigures(row, list){
+  const sumOf = k => list.reduce((a, m) => a + (m[k] || 0), 0);
+  const tot = sumOf("total"), conf = sumOf("confirmed");
+  const rest = sumOf("resting"), dism = sumOf("dismissed");
+  const pct = tot ? (conf / tot) * 100 : 0;
+  row.yf.textContent =
+      fmtNum(tot) + " files · " + fmtBytes(sumOf("bytes")) + " · "
+    + Math.round(pct) + "% done"
+    + (rest ? " · " + fmtNum(rest) + " only if you ask" : "")
+    + (dism ? " · " + fmtNum(dism) + " not being sent" : "")
+    + (sumOf("gain_bytes") ? " · " + fmtBytes(sumOf("gain_bytes"))
+                             + " worth upgrading" : "");
+  row.yi.style.width = pct + "%";
+}
+
+/**
+ * The same months, new numbers. Called instead of a rebuild, which is the
+ * whole fix: an open month stays open, its body is not refetched, and the
+ * figure you were watching simply changes.
+ *
+ * A month body that is already open is deliberately left alone. It is a
+ * panel you opened and may be part-way through clicking, and replacing its
+ * contents under the cursor is the same rudeness at a smaller scale; it
+ * reloads when you collapse and reopen it, or when you press something in
+ * it, because those already redraw.
+ */
+function paintFigures(months, years){
+  for (const m of months){
+    const row = tlMonthRows.get(m.month);
+    if (!row) continue;
+    row.right.textContent = monthFigureText(m);
+    paintMonthTags(row.tags, m);
+    paintMonthBar(row.bar, m);
+    row.md.classList.toggle("done", m.total > 0 && m.confirmed === m.total);
+  }
+  for (const [year, list] of years){
+    const row = tlYearRows.get(year);
+    if (row) paintYearFigures(row, list);
   }
 }
 
@@ -1965,37 +2065,19 @@ function monthNode(m, openMonths){
   // "N left" said nothing about whether N was ever going to move. Outside
   // every date window a file sits pending by design, and reading that as a
   // backlog is what made the whole ledger look like a queue.
-  const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " done"];
-  if (m.sending)   bits.push(fmtNum(m.sending) + " to send");
-  if (m.resting)   bits.push(fmtNum(m.resting) + " only if you ask");
-  if (m.queued)    bits.push(m.queued + " in outbox");
-  if (m.dismissed) bits.push(fmtNum(m.dismissed) + " not being sent");
-  right.textContent = bits.join(" · ");
+  right.textContent = monthFigureText(m);
 
   const tags = document.createElement("span");
-  if (m.gain_bytes > 0){
-    const g = document.createElement("span");
-    g.className = "badge";
-    g.textContent = fmtBytes(m.gain_bytes) + " to upgrade";
-    tags.appendChild(g);
-  }
+  paintMonthTags(tags, m);
 
   // Three states, in the order the pipeline runs: backed up, in the outbox,
   // going out. What is left unpainted is resting or excluded -- which is
   // the point, since an empty bar means nothing is going to happen here.
   const bar = document.createElement("span");
   bar.className = "mb";
-  const seg = (n, cls) => {
-    if (!n) return;
-    const i = document.createElement("i");
-    i.className = cls;
-    i.style.width = (m.total ? (n / m.total) * 100 : 0) + "%";
-    bar.appendChild(i);
-  };
-  seg(m.confirmed, "done");
-  seg(m.queued, "moving");
-  seg(m.sending, "go");
+  paintMonthBar(bar, m);
 
+  tlMonthRows.set(m.month, {md, right, tags, bar});
   sum.append(nm, mid, right, tags, bar);
   md.appendChild(sum);
 
@@ -2338,6 +2420,8 @@ function qToggle(id, on){
   on ? qSelected.add(id) : qSelected.delete(id);
 }
 
+let qListSignature = "";
+
 async function renderQueue(){
   let q;
   try {
@@ -2380,6 +2464,19 @@ async function renderQueue(){
   qOrder = q.items.map(i => i.id);
   const live = new Set(qOrder);
   [...qSelected].forEach(id => { if (!live.has(id)) qSelected.delete(id); });
+
+  // The feeder writes to the ledger once per file and every write pushes an
+  // event, so this runs many times a minute -- almost always over a list
+  // that has not changed. Rebuilding it anyway threw away the scroll
+  // position of whoever was reading it. Milder than what Library was doing,
+  // and the same cause.
+  const listSignature = JSON.stringify(q.items);
+  if (listSignature === qListSignature && qList.children.length){
+    qRefreshBar();
+    qSetBusyOff();
+    return;
+  }
+  qListSignature = listSignature;
 
   qList.innerHTML = "";
   if (!q.items.length){
