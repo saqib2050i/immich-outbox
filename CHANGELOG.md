@@ -10,6 +10,49 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.5.0
+
+**The phone can look at Google Photos without pressing anything, and the
+dashboard can finally see that it did.**
+
+- **A look is its own instruction.** Until now the only thing the server
+  could ask for was a free-up, and reading Photos' backup panel rode along
+  inside it. So the dwell had no schedule of its own: it happened at most
+  once per cooldown, and *never* when the outbox was empty — which is
+  exactly when Photos most needs opening. A look presses nothing, takes
+  seconds, and has its own interval (`companion_watch_minutes`, 30).
+- **It looks before it presses.** With `companion_wait_for_backup` on (the
+  default), a free-up is held back while Photos says it is still uploading.
+  Pressing mid-upload clears whatever it has got through and leaves the
+  rest, which wakes the phone for a fraction of the job — and makes the
+  leftovers meaningless, since they could be unbacked files or simply the
+  next ones in Photos' queue.
+- **Which turns those leftovers into a finding.** When a free-up runs while
+  Photos claims to have finished, everything on the phone should go. Files
+  still in the outbox ten minutes later are files the phone is holding that
+  Google Photos has not taken, whatever its screen said. Measured by
+  confirmations rather than the outbox count, because `top_up()` refills on
+  its own cycle. Reported, not acted on — and only alerted once the same
+  pile has survived several free-ups, because Photos' media scanner lags
+  Syncthing and one remainder proves nothing.
+- **The phone says what it did and what it understands.** Reports now carry
+  `dwelled_seconds` and which action ran; check-ins carry a `features` list.
+  Whether a dwell had happened at all was previously answerable only by
+  reading the phone's wake locks over a cable, and whether a phone was new
+  enough to obey an instruction was a guess from its version string.
+- **The Phone card shows all of it** — dwell setting and whether this phone
+  understands it, when the next free-up is due, how long the last run stayed
+  in Photos, and anything held back. Plus a **Check Google Photos** button
+  beside *Free up space now*: the manual look, with no cooldown and nothing
+  to undo.
+- **Two service fixes.** `onServiceConnected` overwrote the last real status
+  with *"Running. Waiting to check in."* on every reconnect — an app update,
+  a reboot, or anything else reconfiguring accessibility — so a phone that
+  had checked in all night reported that it never had. It also rescheduled
+  the next poll to five seconds each time, turning a flurry of reconnects
+  into a flurry of polls. Both now only happen when there is nothing
+  already there.
+
 ## 2.4.1
 
 **Library stops collapsing under you while a month is sending.** Reported

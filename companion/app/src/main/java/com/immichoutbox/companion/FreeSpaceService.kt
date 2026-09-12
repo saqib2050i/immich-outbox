@@ -40,8 +40,15 @@ class FreeSpaceService : AccessibilityService() {
         prefs = Prefs(this)
         relay = Relay(this, prefs)
         instance = this
-        prefs.lastStatus = "Running. Waiting to check in."
-        scheduleNextPoll(5)
+        // Only when there is nothing to overwrite. The system reconnects an
+        // accessibility service on an app update, on a reboot, and whenever
+        // anything else reconfigures accessibility -- and this line used to
+        // wipe the last real status every time, so "Last activity" read
+        // "waiting to check in" on a phone that had checked in all night.
+        if (prefs.lastStatus.isEmpty()) prefs.lastStatus = "Running. Waiting to check in."
+        // Same reason: a reconnect used to drag the next check-in forward to
+        // five seconds, so a flurry of them became a flurry of polls.
+        if (!PollAlarm.pending(this)) scheduleNextPoll(5)
     }
 
     override fun onDestroy() {
@@ -113,16 +120,22 @@ class FreeSpaceService : AccessibilityService() {
 
         prefs.latestVersion = instruction.latestVersion
 
-        if (!instruction.freeSpace) {
+        val outcome = when (instruction.action) {
+            "free" -> { prefs.lastStatus = "Freeing space…"; freeUpSpace(instruction) }
+            "look" -> { prefs.lastStatus = "Looking in on Google Photos…"
+                        lookAtPhotos(instruction) }
+            else -> null
+        }
+        if (outcome == null) {
             prefs.lastStatus = "Checked in. " + (instruction.reason.ifEmpty { "Nothing to do." })
             return instruction.nextPollSeconds
         }
 
-        prefs.lastStatus = "Freeing space…"
-        val outcome = freeUpSpace(instruction)
-        prefs.lastStatus = outcome.detail
-        relay.report(instruction.requestId, outcome.ok, outcome.detail,
-                     outcome.items, outcome.freedBytes, outcome.backup)
+        prefs.lastStatus = outcome.detail +
+            (if (outcome.dwelledSeconds > 0) " Stayed ${outcome.dwelledSeconds}s." else "")
+        relay.report(instruction.requestId, instruction.action, outcome.ok,
+                     outcome.detail, outcome.items, outcome.freedBytes,
+                     outcome.dwelledSeconds, outcome.backup)
         return instruction.nextPollSeconds
     }
 
@@ -138,6 +151,67 @@ class FreeSpaceService : AccessibilityService() {
          *  it. Attached after the walk, because the only screen that shows
          *  it is the one we return to on the way out. */
         var backup: Labels.Backup? = null
+
+        /** Seconds actually spent standing in front of Google Photos. */
+        var dwelledSeconds: Int = 0
+    }
+
+    /**
+     * Open Google Photos, wait, and read what it says about itself.
+     *
+     * The cheap half of the job. It presses nothing, so there is no run to
+     * go wrong and nothing to undo -- which is what makes it affordable on
+     * a schedule, and what lets the server find out whether Photos has
+     * finished before deciding to press anything.
+     *
+     * Opening the app is also the point, not just the means: a foreground
+     * app escapes Doze and the standby bucket an app sinks into when nobody
+     * opens it, which is why a shelf phone uploads nothing all day and
+     * starts the moment it is picked up.
+     */
+    private fun lookAtPhotos(job: Relay.Instruction): Outcome {
+        val launch = packageManager.getLaunchIntentForPackage(PHOTOS)
+            ?: return Outcome(false, "Google Photos is not installed on this phone.")
+
+        // Never zero. The panel takes a moment to draw, and reading a blank
+        // screen is not the same as reading "nothing is backing up".
+        val stay = maxOf(job.dwellSeconds, LOOK_SECONDS)
+        val wake = wakeScreen(stay)
+        try {
+            sleep(1200)
+            val state = screenState()
+            if (state == LOCKED) {
+                return Outcome(false,
+                    "The phone is locked, and the companion cannot get past a lock " +
+                    "screen. Turn the screen lock off on this phone.")
+            }
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(launch)
+            sleep(2500)
+
+            // settlePhotos finds no free-up screens to back out of here, so
+            // it goes straight to reading and waiting -- which is the whole
+            // of a look.
+            val seen = settlePhotos(DEFAULT_LABELS, job, stay)
+            val outcome = Outcome(seen != null, when {
+                seen == null -> "Google Photos never came to the front, so there " +
+                                "was nothing to read — ${state}."
+                seen.active && seen.remaining > 0 ->
+                    "Google Photos is backing up ${seen.remaining} item(s)." +
+                    (if (seen.etaMinutes > 0) " About ${seen.etaMinutes} min left." else "")
+                seen.active -> "Google Photos is backing up."
+                else -> "Google Photos is not backing anything up."
+            })
+            outcome.backup = seen
+            outcome.dwelledSeconds = stay
+            return outcome
+        } finally {
+            try {
+                if (wake?.isHeld == true) wake.release()
+            } catch (e: Exception) {
+                // Releasing an already-released lock is not worth failing over.
+            }
+        }
     }
 
     private fun freeUpSpace(job: Relay.Instruction): Outcome {
@@ -174,7 +248,8 @@ class FreeSpaceService : AccessibilityService() {
             // However the run went, do not walk away leaving Photos on a
             // screen the next run would misread -- and read its backup panel
             // while we are standing in front of it. See settlePhotos.
-            outcome.backup = settlePhotos(triggers, job)
+            outcome.backup = settlePhotos(triggers, job, job.dwellSeconds)
+            outcome.dwelledSeconds = maxOf(job.dwellSeconds, 0)
             return outcome
         } finally {
             try {
@@ -339,8 +414,8 @@ class FreeSpaceService : AccessibilityService() {
      * Google Photos' backup is, so it reads that on the way past -- and, if
      * the server asked for it, stands there a while first.
      */
-    private fun settlePhotos(triggers: List<String>,
-                             job: Relay.Instruction): Labels.Backup? {
+    private fun settlePhotos(triggers: List<String>, job: Relay.Instruction,
+                             stay: Int): Labels.Backup? {
         var seen: Labels.Backup? = null
         try {
             for (step in 0 until MAX_BACKS) {
@@ -352,9 +427,9 @@ class FreeSpaceService : AccessibilityService() {
                 sleep(BACK_MS)
             }
             seen = readBackup(job.backupLabels)
-            if (job.dwellSeconds > 0) {
+            if (stay > 0) {
                 prefs.lastStatus = "Waiting in Google Photos so it can back up…"
-                dwell(job)?.let { seen = it }
+                dwell(stay, job.backupLabels)?.let { seen = it }
             }
             startActivity(Intent(this, MainActivity::class.java).addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
@@ -378,11 +453,11 @@ class FreeSpaceService : AccessibilityService() {
      * reading always beats an inactive one: the panel takes a moment to
      * appear, and "no panel" a second after arriving means nothing.
      */
-    private fun dwell(job: Relay.Instruction): Labels.Backup? {
+    private fun dwell(seconds: Int, marks: List<String>): Labels.Backup? {
         var best: Labels.Backup? = null
-        val until = android.os.SystemClock.elapsedRealtime() + job.dwellSeconds * 1000L
+        val until = android.os.SystemClock.elapsedRealtime() + seconds * 1000L
         while (android.os.SystemClock.elapsedRealtime() < until) {
-            val now = readBackup(job.backupLabels)
+            val now = readBackup(marks)
             if (now != null && (now.active || best == null)) best = now
             sleep(DWELL_STEP_MS)
         }
@@ -539,6 +614,11 @@ class FreeSpaceService : AccessibilityService() {
         // it. Often enough to catch the figure moving, rare enough that
         // walking the tree is not the thing keeping the phone busy.
         private const val DWELL_STEP_MS = 5000L
+
+        // The shortest a look may be. Long enough for the panel to draw and
+        // be read twice; short enough to run every half hour without the
+        // screen being on in any meaningful sense.
+        private const val LOOK_SECONDS = 12
 
         @Volatile
         var instance: FreeSpaceService? = null

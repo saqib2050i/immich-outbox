@@ -21,6 +21,19 @@ def enable(**over):
     return settings.save(values)
 
 
+def photos(active: bool, remaining: int = 0):
+    """A fresh reading of what Google Photos says about itself.
+
+    consider() looks before it frees, so without one of these it asks for a
+    look rather than a free-up -- which is the point of the feature, and a
+    nuisance in tests that are about something else.
+    """
+    from app import db
+    db.set_meta("companion_backup", json.dumps({
+        "active": active, "remaining": remaining, "eta_minutes": 0,
+        "detail": "seeded", "at": db.now(), "since": db.now()}))
+
+
 async def fill_to_cap(monkeypatch, n=3, size=100):
     """Put files in the outbox and cap it so nothing more fits."""
     from app import db, feeder, immich
@@ -164,6 +177,7 @@ async def test_a_full_outbox_with_work_behind_it_asks_by_itself(rig, monkeypatch
     db.set_meta("outbox_used", str(rig.used()))
 
     # The server decides on its own cycle; the phone only collects.
+    photos(active=False)
     companion.consider()
     answer = companion.poll({"device": "pixel", "battery": 90, "charging": True})
     assert answer["free_space"] is True
@@ -190,19 +204,34 @@ async def test_the_tail_of_a_finished_library_still_gets_asked_for(rig, monkeypa
     # Nothing at all is waiting to be sent: the library is fully queued.
     assert db.smallest_sendable(__import__("app").settings.load().eligibility) is None
 
+    photos(active=False)
     companion.consider()
     answer = companion.poll({"device": "pixel", "battery": 90, "charging": True})
     assert answer["free_space"] is True
     assert "nothing behind them" in answer["reason"]
 
 
-def test_an_empty_outbox_is_not_a_reason_to_wake_the_phone(rig):
-    """The cooldown stops it thrashing; this stops it asking for nothing."""
+def test_an_empty_outbox_is_never_a_free_up(rig):
+    """The cooldown stops it thrashing; this stops it pressing for nothing."""
     from app import companion
 
-    enable()
+    enable(companion_watch_minutes=0)
     assert companion.consider() is None
     assert companion.poll({"device": "pixel"})["free_space"] is False
+
+
+def test_an_empty_outbox_is_still_looked_in_on(rig):
+    """Nothing to clear does not mean nothing to know. Google Photos may
+    still have a queue of its own -- and opening it is what keeps it out of
+    the standby bucket an app sinks into when nobody opens it."""
+    from app import companion
+
+    enable(companion_watch_minutes=30)
+    req = companion.consider()
+    assert req and req["action"] == companion.LOOK
+    answer = companion.poll({"device": "pixel"})
+    assert answer["action"] == "look"
+    assert answer["free_space"] is False, "a look must never read as a free-up"
 
 
 @pytest.mark.asyncio
@@ -231,6 +260,7 @@ async def test_it_waits_out_the_cooldown_before_asking_again(rig, monkeypatch):
     db.upsert_assets([asset(i, size=100) for i in range(3, 8)])
     db.set_meta("outbox_used", str(rig.used()))
 
+    photos(active=False)
     companion.consider()
     assert companion.poll({"device": "pixel"})["free_space"] is True
     companion.record({"ok": True, "detail": "done"})
@@ -403,6 +433,7 @@ async def test_the_ask_is_made_and_logged_without_the_phone_saying_anything(
     db.set_meta("outbox_used", str(rig.used()))
 
     # No poll(). The phone is asleep and says nothing at all.
+    photos(active=False)
     assert companion.consider() is not None
     lines = [e["msg"] for e in db.recent_events(50)]
     assert any("free-up requested" in m for m in lines), lines
@@ -498,6 +529,180 @@ def test_a_backup_still_moving_is_not_reported_as_stuck(rig):
         "active": True, "remaining": 180, "detail": "Backing up 180 photos"}})
 
     assert "companion_backup_stuck" not in {a["key"] for a in alerts.evaluate()}
+
+
+# ---- look before you press ----------------------------------------------
+
+@pytest.mark.asyncio
+async def test_it_looks_before_it_presses(rig, monkeypatch):
+    """With no idea what Google Photos is doing, find out first.
+
+    A free-up run while Photos is mid-upload clears what it has got through
+    and leaves the rest. That is not harmful, but it wakes the phone for a
+    fraction of the job -- and it makes the leftovers meaningless, because
+    they could be unbacked files or simply the next ones in Photos' queue.
+    """
+    from app import companion, db
+
+    enable()
+    rig.cap(300)
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    db.set_meta("outbox_used", str(rig.used()))
+
+    req = companion.consider()
+    assert req and req["action"] == companion.LOOK
+
+
+@pytest.mark.asyncio
+async def test_a_backup_in_flight_holds_the_free_up_back(rig, monkeypatch):
+    from app import companion, db
+
+    enable()
+    rig.cap(300)
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    db.set_meta("outbox_used", str(rig.used()))
+
+    photos(active=True, remaining=250)
+    assert companion.consider() is None, "pressed the button mid-upload"
+
+    photos(active=False)
+    req = companion.consider()
+    assert req and req["action"] == companion.FREE
+
+
+def test_a_queued_look_does_not_announce_itself_as_a_free_up(rig):
+    """Two instructions now, and the dashboard has to say which is coming."""
+    from app import companion
+
+    enable()
+    companion.poll({"device": "pixel"})     # so it is not "never seen" instead
+    companion.request("manual", "", companion.LOOK)
+    assert "look in on" in companion.snapshot()["line"]
+
+    companion.cancel_request()
+    companion.request("manual")
+    assert "free space" in companion.snapshot()["line"]
+
+
+def test_a_look_does_not_start_the_cooldown(rig):
+    """Otherwise the watching would be what stops the work: every look
+    would buy Google Photos another hour of not being asked."""
+    from app import companion
+
+    enable(companion_cooldown_minutes=60)
+    companion.request("manual", "", companion.LOOK)
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "looked", "action": "look"})
+
+    assert companion.snapshot()["next_free_minutes"] == 0
+
+
+def test_how_long_it_stayed_is_reported_not_assumed(rig):
+    """Whether the phone dwelled at all used to be answerable only by
+    reading its wake locks over adb."""
+    from app import companion
+
+    enable(companion_dwell_enabled=True, companion_dwell_seconds=120)
+    companion.request("manual")
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "done", "freed_bytes": 10,
+                      "dwelled_seconds": 118})
+
+    assert companion.snapshot()["last_run"]["dwelled_seconds"] == 118
+
+
+def test_the_dashboard_is_told_whether_the_phone_understands_the_instruction(rig):
+    """It was inferred from the version string, so an instruction a phone
+    was too old for simply vanished."""
+    from app import companion
+
+    enable(companion_dwell_enabled=True)
+    companion.poll({"device": "pixel", "app_version": "2.3.0"})
+    assert companion.snapshot()["dwell"]["understood"] is False
+
+    companion.poll({"device": "pixel", "app_version": "2.5.0",
+                    "features": ["look", "dwell", "backup"]})
+    assert companion.snapshot()["dwell"]["understood"] is True
+
+
+# ---- did the claim hold? ------------------------------------------------
+
+def _age(meta_key, **delta):
+    """Push a stored timestamp back, so the delay does not have to be
+    waited out."""
+    from datetime import datetime, timedelta, timezone
+    from app import db
+    d = json.loads(db.get_meta(meta_key))
+    d["at"] = (datetime.now(timezone.utc) - timedelta(**delta)).isoformat()
+    db.set_meta(meta_key, json.dumps(d))
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_does_not_hold_is_reported(rig, monkeypatch):
+    """Google Photos said it had finished, the button was pressed, and
+    nothing at all was confirmed afterwards. Those files are on the phone
+    and not in the cloud, whatever its screen said."""
+    from app import companion, db
+
+    enable()
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    companion.request("manual")
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "nothing to free up", "backup":
+                      {"active": False, "detail": "Backup complete"}})
+
+    _age("companion_audit", minutes=companion.AUDIT_DELAY_MINUTES + 5)
+    companion.audit()
+
+    held = json.loads(db.get_meta("companion_unbacked"))
+    assert held["count"] == 3
+    assert any("stayed in the outbox" in e["msg"] for e in db.recent_events(20))
+
+
+@pytest.mark.asyncio
+async def test_a_claim_that_holds_clears_the_finding(rig, monkeypatch):
+    """Confirmations, not the outbox count: top_up() adds files on its own
+    cycle, so an outbox the same size may have turned over completely."""
+    from app import companion, db
+
+    enable()
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    companion.request("manual")
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "freed", "freed_bytes": 99,
+                      "backup": {"active": False}})
+
+    rig.deliver(3)          # Google Photos took them; the files are gone
+    from app import feeder
+    feeder.reconcile()
+
+    _age("companion_audit", minutes=companion.AUDIT_DELAY_MINUTES + 5)
+    companion.audit()
+    assert not db.get_meta("companion_unbacked")
+
+
+@pytest.mark.asyncio
+async def test_one_remainder_is_not_yet_an_alert(rig, monkeypatch):
+    """Photos' media scanner lags Syncthing, so files that arrived minutes
+    ago may not have been looked at yet. One remainder proves nothing; the
+    same one, cycle after cycle, does."""
+    from datetime import datetime, timedelta, timezone
+    from app import alerts, companion, db
+
+    enable(companion_cooldown_minutes=60)
+    await fill_to_cap(monkeypatch, n=3, size=100)
+    companion.request("manual")
+    companion.poll({"device": "pixel"})
+    companion.record({"ok": True, "detail": "x", "backup": {"active": False}})
+    _age("companion_audit", minutes=companion.AUDIT_DELAY_MINUTES + 5)
+    companion.audit()
+
+    assert "companion_unbacked" not in {a["key"] for a in alerts.evaluate()}
+
+    held = json.loads(db.get_meta("companion_unbacked"))
+    held["since"] = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    db.set_meta("companion_unbacked", json.dumps(held))
+    assert "companion_unbacked" in {a["key"] for a in alerts.evaluate()}
 
 
 def test_the_check_in_is_recorded(rig):

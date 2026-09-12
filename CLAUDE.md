@@ -332,6 +332,23 @@ confirmation stays in `feeder.reconcile()`, derived from absence. A string
 scraped off somebody else's screen that could confirm an asset would forge
 the only proof this system has, and a renamed label would do it silently.
 
+**There are two instructions, and only one of them presses anything.**
+`FREE` walks Photos to the button; `LOOK` opens it, waits, and reads the
+backup panel. That split exists because reading used to ride inside a
+free-up, which gave it no schedule of its own — it never happened when the
+outbox was empty, which is when Photos most needs opening. A look is also
+what lets the server find out whether Photos has finished *before* deciding
+to press, and `companion_wait_for_backup` makes it do so.
+
+**The leftovers are the only audit there is.** When a free-up runs while
+Photos claims to have finished, everything on the phone should go; files
+still in the outbox afterwards are files Google Photos has not taken,
+whatever its screen said. Two things make the naive version of this wrong,
+and both are handled: `top_up()` refills the outbox on its own cycle, so
+`audit()` compares *confirmations* rather than the outbox count; and Photos'
+media scanner lags Syncthing, so a single remainder proves nothing and only
+a pile that survives several free-ups is worth raising.
+
 **Dwelling is Google's own suggestion.** The same panel says "Keep the app
 open for faster backup". A foreground app escapes both Doze and the standby
 bucket an app sinks into when nobody opens it, which is why a shelf phone

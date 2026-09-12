@@ -23,6 +23,11 @@ import java.net.URL
 class Relay(private val context: Context, private val prefs: Prefs) {
 
     class Instruction(
+        /** "free" walks Google Photos to the button and presses it; "look"
+         *  only opens it and reads what it says about its own backup. A
+         *  look is seconds where a free-up is a minute of tapping, which is
+         *  what makes it cheap enough to run on a schedule. */
+        val action: String,
         val freeSpace: Boolean,
         val requestId: String,
         val reason: String,
@@ -50,9 +55,17 @@ class Relay(private val context: Context, private val prefs: Prefs) {
             .put("battery", batteryPercent())
             .put("charging", isCharging())
             .put("free_bytes", freeBytes())
+            // What this build understands. Told rather than left to be
+            // guessed from the version string, so the dashboard can say
+            // whether an instruction would land or be quietly ignored.
+            .put("features", org.json.JSONArray(FEATURES))
 
         val reply = post("/api/companion/poll", body) ?: return null
         return Instruction(
+            // Falls back to the old flag, so this build still does the
+            // right thing against a server that predates the distinction.
+            action = reply.optString("action",
+                if (reply.optBoolean("free_space", false)) "free" else "none"),
             freeSpace = reply.optBoolean("free_space", false),
             requestId = reply.optString("request_id", ""),
             reason = reply.optString("reason", ""),
@@ -70,14 +83,20 @@ class Relay(private val context: Context, private val prefs: Prefs) {
         )
     }
 
-    fun report(requestId: String, ok: Boolean, detail: String,
-               items: Int, freedBytes: Long, backup: Labels.Backup?): Boolean {
+    fun report(requestId: String, action: String, ok: Boolean, detail: String,
+               items: Int, freedBytes: Long, dwelledSeconds: Int,
+               backup: Labels.Backup?): Boolean {
         val body = JSONObject()
             .put("request_id", requestId)
+            .put("action", action)
             .put("ok", ok)
             .put("detail", detail)
             .put("items", items)
             .put("freed_bytes", freedBytes)
+            // How long it actually stood in front of Google Photos. Whether
+            // a dwell had happened at all used to be answerable only by
+            // reading the phone's wake locks over a cable.
+            .put("dwelled_seconds", dwelledSeconds)
         // What Google Photos said about its own backup. The server treats
         // this as a note and never as evidence -- a file is backed up when
         // it disappears from the outbox, not when a screen says so.
@@ -153,6 +172,9 @@ class Relay(private val context: Context, private val prefs: Prefs) {
     }
 
     companion object {
+        /** Instructions this build knows how to carry out. */
+        val FEATURES = listOf("look", "dwell", "backup")
+
         /**
          * What is actually installed, asked of the package manager.
          *

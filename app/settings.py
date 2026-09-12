@@ -87,6 +87,17 @@ SPEC: dict[str, tuple[type, object]] = {
     # "Keep the app open for faster backup".
     "companion_dwell_enabled": (bool, False),
     "companion_dwell_seconds": (int, 120),
+    # How often to open Google Photos purely to see what it is doing, when
+    # there is no free-up to ride along with. The dwell used to have no
+    # schedule of its own -- it happened only inside a free-up run, so it
+    # never happened at all when the outbox was empty, which is exactly when
+    # Photos most needs waking. 0 turns the watching off.
+    "companion_watch_minutes": (int, 30),
+    # Freeing space while Google Photos is still uploading clears whatever
+    # it has finished and leaves the rest, which is fine but wakes the phone
+    # for little. Waiting until it says it is done makes each run count --
+    # and makes what is left afterwards mean something.
+    "companion_wait_for_backup": (bool, True),
     # Empty means "use the built-in list". Editable because Google renames
     # these buttons, and a rename should not need a new APK.
     "companion_labels": (str, ""),
@@ -130,6 +141,8 @@ class Settings:
     companion_offline_minutes: int
     companion_dwell_enabled: bool
     companion_dwell_seconds: int
+    companion_watch_minutes: int
+    companion_wait_for_backup: bool
     companion_labels: str
     companion_confirm_labels: str
     companion_backup_labels: str
