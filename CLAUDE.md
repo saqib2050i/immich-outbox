@@ -270,6 +270,28 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
 
+**A zone Immich reports is not always a zone Immich knows.** It derives one
+from GPS when the file carries no offset tag, and reports UTC when it has
+neither -- the same string, opposite facts, five hours apart for most of
+this library:
+
+    PXL_20240101_062038690   Model Town, Punjab, Pakistan  -> Asia/Karachi
+    Snapchat-618209934       no coordinates at all         -> "UTC+0"
+
+`zone_source()` separates them into four: the file's own offset (best --
+honour it whatever the date), GPS-derived, something else Immich holds, and
+nothing at all. In that last case the wall clock Immich shows *is* the UTC
+instant wearing a local label, so a photo taken at 11:20 in Karachi reads
+as 06:20 in Immich and 06:20 in Google Photos -- and the two agreeing is
+not evidence either is right. It is the same number twice.
+
+Which is why "Snapchat-618209934.jpg is correctly dated" is a weaker claim
+than it first looked: Google Photos and Immich agree because both are
+displaying the same UTC instant, not because anybody established the
+photo was taken at Greenwich. Only the date it was taken can settle that,
+and for this library that is a decision -- everything before the owner left
+Pakistan was GMT+5 -- rather than anything readable from a file.
+
 **Blank poisons the fallback; absent does not.** Two files from this
 library, the same route, both stamped with a correct modification time,
 landing nine hundred days apart:

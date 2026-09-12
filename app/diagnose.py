@@ -609,6 +609,32 @@ def verdict(exif: dict, kind: str | None = None, *,
                       "it was uploaded."}
 
 
+# A zone Immich reports as UTC on a file with no coordinates is a default,
+# not a finding. Told apart because the consequence differs by five hours.
+UTC_ISH = ("utc", "utc+0", "utc+00:00", "+00:00", "+0000", "z", "gmt", "gmt+0")
+
+
+def zone_source(exif: dict, says: dict) -> tuple[str, str | None]:
+    """Where the time zone came from, and what it was.
+
+    Three provenances with three different weights. The file's own
+    `OffsetTimeOriginal` is the photographer's camera saying what it was set
+    to. GPS is Immich deriving a zone from where the shutter was pressed --
+    just as good. Neither is the third case, where Immich has nothing and
+    reports UTC, and the wall clock it then shows is the UTC instant wearing
+    a local label.
+    """
+    own = pick(exif, "EXIF:OffsetTimeOriginal", "EXIF:OffsetTime")[0]
+    if isinstance(own, str) and not is_blank(own) and _offset_hours(own) is not None:
+        return "file", own.strip()
+    zone = says.get("time_zone")
+    if says.get("latitude") is not None and says.get("longitude") is not None:
+        return "gps", zone
+    if zone and str(zone).strip().lower() not in UTC_ISH:
+        return "immich", str(zone).strip()
+    return "none", zone
+
+
 def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None:
     """Having a date is not the same as having the right one.
 
@@ -761,14 +787,43 @@ def _findings(rep: dict) -> list[dict]:
                         "same sidecar, so they agree, and a library of "
                         "undated files reads as zero."})
 
-    # 4. The camera's own name against the file's own clock.
+    # 4. Whether the zone is known at all. A wall clock with no zone behind
+    #    it is a number, not a time, and this library spans a move.
+    if ref and "error" not in ref and (rep.get("says") or {}).get("ok"):
+        src_kind, zone = zone_source(ref, rep["says"])
+        place = (rep["says"] or {}).get("place")
+        if src_kind == "file":
+            out.append({"level": "ok", "text":
+                        f"The file records its own time zone ({zone}), which "
+                        "settles the reading whatever else is missing."})
+        elif src_kind == "gps":
+            out.append({"level": "ok", "text":
+                        f"The zone is {zone}, which Immich derived from the "
+                        "coordinates in the file"
+                        + (f" ({place})." if place else ".")})
+        elif src_kind == "immich":
+            out.append({"level": "ok", "text":
+                        f"Immich holds the zone as {zone}."})
+        else:
+            out.append({"level": "warn", "text":
+                        "No time zone anywhere: not in the file, and no "
+                        "coordinates for Immich to derive one from. Immich "
+                        "reports UTC because it has nothing else, so the "
+                        "time it displays is the UTC instant wearing a local "
+                        "label — a photo taken at 11:20 in Karachi reads as "
+                        "06:20 here and in Google Photos, and the two agreeing "
+                        "is not evidence either is right. Only the date it "
+                        "was taken can settle this, and that is a decision "
+                        "rather than a reading."})
+
+    # 5. The camera's own name against the file's own clock.
     want = filename_time(name)
     got = _exif_dt(pick(ref, *(VIDEO_DATE if is_video(ref, kind)
                                else PHOTO_DATE))[0])
     if want and got:
         out.append(_clock_finding(name, want, got, ref))
 
-    # 5. The two copies against each other -- the promise the relay is
+    # 6. The two copies against each other -- the promise the relay is
     #    actually on the hook for.
     a, b = rep.get("immich") or {}, rep.get("outbox") or {}
     if a.get("ok") and b.get("present"):
@@ -791,14 +846,14 @@ def _findings(rep: dict) -> list[dict]:
                         + (f" Tags that differ: {', '.join(changed)}."
                            if changed else "")})
 
-    # 6. Whatever exiftool wanted to complain about.
+    # 7. Whatever exiftool wanted to complain about.
     for where, exif in (("Immich's copy", src), ("the outbox copy", dst)):
         w = exif.get("Warning")
         for line in (w if isinstance(w, list) else [w] if w else []):
             out.append({"level": "warn",
                         "text": f"exiftool on {where}: {line}"})
 
-    # 7. What the ledger believes, against what the file says.
+    # 8. What the ledger believes, against what the file says.
     if got and asset.get("exif_taken_at"):
         led = db.capture_time(asset["exif_taken_at"])
         off = _offset_hours(pick(ref, "EXIF:OffsetTimeOriginal",

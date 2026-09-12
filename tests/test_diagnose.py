@@ -955,3 +955,68 @@ def test_an_absent_tag_with_the_same_mtime_is_rescued(rig):
                          mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN)
     assert v["dated"] is True, v
     assert "modification time" in v["headline"]
+
+
+# ---- is the zone known, or merely reported? ------------------------------
+#
+# Immich derives a zone from GPS when the file carries no offset tag, and
+# reports UTC when it has neither. Those are the same string and opposite
+# facts, five hours apart for most of this library:
+#
+#   PXL_20240101_062038690   Model Town, Punjab, Pakistan  -> Asia/Karachi
+#   Snapchat-618209934       no coordinates at all         -> "UTC+0"
+
+GPS_SAYS = {"ok": True, "time_zone": "Asia/Karachi",
+            "latitude": 31.459011, "longitude": 74.37055,
+            "place": "Model Town, Punjab, Pakistan",
+            "local_date_time": "2024-01-01T11:20:38.000Z"}
+BLIND_SAYS = {"ok": True, "time_zone": "UTC+0", "latitude": None,
+              "longitude": None, "place": None,
+              "local_date_time": "2024-01-01T06:30:52.000Z"}
+
+
+def test_a_zone_derived_from_coordinates_is_a_finding(rig):
+    from app import diagnose
+    assert diagnose.zone_source({}, GPS_SAYS) == ("gps", "Asia/Karachi")
+
+
+def test_utc_on_a_file_with_no_coordinates_is_a_default(rig):
+    """Immich saying it does not know, not saying the photo was taken at
+    Greenwich. Reading the second as the first is how a Karachi photo comes
+    to look correct at five hours early."""
+    from app import diagnose
+    assert diagnose.zone_source({}, BLIND_SAYS)[0] == "none"
+
+
+def test_the_file_s_own_offset_outranks_everything(rig):
+    """Any pic that carries zone information is honoured regardless of when
+    it was taken."""
+    from app import diagnose
+    assert diagnose.zone_source(
+        {"EXIF:OffsetTimeOriginal": "+05:00"}, BLIND_SAYS) == ("file", "+05:00")
+
+
+def test_a_blank_offset_is_not_zone_information(rig):
+    """It is present and empty, like everything else in that file."""
+    from app import diagnose
+    assert diagnose.zone_source(
+        {"EXIF:OffsetTimeOriginal": ""}, BLIND_SAYS)[0] == "none"
+
+
+def test_a_file_with_no_zone_anywhere_is_said_to_have_none(rig):
+    from app import diagnose
+    rep = _report({"EXIF:Software": "Picasa"}, name="Snapchat-618209934.jpg")
+    rep["says"] = BLIND_SAYS
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "No time zone anywhere" in said, said
+    assert "not evidence either is right" in said, said
+
+
+def test_a_gps_zone_is_reported_as_settled(rig):
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": ""},
+                  name="PXL_20240101_062038690.jpg")
+    rep["says"] = GPS_SAYS
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "derived from the coordinates" in said, said
+    assert "Model Town" in said, said
