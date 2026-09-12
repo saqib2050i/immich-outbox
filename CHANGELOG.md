@@ -10,6 +10,37 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.7.3
+
+**The verdict was wrong about a file that was fine.**
+`Snapchat-618209934.jpg` carries no date tag of any kind — nothing but
+`Software: Picasa` — and the trace said *would fall back to upload time*.
+Google Photos had already dated it **Jan 1 2024, 6:30 AM**, correctly, to
+the same second as the outbox copy's modification time.
+
+`feeder.stamp_capture_time()` has always set every delivered file's mtime
+to Immich's capture instant, precisely because Google Photos falls back to
+one when there is no tag; Syncthing preserves it to the phone. That is what
+it was built for and it works. The verdict simply did not look.
+
+It looks now. A file with no usable tag whose delivered copy carries the
+capture instant as its mtime is reported as *dated by its modification
+time, not its metadata* — dated, with the mechanism named, and with its two
+specific weaknesses stated: an mtime does not survive anything that
+rewrites the file, and it carries no zone, so what Google Photos displays
+for a photo taken outside UTC is not settled by anything here. The
+confirmed case is UTC+0, where the two readings cannot be told apart.
+
+Only a copy **read in place** is credited with its mtime. Immich's is
+fetched to a temp file moments earlier and is always today.
+
+This also retracts a correction made in 2.7.1. `needs_date_fix()` once said
+a dateless file is safe because its modification time carries the date;
+that was called a disproven premise and removed. It is true, it is
+implemented, and it is back — with the caveat that a weaker carrier is not
+no carrier, and treating it as none overstates how much of this library is
+actually mis-dated.
+
 ## 2.7.2
 
 **"Send it, then trace" had nine ways to do nothing and reported none of
@@ -102,8 +133,7 @@ Also in this release, written before the merge and missed by it:
   compare `fileCreatedAt` against `exifInfo.dateTimeOriginal`, and on a
   Takeout import both were filled from the same sidecar, so they agree. A
   library of undated files reads as zero there. `needs_date_fix()` also
-  carried a premise this disproved — that a dateless file is safe because
-  its modification time carries the date — and it no longer claims that.
+  explains which fault it can and cannot see.
 - Checked against the live Immich response, which carries three traps in
   one payload: `localDateTime` is the wall clock with a misleading `Z`,
   `exifInfo.dateTimeOriginal` is a UTC instant despite its name, and

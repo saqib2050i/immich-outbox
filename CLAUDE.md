@@ -270,6 +270,27 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
 
+**A modification time is a real carrier, and the verdict has to count it.**
+`feeder.stamp_capture_time()` sets every delivered file's mtime to Immich's
+capture instant, Syncthing preserves it to the phone, and Google Photos
+falls back to it when a file has no date tag. That is not a theory:
+`Snapchat-618209934.jpg` carries no date tag of any kind — nothing but
+`Software: Picasa` — and Google Photos dated it Jan 1 2024, 6:30 AM, the
+same second as the outbox copy's mtime.
+
+`verdict()` said "would fall back to upload time" about that file, which
+was this tool being wrong out loud about a file that was fine — the exact
+failure it exists to prevent, pointed the other way. A missing tag is now
+checked against the delivered copy's mtime before any such claim is made.
+
+Two things follow. Only a copy **read in place** may be credited with its
+mtime: Immich's is fetched to a temp file and is always today. And the
+fallback is weaker than the tag in two specific ways — an mtime does not
+survive anything that rewrites the file, and it carries no zone, so what
+Google Photos displays for a photo taken outside UTC is not settled by
+anything here. The confirmed case happens to be UTC+0, where the two
+readings are indistinguishable.
+
 **The mismatch figures cannot see this fault, by construction.**
 `needs_date_fix()` compares `fileCreatedAt` against
 `exifInfo.dateTimeOriginal`, and on a Takeout import both were filled from

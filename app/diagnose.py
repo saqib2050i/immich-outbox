@@ -34,7 +34,7 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import config, db, feeder, immich, settings
 
@@ -222,6 +222,9 @@ def _outbox_copy(outbox_name: str | None) -> dict:
                         "mounted"}
     return {"present": True, "name": outbox_name, "path": path,
             "bytes": os.path.getsize(path), "sha256": _sha(path),
+            # Read in place, so this is a fact about the delivered file and
+            # is what Google Photos falls back to.
+            "mtime": os.path.getmtime(path),
             "modified": datetime.utcfromtimestamp(
                 os.path.getmtime(path)).isoformat(timespec="seconds") + "Z",
             "exif": read_exif(path)}
@@ -487,7 +490,8 @@ def _instant(value: object) -> float | None:
     return db.capture_time(value if isinstance(value, str) else None)
 
 
-def verdict(exif: dict, kind: str | None = None) -> dict:
+def verdict(exif: dict, kind: str | None = None, *,
+            mtime: float | None = None, taken_at: str | None = None) -> dict:
     """Will Google Photos date this file, or file it under the upload?
 
     The only question that matters about a file on its way to the phone,
@@ -499,6 +503,20 @@ def verdict(exif: dict, kind: str | None = None) -> dict:
     Takeout sidecar, and Google Photos filed it under the day it was
     uploaded -- with a perfectly parseable date sitting in the filename,
     which Google did not use. So a name is never counted as a date here.
+
+    A *modification time* is counted, though, because Google Photos does
+    fall back to one and this service deliberately sets it:
+    `feeder.stamp_capture_time()` stamps every delivered file with Immich's
+    capture instant, and Syncthing preserves it all the way to the phone.
+    Snapchat-618209934.jpg has no date tag of any kind and Google Photos
+    still dated it Jan 1 2024, 6:30 AM -- the same second as the outbox
+    copy's mtime. Calling that file "would fall back to upload time" was
+    this function being wrong, out loud, about a file that was fine.
+
+    The fallback is weaker than the tag and is reported as such: an mtime
+    survives nothing that rewrites the file, and it carries no zone, so what
+    Google Photos displays for a photo taken outside UTC is not settled by
+    anything here.
     """
     video = is_video(exif, kind)
     want = VIDEO_DATE if video else PHOTO_DATE
@@ -534,6 +552,28 @@ def verdict(exif: dict, kind: str | None = None) -> dict:
         MISSING: f"{tag} is not in the file at all.",
         UNREADABLE: f"{tag} holds {str(raw)!r}, which is not a date.",
     }[state]
+
+    # No tag, but Google Photos falls back to the modification time and this
+    # service sets that to the capture instant on the way out. Checked
+    # against Immich rather than assumed: a file downloaded to a temp
+    # directory has today's mtime and must not be credited with it, which is
+    # why only a copy read in place passes one in.
+    want = db.capture_time(taken_at)
+    if mtime is not None and want is not None and abs(mtime - want) <= 120:
+        when = datetime.fromtimestamp(mtime, timezone.utc).strftime(
+                   "%Y-%m-%d %H:%M:%S")
+        return {"dated": True, "level": "warn", "tag": tag, "state": state,
+                "value": None, "others": others,
+                "headline": "Dated by its modification time, not its metadata",
+                "reason": why + f" Its modification time is {when}Z, which is "
+                          "Immich's capture time — this service stamps every "
+                          "delivered file with it and Syncthing carries it to "
+                          "the phone, and Google Photos falls back to it when "
+                          "there is no tag. So it should land on the right "
+                          "day. It is the weaker of the two: an mtime does "
+                          "not survive anything that rewrites the file, and "
+                          "it carries no time zone."}
+
     extra = ""
     if others:
         extra = (" The file does carry a date elsewhere — "
@@ -805,7 +845,11 @@ async def trace(filename: str, send: bool = False) -> dict:
             got = key == "immich"      # fetched to a temp file, not read in place
             rep[key]["dates"] = _dates(exif, kind, downloaded=got)
             rep[key]["tags"] = _tag_table(exif, kind, downloaded=got)
-            rep[key]["verdict"] = verdict(exif, kind)
+            # Only a copy read in place has a modification time worth
+            # anything; Immich's was downloaded moments ago.
+            rep[key]["verdict"] = verdict(exif, kind,
+                                          mtime=rep[key].get("mtime"),
+                                          taken_at=row.get("taken_at"))
     rep["findings"] = _findings(rep)
     return rep
 

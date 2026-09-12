@@ -843,3 +843,69 @@ async def test_the_send_is_the_first_thing_the_report_says(rig):
     rep["immich"] = {"ok": False, "error": "connection refused"}
     rep["sent"] = {"ok": False, "moved": False, "text": "Not sent, because X."}
     assert diagnose._findings(rep)[0]["text"] == "Not sent, because X."
+
+
+# ---- the modification time is a real carrier ----------------------------
+#
+# Snapchat-618209934.jpg has no date tag of any kind -- not DateTimeOriginal,
+# not CreateDate, nothing but Software: Picasa -- and Google Photos dated it
+# Jan 1 2024, 6:30 AM, the same second as the outbox copy's mtime. The
+# verdict called that file "would fall back to upload time", which was this
+# tool being wrong out loud about a file that was fine.
+#
+# feeder.stamp_capture_time() sets every delivered file's mtime to Immich's
+# capture instant, and Syncthing preserves it to the phone. It was built for
+# exactly this and predates all of the above.
+
+import datetime as _dt
+
+SNAP_TAKEN = "2024-01-01T06:30:52.000Z"
+SNAP_MTIME = _dt.datetime(2024, 1, 1, 6, 30, 52,
+                          tzinfo=_dt.timezone.utc).timestamp()
+
+
+def test_a_stamped_modification_time_dates_the_file(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert v["dated"] is True, v
+    assert v["level"] == "warn"
+    assert "modification time" in v["headline"]
+    assert "2024-01-01 06:30:52" in v["reason"]
+
+
+def test_the_weakness_of_that_carrier_is_stated(rig):
+    """It works, and it is not as good as the tag. Both are true and the
+    report says both."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert "does not survive" in v["reason"]
+    assert "no time zone" in v["reason"]
+
+
+def test_a_downloaded_copy_is_never_credited_with_its_mtime(rig):
+    """Immich's copy is fetched to a temp file moments earlier, so its mtime
+    is today. trace() passes one only for a copy read in place."""
+    from app import diagnose
+    import time
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=time.time(), taken_at=SNAP_TAKEN)
+    assert v["dated"] is False, v
+    assert "upload time" in v["headline"]
+
+
+def test_no_mtime_means_the_old_answer_still_stands(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE")
+    assert v["dated"] is False
+    assert v["headline"] == "Would fall back to upload time"
+
+
+def test_the_tag_still_beats_the_modification_time(rig):
+    """A real DateTimeOriginal is the strong answer and stays the headline."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:DateTimeOriginal": "2024:01:01 06:30:52"},
+                         "IMAGE", mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
+    assert v["level"] == "ok"
+    assert v["headline"] == "Would be dated correctly by Google"
