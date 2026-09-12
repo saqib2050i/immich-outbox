@@ -881,7 +881,7 @@ def test_the_weakness_of_that_carrier_is_stated(rig):
     v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
                          mtime=SNAP_MTIME, taken_at=SNAP_TAKEN)
     assert "does not survive" in v["reason"]
-    assert "no time zone" in v["reason"]
+    assert "falls back to it when there is no tag" in v["reason"]
 
 
 def test_a_downloaded_copy_is_never_credited_with_its_mtime(rig):
@@ -1020,3 +1020,104 @@ def test_a_gps_zone_is_reported_as_settled(rig):
     said = " ".join(f["text"] for f in diagnose._findings(rep))
     assert "derived from the coordinates" in said, said
     assert "Model Town" in said, said
+
+
+# ---- the owner's rule for a photo with no zone --------------------------
+#
+# Not readable from any file: it is where they were living, and this
+# library spans a move on 4 March 2026. Configured, so it is a fact about a
+# person rather than a constant in a diagnostic.
+
+def _rule(rig):
+    from app import settings
+    settings.save({"assume_zone_before": "2026-03-04",
+                   "assume_zone_offset": "+05:00"})
+
+
+def test_a_photo_older_than_the_move_is_read_at_the_offset(rig):
+    from app import diagnose
+    _rule(rig)
+    kind, zone = diagnose.zone_source({}, BLIND_SAYS, "2024-01-01T06:30:52Z")
+    assert (kind, zone) == ("assumed", "+05:00")
+
+
+def test_a_photo_after_the_move_is_not(rig):
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source(
+        {}, BLIND_SAYS, "2026-06-01T12:00:00Z")[0] == "none"
+
+
+def test_the_file_s_own_zone_still_wins_over_the_rule(rig):
+    """Any pic that contains timezone info, regardless of time period, is
+    honoured."""
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source({"EXIF:OffsetTimeOriginal": "+01:00"},
+                                BLIND_SAYS, "2024-01-01T06:30:52Z") == (
+        "file", "+01:00")
+
+
+def test_coordinates_still_win_over_the_rule(rig):
+    """A photo taken on a trip has GPS saying so, and that outranks a guess
+    about where its owner lived."""
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source({}, GPS_SAYS, "2024-01-01T06:20:38Z")[0] == "gps"
+
+
+def test_the_rule_is_off_until_both_halves_are_set(rig):
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2026-03-04",
+                   "assume_zone_offset": ""})
+    assert diagnose.zone_source({}, BLIND_SAYS, "2024-01-01T06:30:52Z")[0] == "none"
+
+
+# ---- and what that means for a file riding on its mtime -----------------
+
+def test_a_named_zone_resolves_to_hours_at_the_capture_instant(rig):
+    """Asia/Karachi, resolved then rather than now, so a DST boundary in
+    between cannot move it."""
+    from app import diagnose
+    assert diagnose.zone_hours("gps", "Asia/Karachi",
+                               "2024-01-01T06:20:38Z") == 5.0
+
+
+def test_not_knowing_the_offset_is_not_knowing_it_to_be_zero(rig):
+    """Conflating those is the whole of this section."""
+    from app import diagnose
+    assert diagnose.zone_hours("none", "UTC+0", "2024-01-01T06:20:38Z") is None
+
+
+def test_an_mtime_file_taken_in_karachi_shows_five_hours_early(rig):
+    """The correction this forces. Google Photos shows an mtime as UTC --
+    Snapchat-618209934.jpg came back labelled GMT+00:00 -- so the instant is
+    right and the clock on screen is the offset out."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=KARACHI_MTIME, taken_at=KARACHI_TAKEN,
+                         says=GPS_SAYS)
+    assert v["level"] == "warn"
+    assert "5h out" in v["headline"]
+    assert "appears 5 hours early" in v["reason"]
+    assert "day is right" in v["reason"]
+
+
+def test_a_photo_taken_before_dawn_lands_on_the_wrong_day_too(rig):
+    """Local 02:00 at +05:00 is 21:00 the previous day in UTC."""
+    from app import diagnose
+    says = dict(GPS_SAYS, local_date_time="2024-01-01T02:00:00.000Z")
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=_dt.datetime(2023, 12, 31, 21, 0,
+                                            tzinfo=_dt.timezone.utc).timestamp(),
+                         taken_at="2023-12-31T21:00:00.000Z", says=says)
+    assert "wrong day" in v["reason"], v["reason"]
+
+
+def test_a_genuine_utc_photo_on_its_mtime_is_simply_right(rig):
+    from app import diagnose
+    says = dict(BLIND_SAYS, time_zone="UTC+0", latitude=51.5, longitude=0.0)
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         mtime=SNAP_MTIME, taken_at=SNAP_TAKEN, says=says)
+    assert v["level"] == "ok"
+    assert "lands right" in v["reason"]

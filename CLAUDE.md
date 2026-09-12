@@ -285,12 +285,27 @@ instant wearing a local label, so a photo taken at 11:20 in Karachi reads
 as 06:20 in Immich and 06:20 in Google Photos -- and the two agreeing is
 not evidence either is right. It is the same number twice.
 
-Which is why "Snapchat-618209934.jpg is correctly dated" is a weaker claim
-than it first looked: Google Photos and Immich agree because both are
-displaying the same UTC instant, not because anybody established the
-photo was taken at Greenwich. Only the date it was taken can settle that,
-and for this library that is a decision -- everything before the owner left
-Pakistan was GMT+5 -- rather than anything readable from a file.
+Which is why "Snapchat-618209934.jpg is correctly dated" was a weaker claim
+than it looked: Google Photos and Immich agree because both are displaying
+the same UTC instant, not because anybody established the photo was taken
+at Greenwich. It was taken in Pakistan, and it is five hours early on both
+screens.
+
+That is a decision rather than a reading, so it lives in two settings --
+`assume_zone_before` and `assume_zone_offset`, here 2026-03-04 and +05:00,
+the date its owner left Pakistan. A file carrying a zone of its own is
+honoured whatever its date, coordinates outrank the rule because a photo
+taken on a trip says so itself, and the rule applies only when there is
+nothing else. Blank either half and it assumes nothing.
+
+**The modification-time fallback is only ever right at UTC.** An mtime is
+an instant with no zone and Google Photos displays it as UTC -- the
+Snapchat file came back labelled GMT+00:00. So every file relying on that
+fallback shows its capture zone's offset early: nothing at Greenwich, five
+hours across most of this library, and a day early as well for anything
+taken between midnight and 05:00 local. `verdict()` says which of the three
+it is, and says when the zone it used came from the rule rather than the
+file.
 
 **Blank poisons the fallback; absent does not.** Two files from this
 library, the same route, both stamped with a correct modification time,

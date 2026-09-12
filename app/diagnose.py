@@ -491,7 +491,8 @@ def _instant(value: object) -> float | None:
 
 
 def verdict(exif: dict, kind: str | None = None, *,
-            mtime: float | None = None, taken_at: str | None = None) -> dict:
+            mtime: float | None = None, taken_at: str | None = None,
+            says: dict | None = None) -> dict:
     """Will Google Photos date this file, or file it under the upload?
 
     The only question that matters about a file on its way to the phone,
@@ -576,17 +577,56 @@ def verdict(exif: dict, kind: str | None = None, *,
     if rescued:
         when = datetime.fromtimestamp(mtime, timezone.utc).strftime(
                    "%Y-%m-%d %H:%M:%S")
+        base = (why + f" Its modification time is {when}Z, which is Immich's "
+                "capture time — this service stamps every delivered file with "
+                "it and Syncthing carries it to the phone, and Google Photos "
+                "falls back to it when there is no tag.")
+        # True of all three readings below, so it is said in all three
+        # rather than only in the happy one.
+        frail = (" The mtime is the weaker carrier either way: it does not "
+                 "survive anything that rewrites the file.")
+
+        # An mtime is an instant with no zone, and Google Photos shows it as
+        # UTC: Snapchat-618209934.jpg came back labelled GMT+00:00. So the
+        # moment is right and the clock on screen is the capture zone's
+        # offset out -- which is nothing at UTC and five hours across most of
+        # this library.
+        kindz, zone = zone_source(exif, says or {}, taken_at)
+        off = zone_hours(kindz, zone, taken_at)
+        if off is None:
+            return {"dated": True, "level": "warn", "tag": tag, "state": state,
+                    "value": None, "others": others,
+                    "headline": "Dated by its modification time, zone unknown",
+                    "reason": base + " Google Photos shows that instant as "
+                              "UTC. Nothing here knows which zone the photo "
+                              "was taken in, so whether the time on screen is "
+                              "the time on the clock cannot be said." + frail}
+        if abs(off) < 1 / 60:
+            return {"dated": True, "level": "ok", "tag": tag, "state": state,
+                    "value": None, "others": others,
+                    "headline": "Dated by its modification time, not its metadata",
+                    "reason": base + " This photo was taken at UTC, so the "
+                              "instant and the wall clock are the same number "
+                              "and it lands right." + frail}
+
+        local = _naive((says or {}).get("local_date_time"))
+        crosses = local is not None and (
+            local.hour + local.minute / 60 < off if off > 0
+            else local.hour + local.minute / 60 >= 24 + off)
+        day = (" And it was taken within that of midnight, so Google Photos "
+               "puts it on the wrong day as well." if crosses else
+               " The day is right; the time of day is not.")
         return {"dated": True, "level": "warn", "tag": tag, "state": state,
                 "value": None, "others": others,
-                "headline": "Dated by its modification time, not its metadata",
-                "reason": why + f" Its modification time is {when}Z, which is "
-                          "Immich's capture time — this service stamps every "
-                          "delivered file with it and Syncthing carries it to "
-                          "the phone, and Google Photos falls back to it when "
-                          "there is no tag. So it should land on the right "
-                          "day. It is the weaker of the two: an mtime does "
-                          "not survive anything that rewrites the file, and "
-                          "it carries no time zone."}
+                "headline": f"Dated by its modification time, {abs(off):g}h out",
+                "reason": base + " But an mtime is an instant with no zone and "
+                          f"Google Photos shows it as UTC, while this photo "
+                          f"was taken at {zone} — so it appears {abs(off):g} "
+                          f"hours {'early' if off > 0 else 'late'} there."
+                          + day
+                          + (" That zone is this library's rule for a photo of "
+                             "this age rather than anything in the file."
+                             if kindz == "assumed" else "") + frail}
 
     extra = ""
     if (state == BLANK and mtime is not None and want is not None
@@ -614,7 +654,27 @@ def verdict(exif: dict, kind: str | None = None, *,
 UTC_ISH = ("utc", "utc+0", "utc+00:00", "+00:00", "+0000", "z", "gmt", "gmt+0")
 
 
-def zone_source(exif: dict, says: dict) -> tuple[str, str | None]:
+def _assumed(taken_at: str | None) -> tuple[str, str] | None:
+    """The owner's own rule for a photo that carries no zone.
+
+    Not readable from any file: it is where they were living, and this
+    library spans a move. Configured rather than constant, and off unless
+    both halves are set.
+    """
+    cfg = settings.load()
+    before, offset = (cfg.assume_zone_before or "").strip(), \
+        (cfg.assume_zone_offset or "").strip()
+    if not before or not offset or _offset_hours(offset) is None:
+        return None
+    when = db.capture_time(taken_at)
+    edge = db.capture_time(before)
+    if when is None or edge is None or when >= edge:
+        return None
+    return offset, before
+
+
+def zone_source(exif: dict, says: dict,
+                taken_at: str | None = None) -> tuple[str, str | None]:
     """Where the time zone came from, and what it was.
 
     Three provenances with three different weights. The file's own
@@ -632,7 +692,37 @@ def zone_source(exif: dict, says: dict) -> tuple[str, str | None]:
         return "gps", zone
     if zone and str(zone).strip().lower() not in UTC_ISH:
         return "immich", str(zone).strip()
+    guess = _assumed(taken_at)
+    if guess:
+        return "assumed", guess[0]
     return "none", zone
+
+
+def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | None:
+    """The zone as a number of hours, or None when it is not known.
+
+    A named zone is resolved at the capture instant rather than today, so
+    the answer is right across a DST boundary. "none" is deliberately not
+    zero: not knowing the offset and knowing it to be zero are different,
+    and conflating them is the whole of this section.
+    """
+    if kind == "none" or not zone:
+        return None
+    direct = _offset_hours(zone)
+    if direct is not None:
+        return direct
+    text = str(zone).strip()
+    if text.lower() in UTC_ISH:
+        return 0.0
+    when = db.capture_time(taken_at)
+    if when is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        off = datetime.fromtimestamp(when, ZoneInfo(text)).utcoffset()
+        return off.total_seconds() / 3600 if off else 0.0
+    except Exception:  # noqa: BLE001  -- missing tzdata, or not a zone name
+        return None
 
 
 def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None:
@@ -790,7 +880,7 @@ def _findings(rep: dict) -> list[dict]:
     # 4. Whether the zone is known at all. A wall clock with no zone behind
     #    it is a number, not a time, and this library spans a move.
     if ref and "error" not in ref and (rep.get("says") or {}).get("ok"):
-        src_kind, zone = zone_source(ref, rep["says"])
+        src_kind, zone = zone_source(ref, rep["says"], asset.get("taken_at"))
         place = (rep["says"] or {}).get("place")
         if src_kind == "file":
             out.append({"level": "ok", "text":
@@ -804,6 +894,14 @@ def _findings(rep: dict) -> list[dict]:
         elif src_kind == "immich":
             out.append({"level": "ok", "text":
                         f"Immich holds the zone as {zone}."})
+        elif src_kind == "assumed":
+            out.append({"level": "warn", "text":
+                        f"No zone in the file and no coordinates, so this "
+                        f"library's own rule applies: taken before "
+                        f"{settings.load().assume_zone_before}, so "
+                        f"{zone}. That is a decision about where its owner "
+                        "was living, not a reading — it is right for a photo "
+                        "taken at home and wrong for one taken on a trip."})
         else:
             out.append({"level": "warn", "text":
                         "No time zone anywhere: not in the file, and no "
@@ -927,7 +1025,8 @@ async def trace(filename: str, send: bool = False) -> dict:
             # anything; Immich's was downloaded moments ago.
             rep[key]["verdict"] = verdict(exif, kind,
                                           mtime=rep[key].get("mtime"),
-                                          taken_at=row.get("taken_at"))
+                                          taken_at=row.get("taken_at"),
+                                          says=rep.get("says"))
     rep["findings"] = _findings(rep)
     return rep
 

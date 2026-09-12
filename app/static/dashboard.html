@@ -1072,6 +1072,20 @@
         <input type="number" id="s_max_asset_mb" min="1">
       </div>
       <div class="field">
+        <div class="lab"><label for="s_assume_zone_before">Older photos were taken before</label>
+          <span class="hint">A photo with no zone of its own and no coordinates
+            carries no way to tell a local clock from a UTC one. This is where
+            you were living: anything taken before this date is read at the
+            offset below. Leave either blank to assume nothing.</span></div>
+        <input type="date" id="s_assume_zone_before">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_assume_zone_offset">…in this zone</label>
+          <span class="hint">As ±HH:MM, for example +05:00. A file carrying a
+            zone of its own is honoured instead, whatever its date.</span></div>
+        <input type="text" id="s_assume_zone_offset" placeholder="+05:00">
+      </div>
+      <div class="field">
         <div class="lab"><label for="s_photo_workers">Photos at once</label>
           <span class="hint">Separate lanes, so one large video cannot hold up the
             photos behind it.</span></div>

@@ -42,6 +42,13 @@ SPEC: dict[str, tuple[type, object]] = {
     # date disagrees with Immich's.
     "fix_dates": (bool, False),
     "max_asset_mb": (int, config.MAX_ASSET_BYTES // (1024 * 1024)),
+    # Which zone a photo with no zone of its own was taken in. Not readable
+    # from any file: it is where the owner was living, and this library
+    # spans a move. Anything taken before the date is assumed to be at the
+    # offset; anything after it, and anything carrying a zone of its own at
+    # any date, is left alone. Blank switches the assumption off.
+    "assume_zone_before": (str, ""),        # YYYY-MM-DD
+    "assume_zone_offset": (str, ""),        # +05:00
     "ongoing_enabled": (bool, True),
     "ongoing_from": (str, config.MIN_TAKEN_AT),
     # Alerting
@@ -122,6 +129,8 @@ class Settings:
     include_video: bool
     fix_dates: bool
     max_asset_mb: int
+    assume_zone_before: str
+    assume_zone_offset: str
     ongoing_enabled: bool
     ongoing_from: str
     alert_webhook_url: str

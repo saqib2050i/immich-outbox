@@ -10,6 +10,38 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.8.0
+
+**The modification-time fallback is only ever right at UTC, and most of
+this library is not.** An mtime is an instant carrying no zone, and Google
+Photos displays it as UTC — `Snapchat-618209934.jpg` came back labelled
+`GMT+00:00`. So a photo taken at 11:30 in Karachi and riding on its mtime
+shows 06:30, on both that screen and Immich's, and the two agreeing is not
+evidence either is right. It is the same number twice.
+
+Which retracts, again, half of what 2.7.3 concluded. That file was called
+correctly dated on the strength of Immich and Google Photos matching. They
+match because both are showing the same instant. The date is right; the
+time of day is five hours out.
+
+The verdict now separates the three readings of a file riding on its mtime:
+right at UTC, *N* hours out with the zone named, or zone unknown and so not
+answerable. Where the photo was taken before dawn, it says the day is wrong
+too — local 02:00 at +05:00 is 21:00 the day before.
+
+**Two new settings say where its owner was living**, because nothing in a
+file without a zone or coordinates can. `assume_zone_before` and
+`assume_zone_offset` — 2026-03-04 and +05:00 here, the date the move
+happened. The precedence is strict and each step outranks the next: the
+file's own `OffsetTimeOriginal`, honoured whatever the date; coordinates,
+since a photo taken on a trip says so itself; anything else Immich holds;
+then the rule. Blank either half and nothing is assumed.
+
+`zone_source()` also tells apart two things that were one string before.
+Immich derives a zone from GPS when the file has no offset tag and reports
+UTC when it has neither, so `Asia/Karachi` on a photo with coordinates is a
+finding and `UTC+0` on one without is Immich saying it does not know.
+
 ## 2.7.3
 
 **The verdict was wrong about a file that was fine.**
