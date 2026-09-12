@@ -823,9 +823,13 @@ def _why_not_sendable(row: dict) -> str | None:
     cfg = settings.load()
     state = row.get("state")
     if state == "confirmed":
-        return ("it is already confirmed — in Google Photos — and this "
-                "service never re-sends a confirmed asset, because that "
-                "would put a duplicate in the library")
+        gone = (" Its outbox copy is gone for the same reason, so only "
+                "Immich's original can be read below."
+                if row.get("outbox_name") else "")
+        return ("it is already confirmed — Google Photos verified it and "
+                "cleared it off the phone, which is how this service knows. "
+                "A confirmed asset is never re-sent, because that would put "
+                "a duplicate in the library." + gone)
     if row.get("missing_at"):
         return ("Immich no longer serves the original: the asset is in the "
                 "ledger but its file is offline or moved out of an external "
@@ -860,15 +864,24 @@ async def _send_now(row: dict) -> dict:
     different conditions came back looking exactly like a file that had
     never been asked for.
     """
-    if row.get("outbox_name"):
+    # A name in the ledger is not a file in the outbox. A confirmed asset
+    # keeps its `outbox_name` for good -- the file left the outbox because
+    # Google Photos cleared it off the phone, which is *how* it was
+    # confirmed -- so asking the ledger here would announce "already in the
+    # outbox" about a file that demonstrably is not, and on exactly the
+    # kind of file somebody traces: one they found in Google Photos wearing
+    # the wrong date.
+    name = row.get("outbox_name")
+    if name and os.path.exists(os.path.join(config.OUTBOX_DIR, name)):
         return {"ok": True, "moved": False, "text":
-                f"Already in the outbox as {row['outbox_name']}, so nothing "
-                "was sent — the two copies below are the ones already there."}
+                f"Already in the outbox as {name}, so nothing was sent — the "
+                "two copies below are the ones already there."}
 
     why = _why_not_sendable(row)
     if why:
-        return {"ok": False, "moved": False, "text":
-                f"Not sent, because {why}."}
+        text = f"Not sent, because {why}"
+        return {"ok": False, "moved": False,
+                "text": text if text.endswith(".") else text + "."}
 
     c = db.connect()
     with db._lock:  # noqa: SLF001

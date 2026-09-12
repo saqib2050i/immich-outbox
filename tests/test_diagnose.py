@@ -695,10 +695,44 @@ async def test_an_asset_immich_cannot_serve_is_a_reason(rig):
 async def test_already_in_the_outbox_says_so_rather_than_nothing(rig):
     """The commonest case by far: the file traced a moment ago is still
     there, and the button did nothing without a word."""
-    from app import diagnose
-    out = await diagnose._send_now(_row(outbox_name="IMG_0001.jpg"))
+    import os
+    from app import config, diagnose
+    row = _row(outbox_name="IMG_0001.jpg")
+    open(os.path.join(config.OUTBOX_DIR, "IMG_0001.jpg"), "wb").write(b"x")
+    out = await diagnose._send_now(row)
     assert out["ok"] is True and out["moved"] is False
     assert "Already in the outbox" in out["text"]
+
+
+async def test_a_confirmed_file_is_not_called_still_in_the_outbox(rig):
+    """A confirmed asset keeps its outbox_name for good: the file left the
+    outbox because Google Photos cleared it off the phone, which is *how*
+    it was confirmed. Reading the ledger here announced "already in the
+    outbox" about a file that demonstrably was not -- and on exactly the
+    kind of file somebody traces, one they found in Google Photos wearing
+    the wrong date."""
+    import os
+    from app import config, diagnose
+    row = _row(state="confirmed", outbox_name="IMG_0001.jpg")
+    assert not os.path.exists(os.path.join(config.OUTBOX_DIR, "IMG_0001.jpg"))
+
+    out = await diagnose._send_now(row)
+    assert "Already in the outbox" not in out["text"], out
+    assert out["ok"] is False
+    assert "cleared it off the phone" in out["text"]
+    assert "never re-sent" in out["text"]
+    assert "only Immich's original" in out["text"]
+
+
+async def test_a_queued_file_whose_copy_went_missing_can_be_sent_again(rig,
+                                                                       monkeypatch):
+    """Not confirmed, and the file is not there. That is not a reason to
+    refuse -- it is the reason to send."""
+    from conftest import fake_download
+    from app import diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row(outbox_name="IMG_0001.jpg"))
+    assert out["moved"] is True, out
 
 
 async def test_a_send_that_works_says_where_it_went(rig, monkeypatch):

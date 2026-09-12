@@ -38,6 +38,17 @@ Nothing was ever at risk from that row: confirmation requires
 `state='queued' AND seen_on_phone=1`, and a failed asset is neither. The
 ledger was right; the report was lying about it.
 
+**And a name in the ledger is not a file in the outbox.** A confirmed asset
+keeps its `outbox_name` for good — the file left the outbox *because*
+Google Photos cleared it off the phone, which is how it was confirmed — so
+reading the ledger announced "already in the outbox" about a file that
+demonstrably was not, while the outbox section three lines below correctly
+said it was gone. And it did so on exactly the kind of file somebody
+traces: one found in Google Photos wearing the wrong date, which is how it
+came to anyone's attention in the first place. That file now gets the
+reason it deserves — verified, cleared, never re-sent, and only Immich's
+original left to read.
+
 Also: `_send_now` was calling `reconcile()` a second time to read a byte
 count. That is the function that confirms assets from their absence, and it
 is not a way to ask how full the outbox is. It uses `list_outbox()`.
