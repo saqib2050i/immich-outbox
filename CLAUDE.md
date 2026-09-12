@@ -146,6 +146,18 @@ anywhere to share one from. Three things in it are load-bearing:
   item, so a figure sitting underneath shoved the year label into the middle
   of the row.
 
+**A redraw must never throw away what the reader was doing.** Every ledger
+write pushes an SSE event, so the dashboard redraws several times a second
+while anything is moving. Rebuilding a list or a tree on each of those
+destroys open `<details>`, scroll position, and — because restoring `open`
+fires `toggle` — refetches whatever the toggle loads. Library was unusable
+for the whole duration of a send because of exactly this. So the timeline
+keeps two signatures: the *shape* (which years and months exist, changing
+when a scan finds something) rebuilds, and the *figures* (changing per file)
+are written into the existing nodes by `paintFigures`. Anything that redraws
+on a revision bump needs the same split, or at least a signature guard that
+leaves the DOM alone when the payload is identical.
+
 Sans for prose, mono for values: sizes, counts, times, filenames, paths.
 The page was mono throughout and read like a log file. And no glyph outside
 ASCII is load-bearing — the carets were U+25B8, which the old mono stack had

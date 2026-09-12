@@ -10,6 +10,32 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.4.1
+
+**Library stops collapsing under you while a month is sending.** Reported
+from production: press "Send the whole month" and the page you are reading
+becomes unusable for as long as the send lasts.
+
+- **A figure change no longer rebuilds the timeline.** The feeder writes to
+  the ledger once per file and every write pushes an SSE event, so the
+  timeline redrew several times a second during a send. Each redraw replaced
+  every `<details>`, which slammed the open month shut — and restoring
+  `open` fired `toggle`, which refetched the body. The count you were
+  watching now simply changes: no element is replaced, so nothing collapses,
+  nothing is refetched and nothing you had scrolled to moves. Only a change
+  in *which* months exist rebuilds anything, and that happens when a scan
+  finds something new.
+- **The month body cache is no longer emptied on every redraw.** It existed
+  so reopening a month would not flash *Loading…*, and it was cleared on
+  every change — which is precisely when it was needed.
+- **The outbox list gets the same guard.** Milder, because selection is held
+  outside the DOM and survives, but it was rebuilt on every event too and
+  threw away the scroll position of whoever was reading it.
+- An open month's body is deliberately left as it was. It is a panel you
+  opened and may be part-way through clicking; replacing its contents under
+  the cursor is the same rudeness at a smaller scale. It reloads when you
+  collapse and reopen it, or when you press something in it.
+
 ## 2.4.0
 
 **The companion stops going quiet, and starts saying what Google Photos is

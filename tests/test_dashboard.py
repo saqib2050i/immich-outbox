@@ -157,6 +157,45 @@ def test_the_companion_panel_is_wired(element):
     assert element in HTML.split("</body>")[0], f"#{element} is never read by the script"
 
 
+# ---- a redraw must not throw away what you were doing --------------------
+
+def test_a_figure_change_does_not_rebuild_the_timeline():
+    """The bug: pressing "Send the whole month" made Library unusable.
+
+    The feeder writes to the ledger once per file and every write pushes an
+    event, so the timeline redrew several times a second while a month was
+    going out. Each redraw replaced every <details>, so the month you were
+    reading slammed shut -- and restoring `open` fired `toggle`, which
+    refetched the body. The figures have to be writable without rebuilding
+    the tree around them.
+    """
+    src = HTML[HTML.index("async function drawTimeline()"):]
+    src = src[:src.index("function monthFigureText")]
+    assert "paintFigures(" in src, \
+        "drawTimeline has no path that updates figures without rebuilding"
+    fast = src.index("paintFigures(")
+    wipe = src.index('tlBody.innerHTML = ""')
+    assert fast < wipe, \
+        "the rebuild is reached before the figures-only path can bail out"
+    assert "return;" in src[fast:wipe], \
+        "the figures-only path falls through into the rebuild anyway"
+
+
+def test_the_month_body_cache_is_not_emptied_on_every_redraw():
+    """It existed so reopening a month would not flash "Loading…", and it
+    was cleared on every change -- which is exactly when it was needed."""
+    assert "monthCache.clear()" not in HTML
+
+
+def test_the_queue_list_is_not_rebuilt_when_it_has_not_changed():
+    """Milder than the timeline and the same cause: the list was emptied
+    and rebuilt on every event, losing the scroll of whoever was reading."""
+    src = HTML[HTML.index("async function renderQueue()"):]
+    src = src[:src.index('qList.innerHTML = ""')]
+    assert "qListSignature" in src, \
+        "renderQueue rebuilds the list without checking whether it changed"
+
+
 # ---- the figures on the front page have to agree with each other --------
 
 def test_the_pipeline_bar_and_its_legend_use_the_same_number():
