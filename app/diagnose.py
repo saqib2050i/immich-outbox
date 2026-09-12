@@ -649,14 +649,36 @@ def _findings(rep: dict) -> list[dict]:
         if agree:
             out.append(agree)
 
-    # 3. The camera's own name against the file's own clock.
+    # 3. Immich holding a date the file does not is the entire fault, and
+    #    the mismatch counter is blind to it by construction: it compares
+    #    fileCreatedAt against exifInfo.dateTimeOriginal, and on a Takeout
+    #    import both were filled from the same sidecar, so they agree.
+    says = rep.get("says") or {}
+    if ref and "error" not in ref and says.get("ok"):
+        video = is_video(ref, kind)
+        state, _, _ = date_state(ref, *(VIDEO_DATE if video else PHOTO_DATE))
+        if state in (BLANK, MISSING, UNREADABLE) and says.get("local_date_time"):
+            when = str(says["local_date_time"]).replace("T", " ")[:19]
+            zone = says.get("time_zone")
+            out.append({"level": "warn", "text":
+                        f"Immich knows when this was taken — {when}"
+                        + (f" in {zone}" if zone else ", with no zone recorded")
+                        + " — and the file does not. That date is Immich's own "
+                        "record, read from a Google Takeout sidecar at import, "
+                        "and it never reached the file. Nothing on the "
+                        "Problems tab can see this: the mismatch figures "
+                        "compare two fields that were both filled from that "
+                        "same sidecar, so they agree, and a library of "
+                        "undated files reads as zero."})
+
+    # 4. The camera's own name against the file's own clock.
     want = filename_time(name)
     got = _exif_dt(pick(ref, *(VIDEO_DATE if is_video(ref, kind)
                                else PHOTO_DATE))[0])
     if want and got:
         out.append(_clock_finding(name, want, got, ref))
 
-    # 4. The two copies against each other -- the promise the relay is
+    # 5. The two copies against each other -- the promise the relay is
     #    actually on the hook for.
     a, b = rep.get("immich") or {}, rep.get("outbox") or {}
     if a.get("ok") and b.get("present"):
@@ -679,14 +701,14 @@ def _findings(rep: dict) -> list[dict]:
                         + (f" Tags that differ: {', '.join(changed)}."
                            if changed else "")})
 
-    # 5. Whatever exiftool wanted to complain about.
+    # 6. Whatever exiftool wanted to complain about.
     for where, exif in (("Immich's copy", src), ("the outbox copy", dst)):
         w = exif.get("Warning")
         for line in (w if isinstance(w, list) else [w] if w else []):
             out.append({"level": "warn",
                         "text": f"exiftool on {where}: {line}"})
 
-    # 6. What the ledger believes, against what the file says.
+    # 7. What the ledger believes, against what the file says.
     if got and asset.get("exif_taken_at"):
         led = db.capture_time(asset["exif_taken_at"])
         off = _offset_hours(pick(ref, "EXIF:OffsetTimeOriginal",

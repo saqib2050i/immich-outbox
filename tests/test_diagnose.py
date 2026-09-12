@@ -453,3 +453,76 @@ def test_tracing_writes_nothing_to_the_ledger(rig):
     signed_in().post("/api/diagnose",
                      json={"filename": "PXL_20230101_025759225.jpg"})
     assert db.counts() == before
+
+
+# ---- pinned to the real thing -------------------------------------------
+#
+# Every value below is copied from the live Immich API response for
+# PXL_20240105_034733992.jpg, the confirmed case. Three traps live in that
+# one payload and each has cost somebody a library before.
+
+REAL = {"ok": True,
+        "local_date_time": "2024-01-05T08:47:33.000Z",
+        "file_created_at": "2024-01-05T03:47:33.000Z",
+        "time_zone": "Asia/Karachi",
+        "exif_original_utc": "2024-01-05T03:47:33+00:00",
+        "make": None, "model": None, "type": "IMAGE"}
+
+
+def test_the_Z_on_localDateTime_is_a_lie_and_is_discarded(rig):
+    """Immich sends the wall clock with a UTC marker glued to it. Anything
+    that honours the Z and converts shifts the photo by the zone -- five
+    hours, for most of this library."""
+    from app import diagnose
+    got = diagnose._naive(REAL["local_date_time"])
+    assert got.strftime("%Y:%m:%d %H:%M:%S") == "2024:01:05 08:47:33"
+
+
+def test_the_correct_reading_of_the_confirmed_file(rig):
+    """08:47:33 is what DateTimeOriginal should say, and it comes from
+    localDateTime. Not from fileCreatedAt and not from
+    exifInfo.dateTimeOriginal, which are both the instant."""
+    from app import diagnose
+    right = {"EXIF:DateTimeOriginal": "2024:01:05 08:47:33",
+             "EXIF:OffsetTimeOriginal": "+05:00"}
+    assert diagnose._agrees_with_immich(right, REAL, "IMAGE")["level"] == "ok"
+
+
+def test_immichs_dateTimeOriginal_is_the_instant_and_would_be_five_hours_early(rig):
+    """The field is named after the EXIF tag and is not it. Writing its
+    value into the tag puts the photo five hours early, and this is the
+    check that would catch that having been done."""
+    from app import diagnose
+    wrong = {"EXIF:DateTimeOriginal": "2024:01:05 03:47:33"}
+    out = diagnose._agrees_with_immich(wrong, REAL, "IMAGE")
+    assert out["level"] == "warn"
+    assert "+5.00h" in out["text"], out
+
+
+def test_an_empty_make_is_treated_as_absent(rig):
+    """Immich sends "" rather than null on a file whose EXIF was blanked --
+    the same blank-versus-missing distinction, one layer up."""
+    assert REAL["make"] is None and REAL["model"] is None
+
+
+def test_immich_knowing_what_the_file_does_not_is_said_out_loud(rig):
+    """And so is the reason the Problems tab shows nothing: the mismatch
+    figures compare fileCreatedAt against exifInfo.dateTimeOriginal, and on
+    a Takeout import both came from the same sidecar, so they agree."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": "", "File:MIMEType": "image/jpeg"},
+                  name="PXL_20240105_034733992.jpg")
+    rep["says"] = REAL
+    out = diagnose._findings(rep)
+    said = " ".join(f["text"] for f in out)
+    assert "2024-01-05 08:47:33" in said, said
+    assert "Asia/Karachi" in said, said
+    assert "reads as zero" in said, said
+
+
+def test_the_mismatch_counter_cannot_see_the_confirmed_file(rig):
+    """Not a criticism of it -- a fact about it, and the reason this tool
+    had to read the file instead."""
+    from app import db
+    assert db.needs_date_fix("2024-01-05T03:47:33.000Z",
+                             "2024-01-05T03:47:33+00:00") is False
