@@ -10,6 +10,32 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.8.2
+
+**The report stated two different times for one photo, and two opposite
+verdicts about it.**
+
+`_findings()` recomputed the verdict from the EXIF alone rather than using
+the one `trace()` had already worked out, so it dropped the modification
+time and the zone — and the finding line read *would fall back to upload
+time* directly above a card reading *dated by its modification time*, about
+the same file. There is one verdict per copy now and both places print it.
+
+The wall clock had the same shape of fault. Immich's `localDateTime` is the
+wall clock only where Immich knows the zone; where it does not, it is the
+instant wearing a local label, so the owner's rule has to be *added* to it.
+The report printed the raw value beside the rule that contradicts it —
+"taken 06:29:52 in UTC+0" two lines above "this library's rule applies, so
++05:00". `wall_clock()` applies the correction once, and the findings and
+the page both take it from there.
+
+And Immich's own copy is no longer told it will land on the upload date.
+It is judged on its metadata alone because it was fetched to a temporary
+file — but the copy this service delivers is stamped with Immich's capture
+time, so where the ledger has a date, the upload date never comes into it.
+Saying otherwise put a cross beside a file the pipeline handles, one line
+above the tick that said so.
+
 ## 2.8.1
 
 **A cross beside a file the pipeline handles.** Tracing an undated file

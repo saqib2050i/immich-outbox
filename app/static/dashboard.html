@@ -3071,9 +3071,15 @@ function renderTrace(d){
   const says = d.says || {};
   if (says.ok){
     const bits = [];
-    if (says.local_date_time)
-      bits.push("taken " + says.local_date_time.replace("T", " ").slice(0, 19));
-    if (says.time_zone) bits.push("zone " + says.time_zone);
+    // The corrected clock, computed once on the server. Printing Immich's
+    // raw localDateTime here stated a different time from the findings
+    // above, on the same photo, whenever the zone came from the rule.
+    const when = says.wall_clock
+      || (says.local_date_time || "").replace("T", " ").slice(0, 19);
+    if (when) bits.push("taken " + when);
+    if (says.zone_from === "assumed")
+      bits.push("read at " + says.zone_used + " by this library's rule");
+    else if (says.time_zone) bits.push("zone " + says.time_zone);
     else bits.push("no zone recorded");
     if (says.make || says.model)
       bits.push([says.make, says.model].filter(Boolean).join(" "));

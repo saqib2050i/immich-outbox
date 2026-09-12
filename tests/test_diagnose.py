@@ -1140,3 +1140,100 @@ def test_the_delivered_copy_carries_no_such_caveat(rig):
     v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
                          taken_at=SNAP_TAKEN)
     assert "temporary file" not in v["reason"]
+
+
+# ---- one wall clock, corrected once -------------------------------------
+#
+# The report stated two different times for one photo, two lines apart:
+# "Immich knows when this was taken -- 06:29:52 in UTC+0" and then "this
+# library's rule applies: +05:00". If the rule applies the wall clock is
+# 11:29:52. It applied the correction to the verdict and not to the time it
+# printed above it.
+
+def test_the_rule_moves_the_clock_it_is_applied_to(rig):
+    from app import diagnose
+    _rule(rig)
+    local, off, kind = diagnose.wall_clock(BLIND_SAYS, {},
+                                           "2024-01-01T06:30:52Z")
+    assert kind == "assumed" and off == 5.0
+    assert local.strftime("%H:%M:%S") == "11:30:52"
+
+
+def test_a_zone_immich_already_knew_is_not_applied_twice(rig):
+    """localDateTime is the wall clock wherever Immich had a zone. Adding
+    the offset again would push a Karachi photo to 16:20."""
+    from app import diagnose
+    _rule(rig)
+    local, off, kind = diagnose.wall_clock(GPS_SAYS, {},
+                                           "2024-01-01T06:20:38Z")
+    assert kind == "gps" and off == 5.0
+    assert local.strftime("%H:%M:%S") == "11:20:38"
+
+
+def test_the_report_prints_the_corrected_clock(rig):
+    """The contradiction, gone."""
+    from app import diagnose
+    _rule(rig)
+    rep = _report({"EXIF:Software": "Picasa"}, name="Snapchat-215438238.jpg",
+                  taken_at="2024-01-01T06:29:52Z")
+    rep["says"] = dict(BLIND_SAYS, local_date_time="2024-01-01T06:29:52.000Z")
+    said = " ".join(f["text"] for f in diagnose._findings(rep))
+    assert "11:29:52" in said, said
+    assert "06:29:52 in UTC+0" not in said, said
+
+
+def test_immichs_copy_is_not_headed_for_the_upload_date(rig):
+    """It is judged on metadata alone, but the relay stamps what it
+    delivers -- so saying "upload time" full stop describes a hypothetical
+    nobody is in, one line above the tick that says what really happens."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert "stamped with Immich's capture time" in v["reason"]
+    assert "rather than by the upload" in v["reason"]
+
+
+def test_with_no_date_in_the_ledger_the_upload_date_really_is_it(rig):
+    """Nothing to stamp one with, so the hypothetical is the reality."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=None, downloaded=True)
+    assert "upload date really is where this would land" in v["reason"]
+
+
+def test_the_finding_and_the_card_state_the_same_verdict(rig):
+    """_findings recomputed the verdict from the exif alone, dropping the
+    modification time and the zone -- so the finding line said "would fall
+    back to upload time" directly above a card saying "dated by its
+    modification time", about one file."""
+    from app import diagnose
+    rep = _report({"EXIF:Software": "Picasa"}, {"EXIF:Software": "Picasa"})
+    rep["outbox"]["verdict"] = {
+        "dated": True, "level": "warn",
+        "headline": "Dated by its modification time, 5h out",
+        "reason": "…"}
+    rep["immich"]["verdict"] = {
+        "dated": False, "level": "bad",
+        "headline": "Its own metadata would not date it", "reason": "…"}
+    said = [f["text"] for f in diagnose._findings(rep)
+            if f.get("kind") == "verdict"]
+    assert any("Dated by its modification time, 5h out" in t for t in said), said
+    assert not any("fall back to upload time" in t for t in said), said
+
+
+def test_a_stamped_delivery_is_not_told_it_lands_on_the_upload_date(rig):
+    """The clause said the delivered copy carries Immich's capture time and
+    the next sentence said Google Photos would file it under the upload,
+    in one paragraph."""
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=SNAP_TAKEN, downloaded=True)
+    assert "under the day it was uploaded" not in v["reason"], v["reason"]
+    assert v["headline"] == "Its own metadata would not date it"
+
+
+def test_but_with_nothing_to_stamp_it_still_says_upload_time(rig):
+    from app import diagnose
+    v = diagnose.verdict({"EXIF:Software": "Picasa"}, "IMAGE",
+                         taken_at=None, downloaded=True)
+    assert v["headline"] == "Would fall back to upload time"

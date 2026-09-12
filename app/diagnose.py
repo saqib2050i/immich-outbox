@@ -34,7 +34,7 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config, db, feeder, immich, settings
 
@@ -635,10 +635,20 @@ def verdict(exif: dict, kind: str | None = None, *,
     # cross beside a file the pipeline actually handles, one line above the
     # tick that says so.
     if downloaded:
+        # Not a hypothetical about uploading this byte stream by hand. The
+        # relay stamps every delivered file with Immich's capture instant,
+        # so where the ledger has a date, the copy that reaches the phone
+        # carries one and the upload date never comes into it.
+        stamped = db.capture_time(taken_at) is not None
         extra += (" That is Immich's copy judged on its metadata alone: it "
                   "was fetched here to a temporary file, so it has no "
-                  "delivered modification time to be read. What the phone "
-                  "receives is the outbox copy below.")
+                  "delivered modification time to be read."
+                  + (" The copy this service delivers is stamped with "
+                     "Immich's capture time, so in practice this file is "
+                     "dated by that rather than by the upload — see the "
+                     "outbox copy below." if stamped else
+                     " And Immich holds no date to stamp one with, so the "
+                     "upload date really is where this would land."))
     if (state == BLANK and mtime is not None and want is not None
             and abs(mtime - want) <= 120):
         extra += (" Its modification time is correct — this service stamps "
@@ -652,11 +662,17 @@ def verdict(exif: dict, kind: str | None = None, *,
         extra = (" The file does carry a date elsewhere — "
                  + ", ".join(f"{o['tag']} {o['value'].strip()}" for o in others)
                  + " — but that is not the tag Google Photos reads.")
+    # Only when nothing above has already said otherwise. With a capture
+    # date in the ledger the delivered copy is stamped, and appending this
+    # contradicted the sentence before it in the same paragraph.
+    tail = ("" if downloaded and db.capture_time(taken_at) is not None
+            else " Google Photos will file it under the day it was uploaded.")
     return {"dated": False, "level": "bad", "tag": tag, "state": state,
             "value": None if raw is None else str(raw), "others": others,
-            "headline": "Would fall back to upload time",
-            "reason": why + extra + " Google Photos will file it under the day "
-                      "it was uploaded."}
+            "headline": ("Its own metadata would not date it" if downloaded
+                         and db.capture_time(taken_at) is not None
+                         else "Would fall back to upload time"),
+            "reason": why + extra + tail}
 
 
 # A zone Immich reports as UTC on a file with no coordinates is a default,
@@ -706,6 +722,29 @@ def zone_source(exif: dict, says: dict,
     if guess:
         return "assumed", guess[0]
     return "none", zone
+
+
+def wall_clock(says: dict, exif: dict,
+               taken_at: str | None) -> tuple[datetime | None, float | None, str]:
+    """When the shutter actually fired, local, with the correction applied.
+
+    Immich's `localDateTime` is the wall clock only where Immich knows the
+    zone. Where it does not, it reports UTC and `localDateTime` is the
+    instant wearing a local label -- so the owner's rule, once it supplies
+    an offset, has to be *added* to it. Reporting the raw value beside the
+    rule that contradicts it is how this report came to state two different
+    times for one photo, two lines apart.
+    """
+    kind, zone = zone_source(exif, says, taken_at)
+    off = zone_hours(kind, zone, taken_at)
+    base = _naive(says.get("local_date_time"))
+    if base is None:
+        return None, off, kind
+    if kind == "assumed" and off:
+        # localDateTime is the instant here, because Immich had nothing to
+        # go on. Every other provenance means Immich already applied one.
+        return base + timedelta(hours=off), off, kind
+    return base, off, kind
 
 
 def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | None:
@@ -848,10 +887,17 @@ def _findings(rep: dict) -> list[dict]:
     #    out of this, or file it under the upload? Asked of each copy that
     #    could be read, because the answer is allowed to differ between them
     #    -- that is the entire point of stamping one on its way past.
-    for where, exif in (("Immich's original", src), ("the outbox copy", dst)):
-        if not exif or "error" in exif:
+    # The verdict trace() already computed, never a fresh one. Recomputing
+    # it here dropped the modification time and the zone, so the finding
+    # line and the card below it stated opposite conclusions about the same
+    # file -- "would fall back to upload time" over "dated by its
+    # modification time", one above the other.
+    for where, block in (("Immich's original", rep.get("immich") or {}),
+                         ("the outbox copy", rep.get("outbox") or {})):
+        exif = block.get("exif")
+        if not isinstance(exif, dict) or "error" in exif:
             continue
-        v = verdict(exif, kind)
+        v = block.get("verdict") or verdict(exif, kind)
         # Tagged, because the dashboard draws these as their own cards and
         # a reader should not be told the same thing twice. The line stays
         # in the findings list: that list is the machine-readable answer and
@@ -874,11 +920,17 @@ def _findings(rep: dict) -> list[dict]:
         video = is_video(ref, kind)
         state, _, _ = date_state(ref, *(VIDEO_DATE if video else PHOTO_DATE))
         if state in (BLANK, MISSING, UNREADABLE) and says.get("local_date_time"):
-            when = str(says["local_date_time"]).replace("T", " ")[:19]
+            local, off, zkind = wall_clock(says, ref, asset.get("taken_at"))
+            when = (local.strftime("%Y-%m-%d %H:%M:%S") if local else
+                    str(says["local_date_time"]).replace("T", " ")[:19])
             zone = says.get("time_zone")
+            label = (f" in {zone}" if zkind != "assumed" and zone
+                     else f", reading it at {zone_source(ref, says, asset.get('taken_at'))[1]} "
+                          "by this library's rule" if zkind == "assumed"
+                     else ", with no zone recorded")
             out.append({"level": "warn", "text":
                         f"Immich knows when this was taken — {when}"
-                        + (f" in {zone}" if zone else ", with no zone recorded")
+                        + label
                         + " — and the file does not. That date is Immich's own "
                         "record, read from a Google Takeout sidecar at import, "
                         "and it never reached the file. Nothing on the "
@@ -1038,6 +1090,20 @@ async def trace(filename: str, send: bool = False) -> dict:
                                           taken_at=row.get("taken_at"),
                                           says=rep.get("says"),
                                           downloaded=got)
+    # One corrected wall clock, computed once and handed to the page, so it
+    # cannot print a different time from the findings beneath it.
+    if (rep.get("says") or {}).get("ok"):
+        ref = (rep["immich"].get("exif") if isinstance(
+            rep["immich"].get("exif"), dict) else None) or {}
+        if "error" in ref:
+            ref = (rep["outbox"].get("exif") or {})
+        local, off, zkind = wall_clock(rep["says"], ref, row.get("taken_at"))
+        rep["says"]["wall_clock"] = (
+            local.strftime("%Y-%m-%d %H:%M:%S") if local else None)
+        rep["says"]["zone_used"] = zone_source(ref, rep["says"],
+                                               row.get("taken_at"))[1]
+        rep["says"]["zone_from"] = zkind
+
     rep["findings"] = _findings(rep)
     return rep
 
