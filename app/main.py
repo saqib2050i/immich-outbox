@@ -606,6 +606,24 @@ async def companion_free():
             "note": "The phone picks this up on its next check-in."}
 
 
+@app.post("/api/companion/look")
+async def companion_look():
+    """Open Google Photos on the phone and read what it says about itself.
+
+    The manual counterpart to "free up now", and the cheap one: it presses
+    nothing, so there is no cooldown and nothing to undo. Mostly useful for
+    answering "is it uploading, or has it stopped?" without waiting for the
+    schedule to come round.
+    """
+    cfg = settings.load()
+    if not cfg.companion_enabled:
+        raise HTTPException(400, "The companion is switched off in Settings.")
+    req = companion.request("manual", "asked from the dashboard",
+                            companion.LOOK)
+    return {"ok": True, "request": req,
+            "note": "The phone picks this up on its next check-in."}
+
+
 @app.post("/api/companion/pair")
 async def companion_pair(payload: dict | None = None):
     """Show the pairing token, or issue a new one.

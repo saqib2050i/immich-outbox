@@ -179,15 +179,25 @@ def backup_labels(cfg) -> list[str]:
 
 # ---- asking for a run ---------------------------------------------------
 
-def request(source: str = "manual", reason: str = "") -> dict:
-    """Queue a free-up. Picked up on the phone's next poll."""
+# What the phone is being asked to do. FREE walks Google Photos to the
+# button and presses it; LOOK only opens Photos, waits, and reads what it
+# says about its own backup. A look is seconds where a free-up is a minute
+# of tapping, which is what makes it cheap enough to do on a schedule.
+FREE = "free"
+LOOK = "look"
+
+
+def request(source: str = "manual", reason: str = "",
+            action: str = FREE) -> dict:
+    """Queue something for the phone. Picked up on its next poll."""
     pending = _json("companion_request")
     if pending.get("id"):
         return pending
-    req = {"id": secrets.token_hex(8), "at": db.now(),
+    req = {"id": secrets.token_hex(8), "at": db.now(), "action": action,
            "source": source, "reason": reason}
     db.set_meta("companion_request", json.dumps(req))
-    db.log("companion", f"free-up requested ({source})"
+    what = "free-up" if action == FREE else "a look at Google Photos"
+    db.log("companion", f"{what} requested ({source})"
                         + (f": {reason}" if reason else ""))
     return req
 
@@ -264,8 +274,16 @@ def _cooldown_left(cfg) -> float:
     return max(0.0, cfg.companion_cooldown_minutes - age)
 
 
+def _stale_after(cfg) -> int:
+    """How old a reading of Google Photos' own screen may be before it is
+    worth taking another. `companion_watch_minutes` set to zero switches off
+    looking in when there is nothing else to do -- it does not mean the
+    server should act on a reading from last Tuesday."""
+    return max(5, cfg.companion_watch_minutes or 30)
+
+
 def consider() -> dict | None:
-    """Decide whether to ask for a free-up. Called from the feeder cycle.
+    """Decide what to ask the phone for. Called from the feeder cycle.
 
     This used to live inside poll(), which runs only when the phone checks
     in -- so the condition was evaluated *by the phone asking*. A phone
@@ -287,14 +305,98 @@ def consider() -> dict | None:
         return None
 
     worth, why = _worth_asking(cfg)
-    if not worth:
-        return None
-    left = _cooldown_left(cfg)
-    if left > 0:
-        # Deliberately not logged. This is the common case, once an hour,
-        # and a log line every cycle would bury everything else.
-        return None
-    return request("auto", why)
+    backup = _json("companion_backup")
+    age = _age_minutes(backup.get("at"))
+    stale = age is None or age >= _stale_after(cfg)
+
+    if worth:
+        # Freeing space while Google Photos is mid-upload clears whatever it
+        # has finished and leaves the rest, which wakes the phone for a
+        # fraction of the job. Worse, it makes the leftovers meaningless:
+        # files still in the outbox afterwards could be unbacked, or could
+        # simply be next in Photos' queue. Waiting until it says it is done
+        # is what turns that remainder into a fact worth reporting.
+        if cfg.companion_wait_for_backup:
+            if stale:
+                return request("auto", "checking whether Google Photos has "
+                                       "finished uploading", LOOK)
+            if backup.get("active"):
+                # Not logged: this is the quiet, correct, common case, and a
+                # line every cycle would bury everything else.
+                return None
+        if _cooldown_left(cfg) > 0:
+            return None
+        return request("auto", why, FREE)
+
+    # Nothing in the outbox, so nothing to clear. Google Photos may still
+    # have a queue of its own, and opening it is also what keeps it out of
+    # the standby bucket an app sinks into when nobody opens it.
+    if cfg.companion_watch_minutes and stale:
+        return request("auto", "nothing in the outbox — looking in on "
+                               "Google Photos", LOOK)
+    return None
+
+
+# ---- did the claim hold? -------------------------------------------------
+
+# Long enough for Google Photos to have deleted, Syncthing to have
+# propagated it, and reconcile() to have noticed. Checking any sooner
+# measures the lag rather than the result.
+AUDIT_DELAY_MINUTES = 10
+
+
+def audit() -> None:
+    """Compare what Google Photos claimed against what the outbox did.
+
+    Photos saying "backup complete" is a claim about somebody else's cloud;
+    the outbox emptying is the only proof this system has. When a free-up
+    runs while Photos claims it has finished, everything on the phone should
+    go -- so files still sitting in the outbox a while later are files the
+    phone is holding that Google Photos has not actually taken, whatever its
+    screen said.
+
+    The honest caveat, and why this needs to persist before it means
+    anything: Photos' media scanner lags Syncthing. Files that arrived
+    minutes ago may not have been noticed yet, so "complete" can be true of
+    everything Photos has looked at and still leave a pile behind. One
+    remainder proves nothing. The same remainder, cycle after cycle, does.
+    """
+    note = _json("companion_audit")
+    if not note.get("at"):
+        return
+    age = _age_minutes(note["at"])
+    if age is None or age < AUDIT_DELAY_MINUTES:
+        return
+    db.set_meta("companion_audit", "")
+
+    # Confirmations rather than the outbox count: top_up() adds files on
+    # its own cycle, so an outbox that is the same size may still have
+    # turned over completely. A confirmation is a file that genuinely left
+    # the phone, and it is the thing that cannot be faked.
+    now = db.counts()
+    gained = now.get("confirmed", 0) - int(note.get("confirmed") or 0)
+    left = now.get("queued", 0)
+    was = _json("companion_unbacked")
+    if gained > 0 or left <= 0:
+        # Something left the phone. The claim held, at least in part.
+        if was.get("count"):
+            db.log("companion", "the outbox drained after Google Photos said "
+                                "it had finished — the claim held")
+        db.set_meta("companion_unbacked", "")
+        return
+
+    # Nothing left. Keep the clock running if it is the same pile as before.
+    same = was.get("count") == left
+    db.set_meta("companion_unbacked", json.dumps({
+        "count": left,
+        "since": was.get("since") if same else db.now(),
+        "at": db.now(),
+    }))
+    if not same:
+        db.log("companion", f"Google Photos said it had finished, but {left} "
+                            f"file(s) stayed in the outbox — they are on the "
+                            f"phone and not in the cloud, or Photos has not "
+                            f"noticed them yet")
 
 
 # ---- the phone checking in ----------------------------------------------
@@ -306,7 +408,11 @@ def poll(report: dict) -> dict:
 
     device = {k: report.get(k) for k in
               ("device", "app_version", "photos_version", "battery",
-               "charging", "free_bytes", "android")}
+               "charging", "free_bytes", "android",
+               # What this build understands. Told rather than guessed from
+               # the version string, so the dashboard can say whether an
+               # instruction would land or be silently ignored.
+               "features")}
     device["seen_at"] = db.now()
     db.set_meta("companion_device", json.dumps(device))
     db.set_meta("companion_seen_at", device["seen_at"])
@@ -314,6 +420,11 @@ def poll(report: dict) -> dict:
     trigger, confirm = labels(cfg)
     apk = apk_info()
     answer = {
+        # "free" walks Photos to the button; "look" only opens it and reads
+        # what it says. `free_space` stays beside it for phones that predate
+        # the distinction: to them a look reads as nothing to do, which is
+        # the right thing for them to make of it.
+        "action": "none",
         "free_space": False,
         "reason": "",
         "request_id": "",
@@ -371,10 +482,14 @@ def poll(report: dict) -> dict:
         answer["next_poll_seconds"] = 600
         return answer
 
+    action = pending.get("action") or FREE
     db.set_meta("companion_inflight",
-                json.dumps({"id": pending["id"], "at": db.now()}))
+                json.dumps({"id": pending["id"], "at": db.now(),
+                            "action": action}))
     cancel_request()
-    answer.update(free_space=True, request_id=pending["id"],
+    answer.update(action=action,
+                  free_space=(action == FREE),
+                  request_id=pending["id"],
                   reason=pending.get("reason") or pending.get("source", ""),
                   next_poll_seconds=60)
     return answer
@@ -430,18 +545,39 @@ def _record_backup(raw) -> None:
 def record(result: dict) -> dict:
     """The phone reporting how a run went."""
     inflight = _json("companion_inflight")
+    action = str(result.get("action") or inflight.get("action") or FREE)
     run = {
         "id": str(result.get("request_id") or inflight.get("id") or ""),
+        "action": action,
         "ok": bool(result.get("ok")),
         "detail": str(result.get("detail", ""))[:500],
         "freed_bytes": int(result.get("freed_bytes") or 0),
         "items": int(result.get("items") or 0),
+        # How long it actually stood in front of Google Photos. Reported
+        # rather than assumed from the setting: whether the phone dwelled at
+        # all used to be answerable only by reading its wake locks.
+        "dwelled_seconds": int(result.get("dwelled_seconds") or 0),
         "at": db.now(),
     }
     db.set_meta("companion_inflight", "")
     db.set_meta("companion_last_run", json.dumps(run))
-    db.set_meta("companion_last_run_at", run["at"])
+    # Only a free-up resets the clock. A look presses nothing, so letting it
+    # start an hour's cooldown would be the watching preventing the work.
+    if action == FREE:
+        db.set_meta("companion_last_run_at", run["at"])
     _record_backup(result.get("backup"))
+
+    # A free-up that ran while Google Photos claimed to be finished is the
+    # one case where the outbox can check the claim. Record where things
+    # stood; audit() does the comparing once the deletions have had time to
+    # come back through Syncthing.
+    backup = result.get("backup")
+    if (action == FREE and isinstance(backup, dict)
+            and not backup.get("active")):
+        c = db.counts()
+        db.set_meta("companion_audit", json.dumps({
+            "at": run["at"], "confirmed": c.get("confirmed", 0),
+            "queued": c.get("queued", 0)}))
 
     if run["ok"]:
         db.set_meta("companion_last_ok_at", run["at"])
@@ -471,9 +607,14 @@ def snapshot() -> dict:
         state, line = "offline", ("The phone has not checked in for "
                                   f"{_ago(seen_age)}.")
     elif inflight.get("id"):
-        state, line = "running", "Freeing space on the phone now."
+        state = "running"
+        line = ("Looking in on Google Photos." if inflight.get("action") == LOOK
+                else "Freeing space on the phone now.")
     elif pending.get("id"):
-        state, line = "queued", "Asked the phone to free space — waiting for it to pick it up."
+        state = "queued"
+        line = ("Asked the phone to look in on Google Photos — waiting for it "
+                "to pick it up." if pending.get("action") == LOOK else
+                "Asked the phone to free space — waiting for it to pick it up.")
     elif last and not last.get("ok"):
         state, line = "failed", f"Last attempt failed: {last.get('detail','')}"
     else:
@@ -486,6 +627,18 @@ def snapshot() -> dict:
         # Only ever displayed. See _record_backup for why it can never be
         # allowed to mean more than that.
         "backup": _json("companion_backup"),
+        # What the phone is set to do, and what it can do. The second used
+        # to be a guess from the version string, so an instruction a phone
+        # was too old to understand simply vanished.
+        "dwell": {"enabled": cfg.companion_dwell_enabled,
+                  "seconds": cfg.companion_dwell_seconds,
+                  "watch_minutes": cfg.companion_watch_minutes,
+                  "wait_for_backup": cfg.companion_wait_for_backup,
+                  "understood": "look" in ((device or {}).get("features") or [])},
+        # Files the outbox kept after Google Photos said it had finished.
+        # See audit().
+        "unbacked": _json("companion_unbacked"),
+        "next_free_minutes": _cooldown_left(cfg),
         # A phone on an older build than the server is serving. Only ever a
         # note: nothing refuses to work across a version gap.
         "update_available": bool(apk["available"] and running

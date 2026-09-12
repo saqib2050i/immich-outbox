@@ -867,9 +867,13 @@
     <div class="row"><span>Battery</span><span id="cpBatt">—</span></div>
     <div class="row"><span>Free on phone</span><span id="cpFree">—</span></div>
     <div class="row" id="cpRowBackup" hidden><span>Google Photos</span><span id="cpBackup">—</span></div>
+    <div class="row" id="cpRowDwell" hidden><span>Staying in Photos</span><span id="cpDwell">—</span></div>
+    <div class="row" id="cpRowNext" hidden><span>Next free-up</span><span id="cpNext">—</span></div>
     <div class="row" id="cpRowLast" hidden><span>Last run</span><span id="cpLast">—</span></div>
+    <div class="row" id="cpRowUnbacked" hidden><span>Not backed up</span><span id="cpUnbacked">—</span></div>
     <div class="controls" style="margin:12px 0 0">
       <button id="btnFreeNow">Free up space now</button>
+      <button id="btnLookNow">Check Google Photos</button>
     </div>
     <p class="empty" id="cpNote" style="margin:8px 0 0"></p>
   </div>
@@ -1151,6 +1155,20 @@
             so itself — “Keep the app open for faster backup”. Costs screen time on
             the phone, so it is off until you want it.</span></div>
         <input type="checkbox" id="s_companion_dwell_enabled">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_wait_for_backup">Wait until Google Photos has finished</label>
+          <span class="hint">Freeing space mid-upload clears only what it has got
+            through so far. Waiting makes each run count — and makes anything left
+            in the outbox afterwards mean something.</span></div>
+        <input type="checkbox" id="s_companion_wait_for_backup">
+      </div>
+      <div class="field">
+        <div class="lab"><label for="s_companion_watch_minutes">Look in on Google Photos every, minutes</label>
+          <span class="hint">Opening Photos is also what keeps it out of the standby
+            bucket it sinks into when nobody opens it. 0 stops looking when there is
+            nothing in the outbox; checks before a free-up still happen.</span></div>
+        <input type="number" id="s_companion_watch_minutes" min="0" max="720">
       </div>
       <div class="field">
         <div class="lab"><label for="s_companion_dwell_seconds">How long to stay, seconds</label>
@@ -1514,6 +1532,7 @@ function setDirty(v){
 const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
                "backup_enabled",
                "companion_enabled","companion_auto","companion_dwell_enabled",
+               "companion_wait_for_backup",
                "fix_dates"];
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
@@ -2981,6 +3000,26 @@ function renderPhone(cp){
   // are confirmed by leaving the outbox, never by this line. But it is the
   // only place the figure exists, and its absence is what made "is it
   // uploading, or has it stopped?" unanswerable for fifteen hours.
+  // What it is set to do, whether the phone on the other end understands
+  // the instruction, and when the next one is. All three used to be
+  // answerable only by reading the phone's wake locks over adb.
+  const dw = cp.dwell || {};
+  cpRowDwell.hidden = !dw.enabled;
+  if (dw.enabled){
+    cpDwell.textContent = dw.understood === false
+      ? "on · this phone is too old for it"
+      : dw.seconds + "s · every " + (dw.watch_minutes || "—") + " min";
+  }
+  const nextMin = cp.next_free_minutes;
+  cpRowNext.hidden = !(nextMin > 0);
+  if (nextMin > 0) cpNext.textContent = "in " + Math.round(nextMin) + " min";
+
+  // Files the outbox kept after Google Photos said it had finished. Only
+  // ever a finding: nothing here confirms or unconfirms anything.
+  const ub = cp.unbacked || {};
+  cpRowUnbacked.hidden = !ub.count;
+  if (ub.count) cpUnbacked.textContent = fmtNum(ub.count) + " file(s) held back";
+
   const bk = cp.backup || {};
   const hasBk = !!(bk.at && (bk.active || bk.detail));
   cpRowBackup.hidden = !hasBk;
@@ -3004,10 +3043,20 @@ function renderPhone(cp){
     // value in this column. (see above)
     // The app reports bytes now, not an item count, so keying off items
     // alone made every successful run read "done" and never say how much.
-    cpLast.textContent = !last.ok ? "failed"
+    // How long it actually stood in front of Photos, reported by the phone
+    // rather than assumed from the setting — that was the only way to tell
+    // a dwell from a setting nobody had acted on.
+    const stayed = last.dwelled_seconds
+      ? " · stayed " + (last.dwelled_seconds >= 60
+          ? Math.floor(last.dwelled_seconds / 60) + "m "
+            + (last.dwelled_seconds % 60) + "s"
+          : last.dwelled_seconds + "s")
+      : "";
+    cpLast.textContent = (last.action === "look" ? (last.ok ? "looked" : "look failed")
+      : !last.ok ? "failed"
       : last.freed_bytes ? fmtBytes(last.freed_bytes) + " freed"
       : last.items ? last.items + " cleared"
-      : "nothing to clear";
+      : "nothing to clear") + stayed;
   }
 
   // The phone polls; the server never dials out to it. So a manual request
@@ -3331,6 +3380,28 @@ async function askToFreeSpace(button, note){
   }
 }
 
+// The cheap one: it presses nothing, so there is no cooldown and nothing to
+// undo. "Is it uploading, or has it stopped?" without waiting for the
+// schedule to come round.
+async function askToLook(button, note){
+  button.disabled = true;
+  const was = button.textContent;
+  button.textContent = "Asking";
+  try {
+    const r = await fetch("/api/companion/look", {method:"POST"});
+    const d = await r.json().catch(() => ({}));
+    if (note){
+      note.textContent = r.ok ? (d.note || "Queued.")
+                              : (d.detail || "Could not ask the phone.");
+    }
+    await tick();
+  } finally {
+    button.disabled = false;
+    button.textContent = was;
+  }
+}
+
+btnLookNow.onclick  = () => askToLook(btnLookNow, cpNote);
 btnFreeNow.onclick  = () => askToFreeSpace(btnFreeNow, cpNote);
 btnFreeNowS.onclick = () => askToFreeSpace(btnFreeNowS, cstWhy);
 

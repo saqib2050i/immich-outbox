@@ -127,6 +127,25 @@ def evaluate() -> list[dict]:
                                 "leave the outbox until it resumes — open "
                                 "Google Photos on the phone, and check it is "
                                 "not restricted by battery optimisation.")})
+        # Google Photos keeps saying it has finished and the outbox keeps
+        # not draining. One occurrence means nothing -- Photos' media
+        # scanner lags Syncthing, so files that arrived minutes ago may not
+        # have been looked at yet. The same pile surviving free-up after
+        # free-up is a different thing.
+        unbacked = snap.get("unbacked") or {}
+        if unbacked.get("count"):
+            held = _age_hours(unbacked.get("since"))
+            window = max(3.0, cfg.companion_cooldown_minutes * 3 / 60)
+            if held is not None and held >= window:
+                out.append({"key": "companion_unbacked",
+                            "title": "Files the phone is holding but has not backed up",
+                            "message": (
+                                f"{unbacked['count']} file(s) have stayed in the "
+                                f"outbox for {held:.0f}h across several free-ups, "
+                                "while Google Photos reported it had finished. "
+                                "Open Photos on the phone and check backup is on "
+                                "for the folder Syncthing writes to.")})
+
         if snap["state"] == "failed":
             out.append({"key": "companion_failed",
                         "title": "Phone could not free space",

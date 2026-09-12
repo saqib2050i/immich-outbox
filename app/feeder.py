@@ -643,6 +643,7 @@ async def housekeeping() -> None:
     # log line was ever written -- see companion.consider().
     try:
         from . import companion
+        companion.audit()
         companion.consider()
     except Exception as exc:  # noqa: BLE001
         db.log("error", f"companion check failed: {exc}")

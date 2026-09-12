@@ -56,6 +56,21 @@ class PollAlarm : BroadcastReceiver() {
                 Intent(context, PollAlarm::class.java),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+        /**
+         * Is a check-in already armed?
+         *
+         * FLAG_NO_CREATE returns null when no matching PendingIntent
+         * exists, which is the only way to ask. Without it a reconnect --
+         * an app update, a reboot, anything that reconfigures accessibility
+         * -- rescheduled the next poll to five seconds, so a flurry of
+         * reconnects became a flurry of polls.
+         */
+        fun pending(context: Context): Boolean =
+            PendingIntent.getBroadcast(
+                context, REQUEST,
+                Intent(context, PollAlarm::class.java),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) != null
+
         fun schedule(context: Context, seconds: Int) {
             val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
             // Elapsed time rather than wall clock: a clock correction must
