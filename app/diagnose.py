@@ -822,14 +822,27 @@ def _why_not_sendable(row: dict) -> str | None:
     """
     cfg = settings.load()
     state = row.get("state")
-    if state == "confirmed":
-        gone = (" Its outbox copy is gone for the same reason, so only "
-                "Immich's original can be read below."
-                if row.get("outbox_name") else "")
-        return ("it is already confirmed — Google Photos verified it and "
-                "cleared it off the phone, which is how this service knows. "
-                "A confirmed asset is never re-sent, because that would put "
-                "a duplicate in the library." + gone)
+    # A confirmed asset may be sent again from here, and only from here.
+    #
+    # Invariant 4 exists because re-sending duplicates a photo. That is true
+    # of a file whose bytes have changed and false of one whose have not:
+    # Google Photos matches an upload against what it already holds, so an
+    # identical file is recognised, not added, and Free up space clears it
+    # again on the next run. Which makes a deliberate re-send the only way
+    # to see what actually leaves this building for a file whose outbox copy
+    # was cleared months ago -- and those are the files worth asking about,
+    # since a wrong date is noticed in Google Photos, long after the fact.
+    #
+    # The condition is the bytes, so that is what is checked. Nothing
+    # automatic re-sends anything: claim_batch still excludes 'confirmed',
+    # and this is a button in Tools pressed at one named file.
+    if state == "confirmed" and cfg.fix_dates and feeder.needs_date_fix(
+            row.get("taken_at"), row.get("exif_taken_at")):
+        return ("it is already confirmed and 'Write corrected dates' would "
+                "alter it on the way out. A changed file is a new photo to "
+                "Google Photos, so this one really would arrive as a "
+                "duplicate rather than being recognised. Turn that setting "
+                "off to send it untouched")
     if row.get("missing_at"):
         return ("Immich no longer serves the original: the asset is in the "
                 "ledger but its file is offline or moved out of an external "
@@ -885,9 +898,12 @@ async def _send_now(row: dict) -> dict:
 
     c = db.connect()
     with db._lock:  # noqa: SLF001
+        # Unconditionally 'pending', confirmed included. That CASE was the
+        # guard, and _why_not_sendable is the guard now -- a narrower one,
+        # testing whether the bytes will change rather than whether the file
+        # has been somewhere.
         c.execute("UPDATE assets SET forced=1, attempts=0, last_error=NULL, "
-                  "state=CASE WHEN state='confirmed' THEN state ELSE 'pending' END "
-                  "WHERE id = ?", (row["id"],))
+                  "state='pending' WHERE id = ?", (row["id"],))
         c.commit()
         db._bump()  # noqa: SLF001
     try:
@@ -916,8 +932,13 @@ async def _send_now(row: dict) -> dict:
                 + (after.get("last_error") or "no reason was recorded")}
     name = after.get("outbox_name")
     if name and os.path.exists(os.path.join(config.OUTBOX_DIR, name)):
+        again = (" This one was confirmed already, so it has gone out a "
+                 "second time — byte for byte the same file, which Google "
+                 "Photos recognises rather than adds, and Free up space "
+                 "clears again on its next run."
+                 if row.get("state") == "confirmed" else "")
         return {"ok": True, "moved": True, "text":
-                f"Sent. It is in the outbox as {name}."}
+                f"Sent. It is in the outbox as {name}." + again}
     if name:
         return {"ok": False, "moved": False, "text":
                 f"The ledger reserved the name {name} but no file is in the "

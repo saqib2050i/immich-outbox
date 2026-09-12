@@ -38,6 +38,25 @@ Nothing was ever at risk from that row: confirmation requires
 `state='queued' AND seen_on_phone=1`, and a failed asset is neither. The
 ledger was right; the report was lying about it.
 
+**"Send it, then trace" will now re-send a confirmed file.** It refused,
+on the strength of invariant 4 — already-confirmed assets are never
+re-sent, because that duplicates the photo. But the reason is narrower than
+the rule: duplication happens when the *bytes* change. Google Photos
+matches an upload against what it already holds, so a byte-identical file
+is recognised rather than added, and Free up space clears it again on its
+next run.
+
+Which matters, because a wrong date is noticed *in Google Photos*, months
+later, by which time the outbox copy is long gone. Refusing meant there was
+no way to see what actually left the building for exactly the files worth
+asking about. It refuses only when the file would be altered on the way out
+— `fix_dates` together with a real date mismatch — which is the one case
+where it genuinely would arrive as a second photo.
+
+Nothing automatic changed: `claim_batch` still excludes `state='confirmed'`
+outright, and a test says so. This is one button, in Tools, aimed at one
+named file.
+
 **And a name in the ledger is not a file in the outbox.** A confirmed asset
 keeps its `outbox_name` for good — the file left the outbox *because*
 Google Photos cleared it off the phone, which is how it was confirmed — so

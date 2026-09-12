@@ -57,8 +57,27 @@ promise. Nothing the phone reports is ever treated as confirmation —
 **3. Immich is read-only.** Three permissions: `asset.read`,
 `asset.download`, `server.about`. Never add a write scope.
 
-**4. Already-confirmed assets are never re-sent.** They are in Google
-Photos; re-sending creates a duplicate.
+**4. Nothing automatic re-sends a confirmed asset.** They are in Google
+Photos, and `claim_batch` excludes `state='confirmed'` outright, so no
+cycle, window, sweep or setting can put one back in the queue.
+
+The reason behind the rule is narrower than the rule, and the one exception
+turns on it. Re-sending duplicates a photo *when the bytes have changed*:
+Google Photos matches an upload against what it already holds, so a file
+that is byte for byte identical is recognised rather than added, and Free
+up space clears it again on its next run. So `diagnose._send_now()` — one
+button, in Tools, aimed at one named file — will send a confirmed asset
+again, and refuses only when the file would be altered on the way out
+(`fix_dates` and a real date mismatch), which is the case where it really
+would arrive as a second photo.
+
+That exception exists because a wrong date is noticed *in Google Photos*,
+months after the fact, by which time the outbox copy is long gone — and
+without it there is no way to see what actually left the building for
+precisely the files worth asking about. Note the trap in the other
+direction: once anything starts stamping files on their way out, a re-sent
+file is no longer identical, and this exception has to be re-examined
+rather than inherited.
 
 ## Architecture
 

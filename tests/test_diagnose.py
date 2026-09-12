@@ -606,13 +606,53 @@ def _row(**over):
     return dict(c.execute("SELECT * FROM assets WHERE id='asset-1'").fetchone())
 
 
-async def test_a_confirmed_asset_is_never_re_sent_and_says_why(rig):
-    """Invariant 4. Re-sending puts a duplicate in Google Photos."""
-    from app import diagnose
-    out = await diagnose._send_now(_row(state="confirmed"))
+async def test_a_confirmed_asset_can_be_sent_again_from_here(rig, monkeypatch):
+    """Invariant 4 exists because re-sending duplicates a photo. That is
+    true of a file whose bytes changed and false of one whose have not:
+    Google Photos matches an upload against what it holds, so an identical
+    file is recognised rather than added, and Free up space clears it again.
+
+    Which makes this the only way to see what actually leaves the building
+    for a file whose outbox copy was cleared months ago -- and those are the
+    ones worth asking about, since a wrong date is noticed in Google Photos
+    long after the fact.
+    """
+    from conftest import fake_download
+    from app import db, diagnose, immich
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    out = await diagnose._send_now(_row(state="confirmed",
+                                        outbox_name="IMG_0001.jpg"))
+    assert out["ok"] is True and out["moved"] is True
+    assert "second time" in out["text"]
+    assert "recognises rather than adds" in out["text"]
+    after = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-1'").fetchone())
+    assert after["state"] == "queued"
+
+
+async def test_a_confirmed_asset_that_would_be_altered_is_refused(rig):
+    """The one case where it really would duplicate: a changed file is a new
+    photo to Google Photos, so dedupe cannot save it."""
+    from app import diagnose, settings
+    settings.save({"fix_dates": True})
+    out = await diagnose._send_now(_row(
+        state="confirmed", taken_at="2024-01-05T03:47:33Z",
+        exif_taken_at="2019-01-01T00:00:00Z"))
     assert out["ok"] is False and out["moved"] is False
-    assert "already confirmed" in out["text"]
-    assert "duplicate" in out["text"]
+    assert "really would arrive as a duplicate" in out["text"]
+
+
+async def test_nothing_automatic_re_sends_a_confirmed_asset(rig):
+    """The narrower guard must not have widened the automatic path. This is
+    invariant 4 where it actually lives."""
+    from app import db
+    db.upsert_assets([asset(1)])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='confirmed', forced=1 WHERE id='asset-1'")
+    c.commit()
+    from app import settings
+    rows = db.claim_batch(10 ** 9, 10, settings.load().eligibility)
+    assert [r["id"] for r in rows] == []
 
 
 async def test_a_motion_component_is_refused_and_says_why(rig):
@@ -710,7 +750,11 @@ async def test_a_confirmed_file_is_not_called_still_in_the_outbox(rig):
     it was confirmed. Reading the ledger here announced "already in the
     outbox" about a file that demonstrably was not -- and on exactly the
     kind of file somebody traces, one they found in Google Photos wearing
-    the wrong date."""
+    the wrong date.
+
+    The send itself then fails for want of a download stub, which is not
+    what this is testing. What it tests is that the precondition asks the
+    filesystem rather than the ledger."""
     import os
     from app import config, diagnose
     row = _row(state="confirmed", outbox_name="IMG_0001.jpg")
@@ -718,10 +762,6 @@ async def test_a_confirmed_file_is_not_called_still_in_the_outbox(rig):
 
     out = await diagnose._send_now(row)
     assert "Already in the outbox" not in out["text"], out
-    assert out["ok"] is False
-    assert "cleared it off the phone" in out["text"]
-    assert "never re-sent" in out["text"]
-    assert "only Immich's original" in out["text"]
 
 
 async def test_a_queued_file_whose_copy_went_missing_can_be_sent_again(rig,
