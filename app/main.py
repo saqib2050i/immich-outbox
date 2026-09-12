@@ -9,7 +9,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
                                StreamingResponse)
 
-from . import (alerts, auth, backup, companion, config, db, feeder, immich,
+from . import (alerts, auth, backup, companion, config, db, diagnose, feeder, immich,
                settings, syncthing, worker)
 
 STATIC = Path(__file__).parent / "static"
@@ -411,6 +411,19 @@ async def backlog_dismiss(payload: dict):
         db.log("dismiss", f"{n} waiting file(s) dismissed from {what} — they "
                           "will not be sent unless asked for again")
     return {"ok": True, "dismissed": n}
+
+
+@app.post("/api/diagnose")
+async def diagnose_file(payload: dict | None = None):
+    """Trace one file from Immich to the phone and say where it changes.
+
+    Reads three copies and compares them. `send` first pushes the asset into
+    the outbox, so there is a second copy to compare against — without it a
+    file that has never been sent has nothing to be traced through.
+    """
+    d = payload or {}
+    return await diagnose.trace(str(d.get("filename") or ""),
+                                send=bool(d.get("send")))
 
 
 @app.get("/api/date-mismatch")

@@ -168,6 +168,29 @@ It is used on a phone, so the narrow breakpoints are not an afterthought:
 a year's figures are one unbreakable ~400px string, and left inline they
 took the whole page's horizontal scrollbar with them.
 
+## Tracing one file
+
+`app/diagnose.py`, reachable from Tools. It fetches Immich's original to a
+temp file, reads the outbox copy, and puts the date tags side by side.
+Reach for it before believing anything about where a file's metadata went
+wrong — "it arrived damaged" and "this service damaged it" look identical
+from every other screen here, and telling them apart by hand costs a USB
+cable and an afternoon.
+
+The phone's copy is confirmed rather than read, and must stay that way: the
+companion holds no storage permission, which is what makes "it cannot
+delete a photo" an Android guarantee. Syncthing hashes every block it
+moves, so a device it lists as holding a file has a byte-identical copy.
+
+Two things it knows that are worth keeping. A camera's filename carries the
+local wall-clock time of the shutter (`PXL_`, `IMG_`, `VID_`, bare
+`YYYYMMDD_HHMMSS`), which is the only independent witness once a file's own
+EXIF is in doubt. And a `DateTimeOriginal` exactly one UTC offset away from
+that name is the signature of a UTC time written into a local-time field —
+the mistake Google Takeout importers make, and the one `rewrite_capture_date`
+would make too if `fix_dates` were ever switched on, since it writes
+`datetime.fromtimestamp(stamp, timezone.utc)` into `-AllDates`.
+
 ## Bugs that keep recurring
 
 Partial string edits have twice left **duplicate route definitions** where

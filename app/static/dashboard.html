@@ -591,6 +591,17 @@
   .tool button.danger:hover{background:var(--alarm);color:var(--on-accent)}
   .tool .confirm{font-size:12.5px;color:var(--alarm)}
   .tool .done{font-size:12.5px;color:var(--done)}
+  /* Trace: three copies of one file, side by side. */
+  .tracegrid{display:grid;grid-template-columns:minmax(9rem,auto) repeat(2,1fr);
+    gap:1px;background:var(--rule);border:1px solid var(--rule);
+    border-radius:var(--r-sm);overflow:hidden;margin-top:12px;font-size:12.5px}
+  .tracegrid > div{background:var(--panel);padding:7px 10px;min-width:0;
+    overflow-wrap:anywhere}
+  .tracegrid > div.h{background:var(--panel-2);font-weight:600;
+    font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .tracegrid > div.k{color:var(--dim)}
+  .tracegrid > div.differs{color:var(--alarm)}
+  .tracesum{margin:0 0 10px;font-size:12.5px;color:var(--dim);line-height:1.6}
   .warnbox{border:1px solid var(--alarm);border-radius:var(--r-sm);
            padding:12px 14px;margin-top:14px;font-size:12.5px;color:var(--dim);
            line-height:1.6}
@@ -1365,6 +1376,24 @@
       </label>
       <span class="confirm" hidden></span>
     </div>
+  </div>
+
+  <div class="tool">
+    <h3>Trace one file</h3>
+    <p>Follows a single file from Immich into the outbox and reports what is in
+       all three copies, so a file that arrived damaged and a file this service
+       damaged stop looking the same. Nothing is written; Immich's copy is
+       fetched, read and thrown away.</p>
+    <div class="act">
+      <input type="text" id="traceName" placeholder="PXL_20230101_025759225.jpg"
+             style="flex:1 1 20rem;min-width:0">
+      <button id="btnTrace">Trace it</button>
+      <button id="btnTraceSend">Send it, then trace</button>
+    </div>
+    <p class="hint" style="margin:8px 0 0">The name exactly as Immich holds it.
+       A file that has never been sent has no second copy to compare, which is
+       what the second button is for.</p>
+    <div id="traceOut" style="margin-top:12px"></div>
   </div>
 
   <div class="tool">
@@ -2862,6 +2891,126 @@ btnRestoreAll.onclick = async () => {
 };
 
 
+
+// ---- trace one file -----------------------------------------------------
+//
+// Three copies of one file, side by side. Worth the screen because "it
+// arrived damaged" and "this service damaged it" looked identical from
+// every other view here -- which is how the relay spent an afternoon under
+// suspicion for five hours that went missing before Immich ever saw them.
+
+async function runTrace(send){
+  const name = traceName.value.trim();
+  traceOut.innerHTML = '<p class="empty">' +
+    (send ? "Sending it, then reading three copies…" : "Reading three copies…") +
+    '</p>';
+  btnTrace.disabled = btnTraceSend.disabled = true;
+  try {
+    const r = await fetch("/api/diagnose", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({filename: name, send: !!send})});
+    renderTrace(await r.json());
+  } catch (e) {
+    traceOut.innerHTML = '<p class="empty">Could not reach the server.</p>';
+  } finally {
+    btnTrace.disabled = btnTraceSend.disabled = false;
+    tick();
+  }
+}
+
+function traceLine(text, cls){
+  const p = document.createElement("p");
+  p.className = cls || "tracesum";
+  p.textContent = text;
+  return p;
+}
+
+function renderTrace(d){
+  traceOut.innerHTML = "";
+
+  // A name that matches nothing is the likeliest thing to happen here, and
+  // it used to be indistinguishable from a file with no problems.
+  if (d.problem){
+    const box = document.createElement("div");
+    box.className = "warnbox";
+    box.textContent = d.problem;
+    traceOut.appendChild(box);
+    if ((d.suggestions || []).length){
+      traceOut.appendChild(traceLine("Did you mean: " + d.suggestions.join(" · ")));
+    }
+    return;
+  }
+
+  const checks = document.createElement("div");
+  checks.className = "checks";
+  (d.findings || []).forEach(f => {
+    const row = document.createElement("div");
+    row.className = f.level === "bad" ? "fail" : f.level === "ok" ? "pass" : "";
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    mark.textContent = f.level === "bad" ? "✕" : f.level === "ok" ? "✓" : "!";
+    const det = document.createElement("span");
+    det.className = "det";
+    det.textContent = f.text;
+    row.append(mark, det);
+    checks.appendChild(row);
+  });
+  traceOut.appendChild(checks);
+
+  // The dates themselves, so the finding above can be checked rather than
+  // taken on trust.
+  const src = (d.immich || {}).dates || {};
+  const dst = (d.outbox || {}).dates || {};
+  const keys = [...new Set([...Object.keys(src), ...Object.keys(dst)])].sort();
+  if (keys.length){
+    const g = document.createElement("div");
+    g.className = "tracegrid";
+    ["", "In Immich", "In the outbox"].forEach(h => {
+      const c = document.createElement("div");
+      c.className = "h"; c.textContent = h; g.appendChild(c);
+    });
+    keys.forEach(k => {
+      const differs = (src[k] || "—") !== (dst[k] || "—")
+                      && Object.keys(dst).length > 0;
+      [[k, "k"], [src[k] || "—", differs ? "differs" : ""],
+       [dst[k] || "—", differs ? "differs" : ""]].forEach(([t, cls]) => {
+        const c = document.createElement("div");
+        if (cls) c.className = cls;
+        c.textContent = t;
+        g.appendChild(c);
+      });
+    });
+    traceOut.appendChild(g);
+  }
+
+  // The phone is confirmed, never read: the companion declares no storage
+  // permission, and Syncthing hashes every block it moves.
+  const ph = d.phone || {};
+  if (ph.known){
+    const who = (ph.other_devices_with_it || []);
+    traceOut.appendChild(traceLine(
+      "On the phone: " + (who.length
+        ? "Syncthing says " + who.join(", ") + " hold this file, byte for byte."
+        : "no other device has it yet — Syncthing has not finished, or it has "
+          + "already been cleared off the phone, which is how a file is "
+          + "confirmed.")));
+  } else if (ph.note){
+    traceOut.appendChild(traceLine("On the phone: " + ph.note));
+  }
+
+  const a = d.asset || {};
+  traceOut.appendChild(traceLine(
+    `Ledger: ${a.state}${a.forced ? " (forced)" : ""} · Immich says taken `
+    + `${a.taken_at || "—"} · the file claimed ${a.exif_taken_at || "—"}`
+    + (a.outbox_name ? ` · in the outbox as ${a.outbox_name}` : "")
+    + (a.last_error ? ` · last error: ${a.last_error}` : "")));
+}
+
+btnTrace.onclick     = () => runTrace(false);
+btnTraceSend.onclick = () => runTrace(true);
+traceName.addEventListener("keydown", e => {
+  if (e.key === "Enter"){ e.preventDefault(); runTrace(false); }
+});
 
 let syncAt = 0;
 async function renderSyncthing(){

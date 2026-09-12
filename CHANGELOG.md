@@ -10,6 +10,41 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.6.0
+
+**Tools can trace one file from Immich to the phone and say where it
+changes.** Built after five hours went missing from a library and there was
+no way to tell whether the relay had done it: Immich's copy needed an API
+call, the outbox copy needed a shell on the server, and nothing could put
+the two side by side. The answer took an afternoon, a USB cable and a
+hand-written EXIF parser. It should have taken one text box.
+
+- **Paste a filename, press Trace.** It fetches Immich's original to a
+  temporary file, reads it, throws it away, reads the outbox copy, and shows
+  the date tags from both in one table with the differences marked.
+- **The phone's copy is confirmed, not read.** The companion declares no
+  storage permission — that is what makes "it cannot delete a photo" an
+  Android guarantee — and reading a photo's metadata would need exactly
+  that. Syncthing hashes every block it transfers, so a device it lists as
+  holding the file has a byte-identical copy, which is a stronger statement
+  than a re-read.
+- **It names what is wrong rather than showing numbers.** A `DateTimeOriginal`
+  that sits exactly its own UTC offset away from the time in the camera's
+  filename is reported as what it is: a UTC time written into a field EXIF
+  defines as local. Bytes that changed while date rewriting was off are
+  called out against invariant 2a. exiftool's own `Warning` tags are
+  surfaced, because structural damage appears there and nowhere else.
+- **A name that matches nothing says so, with near misses.** That is the
+  likeliest thing to happen at this box and it used to be indistinguishable
+  from a file with no problems. A pasted path finds the file too.
+- **A report is never empty.** A silent result cannot be told apart from one
+  nobody computed, which is the whole failure this exists to stop.
+- **Send it, then trace** forces a single asset through first, for a file
+  that has never been sent and so has no second copy to compare.
+
+Nothing here writes to a file or moves an asset, unless you press the
+second button.
+
 ## 2.5.0
 
 **The phone can look at Google Photos without pressing anything, and the
