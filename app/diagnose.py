@@ -45,11 +45,19 @@ EXIF_TAGS = [
     "-a", "-Warning",
 ]
 
-# What the camera called it. These names carry the local wall-clock time of
-# the shutter, which is the only independent witness there is once a file's
-# own EXIF is in doubt.
+# What the camera called it. An independent witness to the moment of the
+# shutter -- but only if you know which clock it was reading, and cameras
+# do not agree on that.
 NAME_TIME = re.compile(
     r"(?:^|[^0-9])(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})")
+
+# The Pixel camera names files in UTC and records the zone separately, so
+# `PXL_20230101_025759` with an offset of +05:00 is a photo taken at 07:57
+# local -- and the name being five hours off is the file being *right*.
+# Older Google Camera builds, Samsung and most everything else wrote the
+# local wall clock into the name instead.
+UTC_NAMED = ("pxl_",)
+LOCAL_NAMED = ("img_", "vid_", "mvimg_", "dsc_")
 
 
 def filename_time(name: str) -> datetime | None:
@@ -60,6 +68,22 @@ def filename_time(name: str) -> datetime | None:
         return datetime(*(int(g) for g in m.groups()))
     except ValueError:
         return None
+
+
+def filename_clock(name: str) -> str:
+    """Which clock the camera was reading when it named the file.
+
+    Only ever used to explain a reading, never to decide one. Both
+    conventions are checked against the file regardless -- a name that fits
+    either is not evidence of anything being wrong, and asserting a
+    convention would manufacture faults out of correct files.
+    """
+    base = os.path.basename(name or "").lower()
+    if base.startswith(UTC_NAMED):
+        return "utc"
+    if base.startswith(LOCAL_NAMED):
+        return "local"
+    return "unknown"
 
 
 def _sha(path: str) -> str:
@@ -271,6 +295,49 @@ def _dates(exif: dict) -> dict:
     return {k: exif[k] for k in keep if k in exif and exif[k] not in (None, "")}
 
 
+def _clock_finding(name: str, want: datetime, got: datetime,
+                   exif: dict) -> dict:
+    """The time in the camera's name against the file's own clock.
+
+    Both readings are tried, on purpose. Cameras do not agree on which
+    clock they name a file by: the Pixel names in UTC and records the zone
+    separately, so a PXL_ name sitting exactly one offset behind
+    DateTimeOriginal is the file being *right*. Reading that as a fault is
+    how an entirely correct library came to look five hours broken, and it
+    is why nothing here asserts a convention -- a name that fits either
+    reading is not evidence of anything at all.
+    """
+    drift = (got - want).total_seconds() / 3600
+    zone = exif.get("OffsetTimeOriginal") or exif.get("OffsetTime")
+    off = _offset_hours(zone)
+
+    if abs(drift) < 1 / 60:
+        return {"level": "ok", "text":
+                f"The name and DateTimeOriginal agree "
+                f"({want:%Y-%m-%d %H:%M:%S}), so the camera named this file "
+                "by the local clock."}
+    if off is not None and abs(drift - off) < 1 / 60:
+        return {"level": "ok", "text":
+                f"DateTimeOriginal is {drift:+g}h from the name, which is "
+                f"exactly the {zone} this file records: the camera named it "
+                "in UTC and DateTimeOriginal is the local time. Consistent"
+                + (", as a Pixel should be."
+                   if filename_clock(name) == "utc" else ".")}
+    if off is None:
+        quarter = abs(drift * 4 - round(drift * 4)) < 0.02 and abs(drift) <= 14
+        return {"level": "warn", "text":
+                f"DateTimeOriginal is {drift:+g}h from the name, and this file "
+                "records no time zone at all — so which of the two is the "
+                "local clock cannot be settled from the file alone."
+                + (" A gap landing on a whole quarter-hour is usually a zone "
+                   "the camera never wrote down, which older cameras and "
+                   "phones did not." if quarter else "")}
+    return {"level": "bad", "text":
+            f"DateTimeOriginal is {drift:+g}h from the time in the name, and "
+            f"this file's own {zone} does not account for it. Neither reading "
+            "of the name fits, so one of the two has been rewritten."}
+
+
 def _findings(rep: dict) -> list[dict]:
     """What is wrong, said out loud.
 
@@ -290,29 +357,12 @@ def _findings(rep: dict) -> list[dict]:
         if err:
             out.append({"level": "bad", "text": f"Could not read {where}: {err}"})
 
-    # 1. The camera's own name against the file's own clock. The name is the
-    #    only independent witness once the EXIF is in doubt.
+    # 1. The camera's own name against the file's own clock.
     want = filename_time(name)
     ref = src if src and "error" not in src else dst
     got = _exif_dt(ref.get("DateTimeOriginal"))
     if want and got:
-        drift = (got - want).total_seconds() / 3600
-        off = _offset_hours(ref.get("OffsetTimeOriginal") or ref.get("OffsetTime"))
-        if abs(drift) < 1 / 60:
-            out.append({"level": "ok", "text":
-                        f"The name and the file agree: {want:%Y-%m-%d %H:%M:%S}."})
-        elif off is not None and abs(drift - off) < 1 / 60:
-            out.append({"level": "bad", "text":
-                        f"DateTimeOriginal is {drift:+g}h from the time in the "
-                        f"name, which is exactly this file's own "
-                        f"{ref.get('OffsetTimeOriginal') or ref.get('OffsetTime')} "
-                        "offset. A UTC time has been written into "
-                        "DateTimeOriginal, which EXIF defines as local time. "
-                        "Google Photos will date this file that far out."})
-        else:
-            out.append({"level": "bad", "text":
-                        f"DateTimeOriginal is {drift:+g}h from the "
-                        f"{want:%H:%M:%S} in the file's name."})
+        out.append(_clock_finding(name, want, got, ref))
     elif want and not got:
         out.append({"level": "warn", "text":
                     "The file carries no DateTimeOriginal, so Google Photos "

@@ -182,14 +182,23 @@ companion holds no storage permission, which is what makes "it cannot
 delete a photo" an Android guarantee. Syncthing hashes every block it
 moves, so a device it lists as holding a file has a byte-identical copy.
 
-Two things it knows that are worth keeping. A camera's filename carries the
-local wall-clock time of the shutter (`PXL_`, `IMG_`, `VID_`, bare
-`YYYYMMDD_HHMMSS`), which is the only independent witness once a file's own
-EXIF is in doubt. And a `DateTimeOriginal` exactly one UTC offset away from
-that name is the signature of a UTC time written into a local-time field —
-the mistake Google Takeout importers make, and the one `rewrite_capture_date`
-would make too if `fix_dates` were ever switched on, since it writes
-`datetime.fromtimestamp(stamp, timezone.utc)` into `-AllDates`.
+**Never assume which clock a filename was written by.** The Pixel camera
+names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
+with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a
+correct file — the name being five hours behind is the file being right.
+Older Google Camera builds, Samsung and most everything else wrote the local
+wall clock into the name. Reading the first convention as the second turned
+an entirely correct library into a five-hour fault and would have fired on
+almost every photo in it. So `_clock_finding` tries both readings, asserts
+neither, and calls a fault only when neither fits; a file carrying no zone
+at all is reported as unverifiable rather than accused.
+
+Separately, and still true: `rewrite_capture_date` writes
+`datetime.fromtimestamp(stamp, timezone.utc)` into `-AllDates`, which puts a
+UTC wall clock into `DateTimeOriginal` — a field EXIF defines as local time.
+That shifts every file it touches by the zone's offset. It is latent only
+because `fix_dates` is off; switching it on without fixing that would break
+correct files.
 
 ## Bugs that keep recurring
 

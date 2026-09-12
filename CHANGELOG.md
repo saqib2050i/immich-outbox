@@ -28,12 +28,17 @@ hand-written EXIF parser. It should have taken one text box.
   that. Syncthing hashes every block it transfers, so a device it lists as
   holding the file has a byte-identical copy, which is a stronger statement
   than a re-read.
-- **It names what is wrong rather than showing numbers.** A `DateTimeOriginal`
-  that sits exactly its own UTC offset away from the time in the camera's
-  filename is reported as what it is: a UTC time written into a field EXIF
-  defines as local. Bytes that changed while date rewriting was off are
-  called out against invariant 2a. exiftool's own `Warning` tags are
-  surfaced, because structural damage appears there and nowhere else.
+- **It does not assume a mismatch.** Cameras disagree about which clock they
+  name a file by: the Pixel names in UTC and records the zone separately, so
+  a `PXL_` name sitting exactly one offset behind `DateTimeOriginal` is the
+  file being *right*. Older phones and cameras wrote the local clock into the
+  name instead. Both readings are checked and neither is asserted, so only a
+  gap that *neither* explains is called a fault — and a file carrying no zone
+  at all is reported as unverifiable rather than accused.
+- **It names what is wrong rather than showing numbers.** Bytes that changed
+  while date rewriting was off are called out against invariant 2a, with the
+  tags that differ. exiftool's own `Warning` tags are surfaced, because
+  structural damage appears there and nowhere else.
 - **A name that matches nothing says so, with near misses.** That is the
   likeliest thing to happen at this box and it used to be indistinguishable
   from a file with no problems. A pasted path finds the file too.

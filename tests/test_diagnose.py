@@ -77,35 +77,66 @@ def _report(src, dst=None, name="PXL_20230101_025759225.jpg", **asset_over):
     return rep
 
 
-def test_a_utc_time_in_a_local_field_is_named_for_what_it_is(rig):
-    """The real case. The camera called it 02:57:59; the file says 07:57:59
-    and also says its zone is +05:00. Those two cannot both be true, and
-    the difference is exactly the offset."""
+def test_a_pixel_named_in_utc_is_not_a_fault(rig):
+    """The correction that matters most. The Pixel camera names files in
+    UTC and records the zone separately, so 02:57:59 in the name with a
+    +05:00 offset and 07:57:59 in DateTimeOriginal is the file being right.
+
+    Reading that gap as damage made an entirely correct library look five
+    hours broken, and would have fired on essentially every photo its owner
+    has.
+    """
     from app import diagnose
     out = diagnose._findings(_report({
         "DateTimeOriginal": "2023:01:01 07:57:59",
         "OffsetTimeOriginal": "+05:00"}))
-    bad = [f["text"] for f in out if f["level"] == "bad"]
-    assert any("+05:00" in t and "UTC" in t for t in bad), out
+    assert not [f for f in out if f["level"] == "bad"], out
+    assert any("Pixel" in f["text"] for f in out), out
 
 
-def test_a_file_that_agrees_with_its_own_name_is_reported_as_fine(rig):
+def test_a_name_written_in_the_local_clock_is_not_a_fault_either(rig):
+    """The other convention, which older phones and cameras used."""
     from app import diagnose
     out = diagnose._findings(_report({
         "DateTimeOriginal": "2023:01:01 02:57:59",
-        "OffsetTimeOriginal": "+05:00"}))
+        "OffsetTimeOriginal": "+05:00"}, name="IMG_20230101_025759.jpg"))
     assert any(f["level"] == "ok" for f in out), out
     assert not [f for f in out if f["level"] == "bad"], out
 
 
-def test_a_shift_that_is_not_the_offset_is_still_reported(rig):
-    """Not every wrong date is a timezone. Saying only "5 hours out, must be
-    the zone" would hide the ones that are not."""
+@pytest.mark.parametrize("name,clock", [
+    ("PXL_20230101_025759225.jpg", "utc"),
+    ("IMG_20230101_025759.jpg", "local"),
+    ("20230101_025759.jpg", "unknown"),
+])
+def test_which_clock_the_camera_named_it_by(name, clock):
+    """Only ever used to explain a reading, never to decide one."""
+    from app import diagnose
+    assert diagnose.filename_clock(name) == clock
+
+
+def test_a_gap_that_neither_reading_explains_is_reported(rig):
+    """Not every wrong date is a timezone. A gap the file's own offset
+    cannot account for is a real finding."""
     from app import diagnose
     out = diagnose._findings(_report({
         "DateTimeOriginal": "2023:06:14 09:00:00",
         "OffsetTimeOriginal": "+05:00"}))
-    assert any(f["level"] == "bad" for f in out), out
+    bad = [f["text"] for f in out if f["level"] == "bad"]
+    assert any("does not account for it" in t for t in bad), out
+
+
+def test_a_file_with_no_zone_is_not_accused_of_anything(rig):
+    """An old camera writes the local clock into the name and records no
+    zone at all. The gap cannot be settled from the file, so it must not be
+    called a fault -- which is the whole of "do not assume a mismatch"."""
+    from app import diagnose
+    out = diagnose._findings(_report({
+        "DateTimeOriginal": "2023:01:01 07:57:59"},
+        name="DSC_20230101_025759.jpg"))
+    assert not [f for f in out if f["level"] == "bad"], out
+    assert any("cannot be settled" in f["text"] for f in out), out
+    assert any("never wrote down" in f["text"] for f in out), out
 
 
 def test_identical_copies_are_said_to_be_identical(rig):
