@@ -526,3 +526,59 @@ def test_the_mismatch_counter_cannot_see_the_confirmed_file(rig):
     from app import db
     assert db.needs_date_fix("2024-01-05T03:47:33.000Z",
                              "2024-01-05T03:47:33+00:00") is False
+
+
+# ---- what the first real trace turned up --------------------------------
+
+def test_the_verdict_is_tagged_so_the_page_need_not_repeat_it(rig):
+    """It appeared twice on screen: once in the running list of findings and
+    again as its own card, the same paragraph verbatim."""
+    from app import diagnose
+    out = diagnose._findings(_report({"EXIF:DateTimeOriginal": ""},
+                                     {"EXIF:DateTimeOriginal": ""}))
+    v = [f for f in out if f.get("kind") == "verdict"]
+    assert len(v) == 2, out
+    assert all(f.get("kind") != "verdict" for f in out
+               if "byte-for-byte" in f["text"])
+
+
+def test_a_downloaded_copy_has_no_meaningful_modification_time(rig):
+    """Immich's copy is fetched to a temp file, so its mtime is when the
+    download happened. Reporting that as the file's own invents a
+    difference between two copies that are byte for byte identical."""
+    from app import diagnose
+    exif = {"EXIF:DateTimeOriginal": "2024:01:01 11:20:38",
+            "File:FileModifyDate": "2026:09:12 13:13:32+00:00"}
+    rows = {r["tag"]: r for r in diagnose._tag_table(exif, downloaded=True)}
+    assert rows["FileModifyDate"]["state"] == "n/a"
+    assert "downloaded" in rows["FileModifyDate"]["text"]
+    # And read in place it is a real fact about a real file.
+    rows = {r["tag"]: r for r in diagnose._tag_table(exif)}
+    assert rows["FileModifyDate"]["state"] == "value"
+
+
+def test_the_download_time_is_not_counted_as_a_difference(rig):
+    """It was listed beside the outbox copy's real mtime and marked as
+    differing, directly under the finding saying the two are identical."""
+    from app import diagnose
+    assert "FileModifyDate" not in diagnose._dates(
+        {"File:FileModifyDate": "2026:09:12 13:13:32+00:00"}, downloaded=True)
+    assert "FileModifyDate" in diagnose._dates(
+        {"File:FileModifyDate": "2024:01:01 06:20:38+00:00"})
+
+
+def test_a_file_blanked_all_the_way_through(rig):
+    """The real one: not just DateTimeOriginal but CreateDate, ModifyDate,
+    both offsets, Make, Model and Software, every one present and empty. So
+    there is no spare date to fall back on and no zone in the file at all --
+    the zone has to come from Immich."""
+    from app import diagnose
+    exif = {k: "" for k in (
+        "EXIF:DateTimeOriginal", "EXIF:CreateDate", "EXIF:ModifyDate",
+        "EXIF:OffsetTimeOriginal", "EXIF:OffsetTime", "EXIF:Make",
+        "EXIF:Model", "EXIF:Software")}
+    exif["File:MIMEType"] = "image/jpeg"
+    v = diagnose.verdict(exif, "IMAGE")
+    assert v["dated"] is False and v["state"] == diagnose.BLANK
+    assert v["others"] == [], "nothing in this file is a date"
+    assert "carry a date elsewhere" not in v["reason"]

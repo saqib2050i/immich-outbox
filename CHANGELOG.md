@@ -10,6 +10,53 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.7.1
+
+The first trace of a real broken file, `PXL_20240101_062038690.jpg`, and
+three things it showed.
+
+**It said the same paragraph twice** — once in the running list of findings
+and again as its own card. The verdict is tagged now and the page draws it
+in one place. It stays in the findings list, which is what anything reading
+the API gets and the thing that must never come back empty.
+
+**It invented a difference between two identical files.** Immich's copy is
+fetched to a temporary file, so its modification time is when the download
+happened — today, always. That sat beside the outbox copy's real mtime,
+marked as differing, directly underneath the finding saying the two are
+byte for byte identical. A downloaded copy now reports that tag as not
+meaningful, and the comparison skips it.
+
+**It called Immich's record "the file claimed".** That line shows
+`exifInfo.dateTimeOriginal`, which is a UTC instant despite being named
+after the EXIF tag, and which on a Takeout import came from the sidecar —
+so it holds a date for a file that carries none. Labelling it as the file's
+own claim was the exact confusion the whole tool exists to end.
+
+Also in this release, written before the merge and missed by it:
+
+- **Immich holding a date the file does not is stated out loud**, along
+  with the reason the Problems tab shows nothing: the mismatch figures
+  compare `fileCreatedAt` against `exifInfo.dateTimeOriginal`, and on a
+  Takeout import both were filled from the same sidecar, so they agree. A
+  library of undated files reads as zero there. `needs_date_fix()` also
+  carried a premise this disproved — that a dateless file is safe because
+  its modification time carries the date — and it no longer claims that.
+- Checked against the live Immich response, which carries three traps in
+  one payload: `localDateTime` is the wall clock with a misleading `Z`,
+  `exifInfo.dateTimeOriginal` is a UTC instant despite its name, and
+  `make`/`model` arrive as `""` rather than null. A file with the instant
+  written into `DateTimeOriginal` is reported as five hours early, so the
+  detector catches that mistake being made.
+
+The real file turned out to be blanked all the way through — not just
+`DateTimeOriginal` but `CreateDate`, `ModifyDate`, both offsets, `Make`,
+`Model` and `Software`, every one present and empty. So there is no spare
+date to recover from and **no zone in the file at all**: the offset has to
+come from Immich's `timeZone`, which matters for what comes next.
+
+Still detection only. Nothing is written to any file.
+
 ## 2.7.0
 
 **The trace says whether Google Photos will date a file, or file it under
@@ -46,22 +93,6 @@ A file with the exact fault produced a clean-looking report. So:
   `EXIF:DateTimeOriginal` and `XMP:DateTimeOriginal` under one name and the
   second quietly wins — which would report a date in the tag Google reads
   when the value came from one it does not.
-
-- **Immich holding a date the file does not is now stated out loud**, along
-  with the reason the Problems tab shows nothing: the mismatch figures
-  compare `fileCreatedAt` against `exifInfo.dateTimeOriginal`, and on a
-  Takeout import both were filled from the same sidecar, so they agree. A
-  library of undated files reads as zero there. `needs_date_fix()` also
-  carried a premise this disproved — that a dateless file is safe because
-  its modification time carries the date — and it no longer claims that.
-
-Checked against the live Immich response for the confirmed file, which
-carries three traps in one payload: `localDateTime` is the wall clock with
-a misleading `Z`, `exifInfo.dateTimeOriginal` is a UTC instant despite
-being named after the EXIF tag, and `make`/`model` come back as `""`
-rather than null. A file with the instant written into `DateTimeOriginal`
-is reported as five hours early, so the detector catches that mistake
-being made.
 
 Detection only. Nothing is written to any file, and the correction itself
 is the next step.

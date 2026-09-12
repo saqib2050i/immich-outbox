@@ -2959,7 +2959,11 @@ function renderTrace(d){
 
   const checks = document.createElement("div");
   checks.className = "checks";
-  (d.findings || []).forEach(f => {
+  // The verdicts get their own cards below. They stay in `findings` because
+  // that list is the answer anything reading the API gets, and it must
+  // never come back empty — but printing them in both places tells the
+  // reader the same paragraph twice.
+  (d.findings || []).filter(f => f.kind !== "verdict").forEach(f => {
     const row = document.createElement("div");
     row.className = f.level === "bad" ? "fail" : f.level === "ok" ? "pass" : "";
     const mark = document.createElement("span");
@@ -3024,6 +3028,7 @@ function renderTrace(d){
       if (!r) return ["—", "absent"];
       if (r.state === "missing") return ["not in the file", "absent"];
       if (r.state === "blank") return ["present but empty", "blank"];
+      if (r.state === "n/a") return [r.text, "absent"];
       return [r.text, ""];
     };
     // Only when both copies were actually read. Marking every row as
@@ -3084,7 +3089,11 @@ function renderTrace(d){
   const a = d.asset || {};
   traceOut.appendChild(traceLine(
     `Ledger: ${a.state}${a.forced ? " (forced)" : ""} · Immich says taken `
-    + `${a.taken_at || "—"} · the file claimed ${a.exif_taken_at || "—"}`
+    // Not what the file claimed. This is Immich's exifInfo.dateTimeOriginal,
+    // which is a UTC instant despite the name, and on a Takeout import it
+    // came from the sidecar — so it can hold a date for a file that carries
+    // none. The table above is what the file actually says.
+    + `${a.taken_at || "—"} · Immich's dateTimeOriginal ${a.exif_taken_at || "—"}`
     + (a.outbox_name ? ` · in the outbox as ${a.outbox_name}` : "")
     + (a.last_error ? ` · last error: ${a.last_error}` : "")));
 }

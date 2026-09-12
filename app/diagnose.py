@@ -411,7 +411,16 @@ def label(key: str, video: bool = False) -> str:
     return name if not group or group in NATIVE[video] else key
 
 
-def _dates(exif: dict, kind: str | None = None) -> dict:
+# Immich's copy is fetched to a temporary file, so its modification time is
+# when the download happened -- today, always. Reporting that beside the
+# outbox copy's real mtime invents a difference between two files that are
+# byte for byte identical, and paints it red directly under the finding
+# saying so.
+DOWNLOADED_MEANINGLESS = ("File:FileModifyDate",)
+
+
+def _dates(exif: dict, kind: str | None = None,
+           downloaded: bool = False) -> dict:
     """Every tag that decides the date, said out loud including the empty ones.
 
     It used to drop anything falsy, which meant a blanked DateTimeOriginal
@@ -421,6 +430,8 @@ def _dates(exif: dict, kind: str | None = None) -> dict:
     video = is_video(exif, kind)
     out: dict = {}
     for key in (VIDEO_SHOWN if video else PHOTO_SHOWN):
+        if downloaded and key in DOWNLOADED_MEANINGLESS:
+            continue
         raw, found = pick(exif, key)
         if found is None:
             continue
@@ -428,14 +439,18 @@ def _dates(exif: dict, kind: str | None = None) -> dict:
     return out
 
 
-def _tag_table(exif: dict, kind: str | None = None) -> list[dict]:
+def _tag_table(exif: dict, kind: str | None = None,
+               downloaded: bool = False) -> list[dict]:
     """The same tags with their state, for a reader rather than a diff."""
     video = is_video(exif, kind)
     rows = []
     for key in (VIDEO_SHOWN if video else PHOTO_SHOWN):
         raw, found = pick(exif, key)
         name = label(key, video)
-        if found is None:
+        if downloaded and key in DOWNLOADED_MEANINGLESS:
+            rows.append({"tag": name, "state": "n/a",
+                         "text": "not meaningful — this copy was downloaded"})
+        elif found is None:
             rows.append({"tag": name, "state": MISSING, "text": "not in the file"})
         elif is_blank(raw):
             rows.append({"tag": name, "state": BLANK,
@@ -640,7 +655,11 @@ def _findings(rep: dict) -> list[dict]:
         if not exif or "error" in exif:
             continue
         v = verdict(exif, kind)
-        out.append({"level": v["level"],
+        # Tagged, because the dashboard draws these as their own cards and
+        # a reader should not be told the same thing twice. The line stays
+        # in the findings list: that list is the machine-readable answer and
+        # the thing that must never come back empty.
+        out.append({"level": v["level"], "kind": "verdict",
                     "text": f"{where}: {v['headline']}. {v['reason']}"})
 
     # 2. And having a date is not the same as having the right one.
@@ -687,7 +706,7 @@ def _findings(rep: dict) -> list[dict]:
                         "The outbox copy is byte-for-byte identical to "
                         "Immich's original."})
         else:
-            a_d, b_d = _dates(src, kind), _dates(dst, kind)
+            a_d, b_d = _dates(src, kind, downloaded=True), _dates(dst, kind)
             changed = sorted({k for k in set(a_d) | set(b_d)
                               if a_d.get(k) != b_d.get(k)})
             cfg = settings.load()
@@ -775,8 +794,9 @@ async def trace(filename: str, send: bool = False) -> dict:
         # copy that could not be opened reads as "no dates in the file",
         # which is a different and much calmer statement than the truth.
         if isinstance(exif, dict) and "error" not in exif:
-            rep[key]["dates"] = _dates(exif, kind)
-            rep[key]["tags"] = _tag_table(exif, kind)
+            got = key == "immich"      # fetched to a temp file, not read in place
+            rep[key]["dates"] = _dates(exif, kind, downloaded=got)
+            rep[key]["tags"] = _tag_table(exif, kind, downloaded=got)
             rep[key]["verdict"] = verdict(exif, kind)
     rep["findings"] = _findings(rep)
     return rep
