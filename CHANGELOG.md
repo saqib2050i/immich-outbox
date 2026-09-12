@@ -44,7 +44,10 @@ parse, and it never reaches the mtime.
 
 That makes blank-versus-missing the thing that *predicts* where a photo
 lands rather than just describing what is in it, and it narrows the fault:
-files with no date tag at all are already landing correctly. The report
+files with no date tag at all fall through to the mtime, and the one
+observed doing so landed correctly — though that file was UTC+0, where the
+instant and the wall clock are the same number, so "no tag is fine" is not
+yet established for a photo taken anywhere else. The report
 now says, on a blank-tag file, why the correct `FileModifyDate` two rows
 below the verdict does not save it.
 

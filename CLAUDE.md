@@ -285,9 +285,17 @@ description of what is in it — so `verdict()` rescues a MISSING tag with a
 good mtime and never a BLANK one, and says out loud why the correct
 `FileModifyDate` two rows below it does not help.
 
-It also narrows what needs fixing. A file with no date tag at all is
-already landing correctly on the mtime this service stamps. It is the
-blank-tag files that are broken.
+It also narrows what needs fixing — with one caveat not yet measured. A
+file with no date tag at all falls through to the mtime, and the one
+observed doing so landed correctly. But that file was taken at UTC+0, where
+the instant and the wall clock are the same number. An mtime is an absolute
+instant carrying no zone, so a Karachi-era photo taken at 11:20:38 +05:00
+is stamped 06:20:38Z, and Google Photos showed the Snapchat file's mtime
+as GMT+00:00 — which predicts that such a photo displays five hours early,
+and on the wrong day entirely when it was taken before 05:00 local. That is
+a prediction from two data points, not a measurement. Until somebody looks
+up an absent-tag Karachi file in Google Photos, "no tag is fine" is only
+established for UTC.
 
 **A modification time is a real carrier, and the verdict has to count it.**
 `feeder.stamp_capture_time()` sets every delivered file's mtime to Immich's
