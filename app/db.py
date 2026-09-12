@@ -127,9 +127,19 @@ def needs_date_fix(taken_at: str | None, exif_taken_at: str | None) -> bool:
     Immich, since that edit lives in Immich's database while /original
     keeps serving the untouched file.
 
-    A file with no date of its own is deliberately left alone: there is no
-    correction to apply, and its modification time already carries the date
-    for Google Photos to fall back on.
+    It cannot see a file whose date tag is *blank*. Immich fills
+    `exifInfo.dateTimeOriginal` from a Takeout sidecar when the file itself
+    carries nothing, and that value then agrees with `fileCreatedAt` because
+    both came from the same sidecar -- so this returns False for a file with
+    no usable date at all, and the mismatch figures read zero over a whole
+    library of them. `diagnose.verdict()` reads the file instead, which is
+    the only thing that can tell them apart.
+
+    A file with no date of its own is left alone here, and the reason once
+    given for that -- that its modification time carries the date for Google
+    Photos to fall back on -- is not true. A blank-dated photo uploaded from
+    the phone landed on the day it was uploaded, with a correct date sitting
+    unused in its own filename.
     """
     want = capture_time(taken_at)
     have = capture_time(exif_taken_at)

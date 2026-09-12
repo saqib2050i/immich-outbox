@@ -313,7 +313,13 @@ async def asset_detail(asset_id: str) -> dict:
         "local_date_time": item.get("localDateTime") or None,
         "file_created_at": item.get("fileCreatedAt") or None,
         "time_zone": exif.get("timeZone") or None,
-        "exif_date_time_original": exif.get("dateTimeOriginal") or None,
+        # Immich's `dateTimeOriginal` is named after the EXIF tag and is not
+        # it: the API serves a UTC instant (2024-01-05T03:47:33+00:00 for a
+        # photo taken at 08:47:33 in Karachi), where the tag is local time
+        # with no zone. Writing one into the other puts the photo five hours
+        # early, so the name here says which it is.
+        "exif_original_utc": exif.get("dateTimeOriginal") or None,
+        # Empty strings, not nulls, on a file whose EXIF was blanked.
         "make": exif.get("make") or None,
         "model": exif.get("model") or None,
         "type": (item.get("type") or "").upper(),

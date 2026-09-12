@@ -215,6 +215,35 @@ specification, so it is compared against `fileCreatedAt`, the instant.
 Swapping them shifts every GMT+5 photo in this library by five hours, which
 is the same error the filename check had to be corrected for.
 
+**Immich's three dates are not interchangeable, and one is named to
+deceive.** Taken from the live response for the confirmed file:
+
+    fileCreatedAt              2024-01-05T03:47:33.000Z   the UTC instant
+    localDateTime              2024-01-05T08:47:33.000Z   the wall clock
+    exifInfo.timeZone          Asia/Karachi
+    exifInfo.dateTimeOriginal  2024-01-05T03:47:33+00:00  the instant again
+
+`localDateTime` is the wall clock where the shutter fired and the `Z` on it
+is an artefact of the transport, not a zone — parse it naively and discard
+the suffix, or a library that honours it shifts the photo by the offset.
+It is the only one of the four that belongs in `DateTimeOriginal`.
+
+`exifInfo.dateTimeOriginal` is named after the EXIF tag and is **not** it:
+the API serves a UTC instant. Writing that value into the tag puts every
+Pakistan-era photo five hours early. It is called `exif_original_utc` in
+`asset_detail()` so the mistake cannot be made by autocomplete.
+
+`exifInfo.make` and `.model` come back as `""` rather than null on a file
+whose EXIF was blanked — the same blank-versus-missing distinction, one
+layer up, and `or None` is what handles it.
+
+**The mismatch figures cannot see this fault, by construction.**
+`needs_date_fix()` compares `fileCreatedAt` against
+`exifInfo.dateTimeOriginal`, and on a Takeout import both were filled from
+the same sidecar, so they agree and it returns False. A whole library of
+undated files reports zero on the Problems tab. Reading the file is the
+only thing that tells them apart, which is what `verdict()` does.
+
 **exiftool is read with `-G`.** Without it `EXIF:DateTimeOriginal` and
 `XMP:DateTimeOriginal` both come back as `DateTimeOriginal` and the second
 silently wins — reporting a date in the tag Google reads when the value came
