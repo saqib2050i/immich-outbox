@@ -515,3 +515,16 @@ def test_a_send_control_repaints_with_the_figures():
     paint = HTML[HTML.index("function paintFigures("):]
     paint = paint[:paint.index("function monthNode(")]
     assert paint.count("repaint(") == 2, "months and years both"
+
+
+def test_the_dates_badge_is_written_on_every_tick():
+    """It was written only by renderDates(), which runs when the tab is
+    opened -- so until somebody thought to look there was nothing anywhere
+    saying files were being kept back, which is the one thing a badge is
+    for."""
+    render = HTML[HTML.index("async function renderDates("):]
+    render = render[:render.index("async function renderOwed(")]
+    assert "badgeDates" not in render, \
+        "two writers disagreeing on every tick is how Queue came to flicker"
+    assert "badgeDates.hidden = !c.held" in HTML, \
+        "and the tick must write it from the counts the poll already carries"

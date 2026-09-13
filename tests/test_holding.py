@@ -567,3 +567,26 @@ async def test_what_immich_said_is_kept_when_a_file_is_held(rig, monkeypatch):
     row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
     assert row["hold_says"], "nothing was kept"
     assert json.loads(row["hold_says"])["time_zone"] == "UTC+1"
+
+
+async def test_the_poll_carries_the_held_count(rig, monkeypatch):
+    """The badge is written from it on every tick, so a file kept back is
+    visible without opening the tab it is kept on."""
+    from fastapi.testclient import TestClient
+    from app import auth, db, diagnose, feeder, immich, settings
+    from app.main import app
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank", "checked_at": db.now(),
+                "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    auth.set_password("a-good-password")
+    c = TestClient(app)
+    c.post("/api/login", json={"password": "a-good-password"})
+    assert c.get("/api/status").json()["counts"]["held"] == 1

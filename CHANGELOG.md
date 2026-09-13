@@ -27,6 +27,14 @@ in Settings reaches files that were read before it**. Readings are left
 alone — coordinates and the file's own offset are not improved on by a
 setting.
 
+**And nothing said files were being held unless you went looking.** The
+Dates badge was written by the Dates tab's own render, which runs when the
+tab is opened — so until somebody thought to look there, a held file left no
+mark anywhere, which is the one thing a badge is for. It is written on every
+tick now, from the counts the poll already carries, and the tab's render no
+longer writes it: two writers disagreeing on every tick is how the Queue tab
+came to flicker between "Queue" and "Queue (N)".
+
 Rows read by a build that kept nothing get a **"Read N again"** button
 instead. They go back without an approval, so the next fetch classifies them
 fresh rather than writing tags nobody has reviewed.

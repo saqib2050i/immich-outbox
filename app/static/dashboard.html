@@ -1704,6 +1704,13 @@ async function render(){
   badgeProblems.hidden = !problems;
   badgeProblems.textContent = fmtNum(problems);
 
+  // Written on every tick, from the counts the poll already carries. It was
+  // written only by renderDates(), which runs when the tab is opened -- so
+  // until somebody thought to look there was nothing anywhere to say files
+  // were being kept back, which is the one thing a badge is for.
+  badgeDates.hidden = !c.held;
+  badgeDates.textContent = fmtNum(c.held || 0);
+
   renderPhone(d.companion);
   renderCompanionSettings(d.companion);
   renderBuild(d.app);
@@ -2369,11 +2376,10 @@ async function renderDates(){
   catch { host.innerHTML = '<p class="empty">Could not load.</p>'; return; }
   datesRows = d.held || [];
 
-  const badge = document.getElementById("badgeDates");
-  if (badge){
-    badge.hidden = !datesRows.length;
-    badge.textContent = fmtNum(datesRows.length);
-  }
+  // The badge is not written here. It belongs to the tick, which sees the
+  // count whether or not this tab has ever been opened -- and two writers
+  // disagreeing on every tick is how the Queue tab came to flicker between
+  // "Queue" and "Queue (N)".
   // Said whether or not anything is held: with checking off, a short list
   // is not a good sign, it is an absence of evidence.
   const tally = document.getElementById("dCount");
