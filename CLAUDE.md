@@ -195,6 +195,13 @@ anywhere to share one from. Three things in it are load-bearing:
   `armed()` turns the first press into "Sure? ..." and disarms itself after
   four seconds, so a stray press leaves nothing loaded. Only the two
   destructive controls use it; a plain send is one press.
+- **Nothing lists which settings are checkboxes.** There was such a list,
+  and a checkbox whose key was missing from it was completely inert:
+  `fillSettings` wrote the stored value into `.value` rather than
+  `.checked`, so it always drew unticked, and `readSettings` sent that same
+  `.value` back instead of what had been clicked. It could be ticked, saved,
+  and reported as saved without anything reading it. `el.type` is the
+  question now; two tests keep it that way.
 - **A tab needs three things, and the third fails silently.** A panel
   (`data-tab`), a link (`data-for`), and its name in `TABS` -- `setTab`
   falls back to "overview" for anything it does not recognise, so a tab

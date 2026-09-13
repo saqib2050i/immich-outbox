@@ -10,6 +10,28 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.14.2
+
+**"Check each file's date on its way past" could not be turned on.** The box
+ticked, the page said SAVED, and a refresh showed it unticked again — because
+nothing ever read it.
+
+The settings form kept a hand-written list of which keys were checkboxes.
+`check_dates` was added to the form and not to the list, and for a checkbox
+outside it:
+
+    fillSettings   el.value = false     -> the value attribute, not .checked
+    you tick it    .checked = true      -> .value is still "false"
+    save           sends "false"        -> what was clicked is never read
+    reload         draws unticked       -> .checked was never set either
+
+Ticked, saved, reported as saved, and inert at every step. The list is gone;
+`el.type === "checkbox"` is the question, and the DOM already knows the
+answer. Two tests hold it: no list decides what a checkbox is, and every
+`bool` in the settings spec has a control that is actually a checkbox.
+
+Only `check_dates` was affected — every older boolean was in the list.
+
 ## 2.14.1
 
 **"Nothing held" was offered as a guess between two opposite meanings.** The

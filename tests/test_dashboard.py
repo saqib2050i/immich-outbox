@@ -445,3 +445,33 @@ def test_the_tally_says_so_even_when_something_is_held():
     src = HTML[HTML.index("async function renderDates("):]
     src = src[:src.index("async function renderOwed(")]
     assert "not checking" in src
+
+
+def test_no_hand_written_list_decides_what_a_checkbox_is():
+    """There was one, and adding a checkbox without adding its name to it
+    made the control completely inert: fillSettings wrote the stored value
+    into `.value` instead of `.checked`, so it always drew unticked, and
+    readSettings sent that same `.value` back instead of what had been
+    clicked. `check_dates` could be ticked, saved, and reported as saved,
+    and nothing had read it at any point.
+
+    The DOM already knows what a checkbox is.
+    """
+    assert "const BOOLS" not in HTML
+    fill = HTML[HTML.index("function fillSettings("):HTML.index("function readSettings(")]
+    read = HTML[HTML.index("function readSettings("):]
+    read = read[:read.index("function renderConnection(")]
+    assert 'el.type === "checkbox"' in fill
+    assert 'el.type === "checkbox"' in read
+
+
+def test_every_boolean_setting_has_a_checkbox_to_match():
+    """A bool rendered as a text input round-trips its own string and never
+    reads what was clicked -- the same failure by a different route."""
+    spec = (ROOT / "app" / "settings.py").read_text()
+    bools = set(re.findall(r'"(\w+)": \(bool,', spec))
+    for key in bools:
+        m = re.search(r'<input([^>]*?)id="s_' + key + r'"([^>]*)>', HTML)
+        assert m, f"s_{key} has no control"
+        assert 'type="checkbox"' in m.group(0), \
+            f"s_{key} is a bool but not a checkbox"
