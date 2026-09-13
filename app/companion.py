@@ -110,10 +110,13 @@ def apk_info() -> dict:
         _apk_cache.clear()
         _apk_cache.update(stamp=stamp, info={
             "available": True,
-            # Built from the same VERSION file as this server, on purpose:
-            # the two speak a protocol, so a pair that disagrees is a pair
-            # nobody has tested together.
-            "version": meta.get("version") or config.APP_VERSION,
+            # The APK's own version, from companion/VERSION via CI. It is
+            # deliberately NOT this server's: they are released on separate
+            # clocks, and falling back to the server's number here would
+            # announce an update every time the server moved and the app
+            # did not. Unknown is the honest answer when CI left no
+            # metadata beside the file.
+            "version": meta.get("version") or "unknown",
             "size": st.st_size,
             "sha256": meta["sha256"],
             # "debug" means CI had no signing key, and Android will refuse
@@ -557,6 +560,11 @@ def record(result: dict) -> dict:
         # rather than assumed from the setting: whether the phone dwelled at
         # all used to be answerable only by reading its wake locks.
         "dwelled_seconds": int(result.get("dwelled_seconds") or 0),
+        # False means the figure beside it is a floor and not a total:
+        # Google Photos was still clearing when the app stopped watching.
+        # Absent from an older build's report, and absent has to read as
+        # "settled" or every phone that has not updated looks broken.
+        "settled": bool(result.get("settled", True)),
         "at": db.now(),
     }
     db.set_meta("companion_inflight", "")

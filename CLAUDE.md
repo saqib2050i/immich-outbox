@@ -541,9 +541,23 @@ new APK.
 
 CI builds the APK and bundles it into the image at `dist/companion.apk`, so
 the phone updates itself from `/app` rather than from a cable. Two things
-follow. The app's version comes from the same root `VERSION` file as the
-server, deliberately: they speak a protocol, and a pair that disagrees is a
-pair nobody has tested. And Android installs an update only over the same
+follow. **The app keeps its own version in `companion/VERSION`**, separate
+from the server's root `VERSION`. They shared one file so that a pair could
+never be untested together -- but the server moves for reasons the app has
+no part in, and nine server releases in two days each told the phone it was
+out of date over an APK byte-identical to the one already on it. What a
+build can actually do is carried by the `features` list in the protocol,
+which says so directly; a matching number only looked as though it did.
+
+Bump `companion/VERSION` when something in `companion/` changes. It must
+only ever go **up**: `build.gradle.kts` turns it into a `versionCode`
+(`major*10000 + minor*100 + patch`) and Android refuses an APK whose code
+is not above the installed one. The split nearly shipped the app at 1.0.0 --
+code 10000, against 21000 already on the phone -- which Android would have
+turned down as a downgrade, silently and forever. A test enforces the
+floor. `apk_info()` reports "unknown" rather than falling back to the
+server's number, since after the split that fallback would announce an
+update every time the server moved. And Android installs an update only over the same
 signing key, so CI needs a stable one from `ANDROID_KEYSTORE_BASE64`; absent
 it the build is debug-signed and the install page says so, because failing
 the release of a *server* over a phone app would be the wrong trade.
@@ -554,6 +568,22 @@ whole point of a phone on a shelf — the app simply never checks in. It also
 must hold a `PARTIAL_WAKE_LOCK` across the check-in, because the alarm wakes
 the phone only for the length of the broadcast and the work happens on
 another thread after that returns.
+
+**A free-up is not finished when a figure first appears.** The walk's
+budget is `MAX_STEPS` x `POLL_MS`, about half a minute, and clearing several
+gigabytes on a 2016 phone takes several minutes -- so it ran out of steps,
+fell through to its free-space fallback, measured the disk *mid-operation*
+and reported 3.5 GB of a 5.85 GB clear-out as the total. Photos carried on
+and nothing told the server.
+
+`waitForQuiet()` waits for free space to stop climbing before either path
+reads its figure. Free space is the signal on purpose: it needs no labels,
+and the labels are the part of this app most likely to be renamed without
+warning -- a progress string is exactly that kind of string, and a disk
+getting emptier is not. When the budget runs out with the figure still
+moving, `settled` goes false, the run stays a success (the button *was*
+pressed) and the dashboard says "at least". A floor reported as a total is
+the same class of fault as a stale screen read as a result.
 
 **Google Photos resumes where it was left, so a run has to put it back.**
 Leaving it on "You freed up 29.80 MB" meant the next run opened onto that

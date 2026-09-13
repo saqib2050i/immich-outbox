@@ -85,7 +85,7 @@ class Relay(private val context: Context, private val prefs: Prefs) {
 
     fun report(requestId: String, action: String, ok: Boolean, detail: String,
                items: Int, freedBytes: Long, dwelledSeconds: Int,
-               backup: Labels.Backup?): Boolean {
+               backup: Labels.Backup?, settled: Boolean = true): Boolean {
         val body = JSONObject()
             .put("request_id", requestId)
             .put("action", action)
@@ -97,6 +97,11 @@ class Relay(private val context: Context, private val prefs: Prefs) {
             // a dwell had happened at all used to be answerable only by
             // reading the phone's wake locks over a cable.
             .put("dwelled_seconds", dwelledSeconds)
+            // False means the figure beside it is a floor and not a total:
+            // Google Photos was still clearing when the app stopped
+            // watching. Sent rather than folded into `ok`, because the run
+            // did succeed -- the button was pressed and space was freed.
+            .put("settled", settled)
         // What Google Photos said about its own backup. The server treats
         // this as a note and never as evidence -- a file is backed up when
         // it disappears from the outbox, not when a screen says so.
@@ -173,7 +178,7 @@ class Relay(private val context: Context, private val prefs: Prefs) {
 
     companion object {
         /** Instructions this build knows how to carry out. */
-        val FEATURES = listOf("look", "dwell", "backup")
+        val FEATURES = listOf("look", "dwell", "backup", "settled")
 
         /**
          * What is actually installed, asked of the package manager.

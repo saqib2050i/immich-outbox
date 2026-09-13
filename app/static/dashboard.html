@@ -3277,9 +3277,14 @@ function renderCompanionSettings(cp){
   cstBatt.textContent   = dev.battery == null ? "—"
                         : dev.battery + "%" + (dev.charging ? " (charging)" : "");
   cstFree.textContent   = dev.free_bytes ? fmtBytes(dev.free_bytes) : "—";
+  // "at least" when Google Photos was still clearing as the app left. The
+  // figure is a floor then, not a total, and reporting it as a total is
+  // how a 5.85 GB clear-out was recorded as 3.5 GB.
   cstLast.textContent   = (!last || !last.at) ? "never"
                         : !last.ok ? "failed"
-                        : last.freed_bytes ? fmtBytes(last.freed_bytes) + " freed"
+                        : last.freed_bytes
+                          ? (last.settled === false ? "at least " : "")
+                            + fmtBytes(last.freed_bytes) + " freed"
                         : last.items ? last.items + " cleared"
                         : "nothing to clear";
 
@@ -3423,7 +3428,9 @@ function renderPhone(cp){
       : "";
     cpLast.textContent = (last.action === "look" ? (last.ok ? "looked" : "look failed")
       : !last.ok ? "failed"
-      : last.freed_bytes ? fmtBytes(last.freed_bytes) + " freed"
+      : last.freed_bytes
+        ? (last.settled === false ? "at least " : "")
+          + fmtBytes(last.freed_bytes) + " freed"
       : last.items ? last.items + " cleared"
       : "nothing to clear") + stayed;
   }
