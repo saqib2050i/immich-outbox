@@ -12,6 +12,33 @@ the entry below can never disagree.
 
 ## 2.16.0
 
+**A refresh threw away everything the reader had chosen.** The Dates tab
+came back grouped by whatever the markup listed first, and Library re-opened
+the newest year on top of whichever one was being read. That is the same
+fault as the redraw bug this page was already careful about — *a redraw must
+never throw away what the reader was doing* — arriving by a slower route.
+
+Kept across a reload now: which years, months and file lists are open, the
+Dates grouping and sort, and which Dates groups are expanded. Storage is
+wrapped, because a private window or a browser told to block site data
+throws on the first read rather than returning nothing, and none of this is
+worth taking the page down for.
+
+Two defaults now yield to a choice made on an earlier visit rather than only
+to one made in this session:
+
+- Library opens the newest year holding something only for somebody who has
+  never opened one.
+- The Dates tab opens its first group only for somebody who has never opened
+  one. It used to open on **every render** — and that list redraws after
+  every sign-off, so a group collapsed by hand came back the moment a file
+  was signed off out of it.
+
+A remembered grouping is only restored if this build still offers it: a
+renamed key would select nothing and silently group everything as one, which
+looks like the data is wrong rather than the memory.
+
+
 **Forty-seven photos from 2022 sat under "outside the rule in Settings"
 while the rule covered every one of them.** Their verdicts were written when
 the file was read, and a held file is never claimed a second time — so the

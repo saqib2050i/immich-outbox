@@ -2043,15 +2043,48 @@ const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
 // renderTimeline is async and was called without await, so two runs could
 // overlap -- one wiping tlBody while the other was still reading which
 // months were open, which is why an expanded month closed itself.
-const tlOpenYears = new Set();
+// ---- what the reader was doing, across a reload --------------------------
+//
+// A redraw already keeps open sections and scroll position. A refresh threw
+// all of it away: the Dates tab came back grouped by whatever the markup
+// listed first, and Library re-opened the newest year on top of whichever
+// one you had been reading. Both are the same fault as the redraw bug,
+// arriving by a slower route.
+//
+// Wrapped, because storage is not always there -- a private window, or a
+// browser told to block site data, throws on the first read rather than
+// returning nothing.
+function remember(key, value){
+  try { localStorage.setItem("relay." + key, JSON.stringify(value)); }
+  catch { /* nothing to be done, and nothing here depends on it */ }
+}
+
+function recall(key, fallback){
+  try {
+    const raw = localStorage.getItem("relay." + key);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch { return fallback; }
+}
+
+const tlOpenYears = new Set(recall("openYears", []));
 // Set once the user opens or closes a year themselves, so the default
 // choice below never fights a deliberate one.
 let tlTouched = false;
-const tlOpenMonths = new Set();
+const tlOpenMonths = new Set(recall("openMonths", []));
+
+// Touched already, if the last visit left anything open: the newest-year
+// default is for somebody who has never chosen, not for somebody whose
+// choice happens to be "none of them".
+let tlRestored = tlOpenYears.size > 0 || tlOpenMonths.size > 0;
+
+function rememberOpen(){
+  remember("openYears", [...tlOpenYears]);
+  remember("openMonths", [...tlOpenMonths]);
+}
 // Which months have their file list open. Acting on a file redraws the
 // timeline, which rebuilds every month body -- without this the list shut
 // itself after each exclusion and had to be reopened to do the next one.
-const tlOpenFiles = new Set();
+const tlOpenFiles = new Set(recall("openFiles", []));
 
 // The last payload we drew, and the last *shape* of it. They are two
 // separate things because they change at wildly different rates: which
@@ -2148,7 +2181,7 @@ async function drawTimeline(){
   // Open the newest year holding something that is going out, the first
   // time this is drawn. Otherwise the page opens on nothing actionable and
   // every visit starts with the same two clicks.
-  if (!tlOpenYears.size && !tlTouched){
+  if (!tlOpenYears.size && !tlTouched && !tlRestored){
     const live = [...years.entries()]
       .find(([, list]) => list.some(m => (m.sending || 0) + (m.queued || 0) > 0));
     if (live) tlOpenYears.add(live[0]);
@@ -2163,6 +2196,7 @@ async function drawTimeline(){
     yd.addEventListener("toggle", () => {
       tlTouched = true;
       yd.open ? tlOpenYears.add(year) : tlOpenYears.delete(year);
+      rememberOpen();
     });
 
     const ys = document.createElement("summary");
@@ -2432,11 +2466,25 @@ async function renderDates(){
 
   const by = document.getElementById("dGroup").value;
   const how = document.getElementById("dSort").value;
+  remember("dGroup", by);
+  remember("dSort", how);
+  // null means nobody has ever opened or closed one, which is the only
+  // case the first-group default is for.
+  const dOpen = recall("dOpen", null);
 
   [...groupDates(datesRows, by).entries()].forEach(([key, rows], i) => {
     const det = document.createElement("details");
     det.className = "dgroup";
-    if (i === 0) det.open = true;
+    // The first group opens only for somebody who has never chosen. It used
+    // to open on every render -- and this list redraws after every sign-off,
+    // so a group you had collapsed came back the moment you signed a file
+    // off out of it.
+    det.open = dOpen === null ? i === 0 : dOpen.includes(String(key));
+    det.addEventListener("toggle", () => {
+      const now = new Set(recall("dOpen", []) || []);
+      det.open ? now.add(String(key)) : now.delete(String(key));
+      remember("dOpen", [...now]);
+    });
     const sum = document.createElement("summary");
 
     const [label, why] = groupHeading(by, key);
@@ -2821,6 +2869,7 @@ function monthNode(m, openMonths){
   md.addEventListener("toggle", () => {
     if (md.open){ tlOpenMonths.add(m.month); loadMonthBody(m, body); }
     else tlOpenMonths.delete(m.month);
+    rememberOpen();
   });
   // Setting .open fires toggle, which does the loading -- calling it here
   // as well fetched every open month twice on every redraw.
@@ -2973,6 +3022,7 @@ function paintMonthBody(m, host, d){
   files.addEventListener("toggle", () => {
     if (files.open){ tlOpenFiles.add(m.month); loadMonthFiles(m.month, fbody); }
     else tlOpenFiles.delete(m.month);
+    remember("openFiles", [...tlOpenFiles]);
   });
   host.appendChild(files);
   // Setting .open fires toggle, which does the loading.
@@ -4730,9 +4780,19 @@ function setTab(raw){
 
 // Regrouping and re-sorting is a redraw of what the page already holds, so
 // it does not go back to the server for it.
+//
+// Restored before anything draws: a refresh used to come back grouped by
+// whatever the markup happened to list first, which is a decision the
+// reader had already made and had taken away from them.
 ["dGroup", "dSort"].forEach(id => {
   const el = document.getElementById(id);
-  if (el) el.onchange = () => renderDates();
+  if (!el) return;
+  const kept = recall(id, null);
+  // Only a value this build still offers -- a grouping that has since been
+  // renamed would select nothing and silently group everything as one.
+  if (kept !== null && [...el.options].some(o => o.value === kept))
+    el.value = kept;
+  el.onchange = () => renderDates();
 });
 
 window.addEventListener("hashchange",

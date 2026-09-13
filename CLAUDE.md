@@ -231,6 +231,15 @@ anywhere to share one from. Three things in it are load-bearing:
   item, so a figure sitting underneath shoved the year label into the middle
   of the row.
 
+**Nor must a refresh.** Which years, months and file lists are open, the
+Dates grouping and sort, and which Dates groups are expanded all live in
+`localStorage` through `remember()` / `recall()`, both wrapped because a
+private window throws on the first read rather than returning nothing. Two
+"open something useful" defaults yield to a choice made on an earlier visit,
+not only to one made in this session -- and the Dates one used to reapply on
+*every* render, so a group collapsed by hand reopened the moment a file was
+signed off out of it.
+
 **A redraw must never throw away what the reader was doing.** Every ledger
 write pushes an SSE event, so the dashboard redraws several times a second
 while anything is moving. Rebuilding a list or a tree on each of those
