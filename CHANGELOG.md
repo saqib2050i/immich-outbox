@@ -10,6 +10,29 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.14.4
+
+**The queue said nothing while a file was being worked on.** The progress
+bar tracked bytes and only bytes, which was the whole story until this week.
+It is not any more: a file now has its own EXIF read after the download, and
+an approved correction written into it — both real time, both spent with the
+bar already at 100% and the row saying *"4.6 MB of 4.6 MB · 100%"*. A file
+being worked on was indistinguishable from one that had stalled.
+
+Each transfer carries a phase now, and the row says which:
+
+    fetching     the bytes, as before
+    checking     reading its date
+    correcting   writing the correction
+    landing      moving into the outbox
+
+The bar dims once it is past the download, because a full bar on an
+unfinished file is the claim that caused this.
+
+A test checks the page can name every phase the feeder sets — one it cannot
+falls through to the byte figures, which is the stalled-looking row this
+replaces.
+
 ## 2.14.3
 
 **Signing a file off did nothing.** It went back to `pending`, the next fill
