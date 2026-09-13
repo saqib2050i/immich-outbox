@@ -302,3 +302,119 @@ async def test_the_endpoint_says_whether_it_is_even_checking(rig):
     d = c.get("/api/dates/held").json()
     assert d["checking"] is True and d["checked"] == 1
     assert d["held"] == [], "and it was fine, which is not the same as unread"
+
+
+# ---- signing off has to actually send the file ---------------------------
+#
+# It did not. A signed-off file went back to pending, was fetched, classified
+# again, found to have the same fault and held again -- a loop, with the
+# correction never written and the tab never emptying. The approval has to
+# survive into the next fetch and be honoured there.
+
+async def test_signing_off_writes_the_correction_and_sends(rig, monkeypatch):
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    wrote = []
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank", "zone": "gps",
+                "writes": [{"tag": "DateTimeOriginal",
+                            "value": "2024:01:01 11:20:38", "from": "Immich"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    monkeypatch.setattr(diagnose, "write_tags",
+                        lambda p, w: (wrote.append(w), (True, ""))[1])
+
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    db.release_held([r["id"] for r in db.held()])
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "queued", "it must actually go"
+    assert row["outbox_name"]
+    assert wrote and wrote[0][0]["tag"] == "DateTimeOriginal"
+    assert row["stamped_at"], "and be recorded as corrected"
+
+
+async def test_an_approval_is_spent_once(rig, monkeypatch):
+    """Left set, the same tags would be written again on any later pass."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank",
+                "writes": [{"tag": "DateTimeOriginal", "value": "x",
+                            "from": "y"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    monkeypatch.setattr(diagnose, "write_tags", lambda p, w: (True, ""))
+
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    db.release_held([r["id"] for r in db.held()])
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    assert dict(db.connect().execute(
+        "SELECT approved_at FROM assets").fetchone())["approved_at"] is None
+
+
+async def test_an_approved_file_is_not_classified_again(rig, monkeypatch):
+    """Reading it again would reach the same conclusion and hold it again,
+    which is the loop."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    looks = []
+
+    async def fake(path, row):
+        looks.append(row["id"])
+        return {"hold": True, "kind": "blank",
+                "writes": [{"tag": "DateTimeOriginal", "value": "x",
+                            "from": "y"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    monkeypatch.setattr(diagnose, "write_tags", lambda p, w: (True, ""))
+
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    assert len(looks) == 1
+    db.release_held([r["id"] for r in db.held()])
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    assert len(looks) == 1, "it was read a second time and held again"
+
+
+async def test_a_correction_that_cannot_be_written_fails_loudly(rig, monkeypatch):
+    """Delivering it uncorrected would put it in Google Photos wearing the
+    wrong date permanently, and the sign-off would have done nothing. A
+    failure can be retried; that cannot be taken back."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank",
+                "writes": [{"tag": "DateTimeOriginal", "value": "x",
+                            "from": "y"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    db.release_held([r["id"] for r in db.held()])
+
+    monkeypatch.setattr(diagnose, "write_tags",
+                        lambda p, w: (False, "exiftool is not installed"))
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "failed"
+    assert "exiftool is not installed" in (row["last_error"] or "")
+    assert row["outbox_name"] is None or not row["stamped_at"]

@@ -116,6 +116,11 @@ MIGRATIONS = (
     # correction could one day be pushed back into Immich without parsing
     # English back into tags.
     ("hold_writes", "TEXT"),
+    # Set when a held file is signed off. Without it the next fill fetched
+    # the file, classified it again, found the same fault and held it
+    # again -- so signing off released a file into a loop and the
+    # correction was never written.
+    ("approved_at", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -1285,6 +1290,22 @@ def month_detail(month: str) -> dict:
     return {"month": month, "groups": groups}
 
 
+def mark_stamped(asset_id: str, writes: list[dict]) -> None:
+    """A correction written into a delivered file on its way past.
+
+    Clears `approved_at` in the same breath: the approval has been spent,
+    and leaving it set would write the same tags again on any later pass.
+    """
+    note = ", ".join(f"{w['tag']}={w['value']}" for w in writes)
+    c = connect()
+    with _lock:
+        c.execute("UPDATE assets SET stamped_at=?, stamped_note=?, "
+                  "hold_writes=?, approved_at=NULL WHERE id=?",
+                  (now(), note, json.dumps(writes), asset_id))
+        c.commit()
+        _bump()
+
+
 def record_check(asset_id: str, seen: dict) -> None:
     """What reading the file's own bytes found.
 
@@ -1341,8 +1362,8 @@ def release_held(ids: list[str]) -> int:
     with _lock:
         cur = c.execute(
             f"""UPDATE assets SET state='pending', forced=1, attempts=0,
-                                  last_error=NULL
-                 WHERE id IN ({marks}) AND state='held'""", ids)
+                                  last_error=NULL, approved_at=?
+                 WHERE id IN ({marks}) AND state='held'""", [now()] + ids)
         c.commit()
         _bump()
     return cur.rowcount

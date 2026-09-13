@@ -10,6 +10,30 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.14.3
+
+**Signing a file off did nothing.** It went back to `pending`, the next fill
+fetched it, the check read it again, found the same fault and held it again
+— a loop, with the correction never written and the Dates tab never
+emptying. The queue moving after a sign-off was other files.
+
+    before   held -> signed off -> pending -> held -> held -> ...
+    after    held -> signed off -> pending -> correction written -> queued
+
+The approval is recorded on the file (`approved_at`) and survives into the
+next fetch, where the feeder writes **the tags that were approved** instead
+of reading the file again and reaching the conclusion it already reached.
+The approval is spent in the same breath as the write, so it cannot fire
+twice.
+
+A correction that cannot be written **fails the file** rather than
+delivering it uncorrected. Delivering it would put it in Google Photos
+wearing the wrong date permanently, and the sign-off would have done
+nothing; a failure can be retried, and that cannot be taken back.
+
+One helper writes tags now — the delivery path and the single-file Tools
+button share it, rather than keeping two copies of the same exiftool call.
+
 ## 2.14.2
 
 **"Check each file's date on its way past" could not be turned on.** The box
