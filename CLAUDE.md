@@ -183,6 +183,18 @@ anywhere to share one from. Three things in it are load-bearing:
   source order. `.grid{display:grid}` did that and put the Overview cards on
   every tab; `.setwrap{display:grid}` did it earlier and put the entire
   settings form there. Two tests guard this.
+- **Sending is one builder, called from three places.** Year, month and
+  category each drew their own controls and drifted: the year had none, the
+  month's lived inside its own expanded body, and a category could send but
+  never send again. `sendControls()` draws the pair everywhere, and the
+  row-level ones carry `whenshut` so they disappear once you are looking at
+  what is inside. They sit inside a `<summary>`, so the wrapper stops click
+  propagation -- otherwise every press would toggle the row instead.
+- **Confirmations live in the button, not in `confirm()`.** A browser
+  dialog is a different window asking about a page you can no longer see.
+  `armed()` turns the first press into "Sure? ..." and disarms itself after
+  four seconds, so a stray press leaves nothing loaded. Only the two
+  destructive controls use it; a plain send is one press.
 - **`summary::before` is a grid item.** Every disclosure row here is a grid
   whose first column is the caret, so the column count must include it. Both
   timeline rows were a column short, which pushed the last child onto a

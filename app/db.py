@@ -1268,7 +1268,11 @@ def month_detail(month: str) -> dict:
 
 def force_send_month(month: str, group: str | None = None,
                      resend: bool = False) -> int:
-    """Queue a month, or one of its four categories, ahead of everything else.
+    """Queue a period, or one of its four categories, ahead of everything else.
+
+    `month` is "2023-03" or, for a whole year, "2023" -- matched by its own
+    length against the front of `taken_at`, so the year control on Library
+    needs no second query and cannot drift from the month one.
 
     `resend` also takes back assets already confirmed, which is otherwise
     refused by invariant 4. It is for the case where a month was deleted
@@ -1287,14 +1291,15 @@ def force_send_month(month: str, group: str | None = None,
     # 'skipped' is included so a dismissed month can be brought back after
     # the originals are restored in Immich -- dismissing is an exclusion,
     # not a tombstone.
-    where = ["substr(taken_at,1,7) = ?",
+    period = (month or "").strip()
+    where = [f"substr(taken_at,1,{len(period)}) = ?",
              f"state IN ({','.join(states)})",
              # claim_batch will not take these, so queueing them only puts a
              # number on screen that can never come down -- the same ghost
              # count, in the one control Library is built around.
              "missing_at IS NULL",
              "id NOT IN (SELECT id FROM motion_parts)"]
-    params: list = [month]
+    params: list = [period]
     if group:
         kind = "IMAGE" if group.startswith("photo") else "VIDEO"
         where.append("kind = ?")

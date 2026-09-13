@@ -686,6 +686,12 @@ async def month_send(payload: dict):
     # asset, so the one path that does should be impossible to reach by
     # accident.
     resend = bool(payload.get("resend"))
+    # Refused rather than guessed at: anything else would match the front of
+    # every taken_at it happens to be a prefix of, which for "20" is the
+    # whole library.
+    if len(month) not in (4, 7):
+        return {"ok": False, "queued": 0,
+                "error": f"{month!r} is not a year or a month"}
     n = db.force_send_month(month, group, resend=resend)
     if n:
         db.log("send", f"{n} file(s) from {month}"

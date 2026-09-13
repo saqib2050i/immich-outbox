@@ -273,7 +273,7 @@
   .tlsum-part.moving b{color:var(--done)}
   .tlsum-part.rest b{color:var(--dim)}
   .tl-yr{border-bottom:1px solid var(--rule)}
-  .tl-yr > summary{display:grid;grid-template-columns:auto 1fr auto;gap:12px;
+  .tl-yr > summary{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;
                    align-items:center;padding:13px 4px;cursor:pointer;list-style:none;
                    border-radius:var(--r-sm)}
   .tl-yr > summary:hover{background:var(--panel-2)}
@@ -284,6 +284,19 @@
   .tl-yr[open] > summary::before{transform:rotate(90deg)}
   .tl-yr .yn{font-size:16px;font-weight:650;letter-spacing:-.015em}
   .tl-yr .yf{font-size:12.5px;color:var(--dim);text-align:right;white-space:nowrap}
+  /* Sending, wherever it appears. One set of rules, because three levels
+     drawing the same two buttons differently is how they came to behave
+     differently. */
+  .sendctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+           justify-content:flex-end}
+  .sendctl button{font-size:11.5px;padding:4px 9px;white-space:nowrap}
+  /* Armed: one more press does it. This was a browser confirm(), a
+     different window asking about a page you could no longer see. */
+  .sendctl button.armed,button.armed{border-color:var(--alarm);
+                                     color:var(--alarm)}
+  /* A year or month with its contents on screen is answered beside each of
+     them, not in one button above the lot. */
+  details[open] > summary > .whenshut{display:none}
   .tl-yr .yb{grid-column:1/-1;height:5px;border-radius:999px;
              background:var(--panel-2);overflow:hidden}
   .tl-yr .yb i{display:block;height:100%;background:var(--done);border-radius:999px}
@@ -293,7 +306,7 @@
   /* Five items, five columns: caret, name, counts, figures, tag. Four of
      them wrapped the tag onto its own row, hard against the left margin. */
   .tl-mo > summary{display:grid;
-                   grid-template-columns:auto auto minmax(66px,auto) 1fr auto;
+                   grid-template-columns:auto auto minmax(66px,auto) 1fr auto auto;
                    gap:10px;align-items:center;padding:11px 12px;cursor:pointer;
                    list-style:none;font-size:13px}
   .tl-mo > summary:hover{background:var(--panel-2)}
@@ -779,6 +792,12 @@
     .tl-body{padding:4px 8px 14px}
     .mo{grid-template-columns:1fr auto;gap:8px 10px;padding:10px 0 10px 12px}
     .mo .mbar{grid-column:1/-1;order:3}
+    /* A year's figures are one unbreakable ~400px string. Left on the same
+       row as the buttons they take the page's horizontal scrollbar with
+       them, which is the whole reason these breakpoints exist. */
+    .tl-yr > summary,.tl-mo > summary{grid-template-columns:auto 1fr}
+    .tl-yr .yf,.tl-mo .mr{grid-column:1/-1;text-align:left}
+    .tl-yr .sendctl,.tl-mo .sendctl{grid-column:1/-1;justify-content:flex-start}
     .mdetail{padding:10px 0 14px 12px}
     /* Three columns, one of which is a nowrap figure and one a button,
        left about 40px for the name -- so "Photos over 16 MP" came out one
@@ -2046,7 +2065,15 @@ async function drawTimeline(){
     tlYearRows.set(year, {yf, yi});
     // No spacer: `summary::before` is itself the first grid item, and a
     // fourth span pushed the figures onto a second row.
-    ys.append(yn, yf, yb);
+    // Hidden while the year is open: with the months on screen, "send the
+    // year" is a question about things you are already looking at
+    // individually, and the answer belongs beside each of them.
+    const yc = sendControls(year, null, {
+      remaining: list.reduce((a, m) => a + (m.remaining || 0) + (m.dismissed || 0), 0),
+      confirmed: list.reduce((a, m) => a + (m.confirmed || 0), 0),
+    });
+    yc.classList.add("whenshut");
+    ys.append(yn, yf, yc, yb);
     yd.appendChild(ys);
 
     list.forEach(m => yd.appendChild(monthNode(m, openMonths)));
@@ -2060,6 +2087,99 @@ async function drawTimeline(){
 // created or update one already on screen. Everything below writes text and
 // widths and nothing else: no element is replaced, so no <details> closes
 // and no `toggle` fires to refetch a body.
+
+// ---- sending, one control at every level --------------------------------
+//
+// Year, month and category all offer the same two things and say them the
+// same way. They did not: a year offered nothing, a month's "send the whole
+// month" appeared only once you had expanded it, and a category could send
+// what was left but never send again. Three levels, three vocabularies, and
+// the one that needed explaining most was the one you could only reach by
+// opening something first.
+
+// Two presses, in the button. It was a browser confirm(), which is a
+// different window with different buttons asking a question about a page
+// you can no longer see. Arming disarms itself, so a stray press does not
+// leave a loaded button sitting on the page.
+const ARM_MS = 4000;
+
+function armed(btn, ask, run){
+  const rest = btn.textContent;
+  let live = false, timer = null;
+  const disarm = () => {
+    live = false; btn.textContent = rest; btn.classList.remove("armed");
+    clearTimeout(timer);
+  };
+  btn.onclick = async () => {
+    if (!live){
+      live = true;
+      btn.textContent = ask;
+      btn.classList.add("armed");
+      timer = setTimeout(disarm, ARM_MS);
+      return;
+    }
+    disarm();
+    btn.disabled = true;
+    const was = btn.textContent;
+    btn.textContent = "Queuing";
+    try { await run(); } finally { btn.textContent = was; btn.disabled = false; }
+  };
+}
+
+async function sendPeriod(period, group, resend){
+  await fetch("/api/month/send", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({month: period, group: group || undefined,
+                          resend: resend || undefined})});
+  // Only what this touched. The cache exists so reopening a month does not
+  // flash "Loading…", and emptying it wholesale is exactly the bug it was
+  // added to fix -- a year's send would have thrown away every other year's
+  // body as well.
+  for (const key of [...monthCache.keys()]){
+    if (key === period || key.startsWith(period + "-")) monthCache.delete(key);
+  }
+  await tick();
+}
+
+// `period` is "2023" or "2023-03"; `group` narrows it to one category.
+function sendControls(period, group, counts, opts){
+  const wrap = document.createElement("span");
+  wrap.className = "sendctl";
+  const stop = e => e.stopPropagation();   // inside a <summary>: do not toggle
+  wrap.addEventListener("click", stop);
+
+  const left = counts.remaining || 0;
+  const done = counts.confirmed || 0;
+
+  if (left > 0){
+    const b = document.createElement("button");
+    b.textContent = (opts && opts.short ? "Send " : "Send ") + fmtNum(left);
+    b.title = "Queue these ahead of everything else";
+    b.onclick = async () => {
+      b.disabled = true;
+      const was = b.textContent; b.textContent = "Queuing";
+      try { await sendPeriod(period, group, false); }
+      finally { b.textContent = was; b.disabled = false; }
+    };
+    wrap.appendChild(b);
+  }
+
+  // The only route back for something already backed up, so it asks first.
+  // Everything else in this service refuses to touch a confirmed asset.
+  if (done > 0){
+    const again = document.createElement("button");
+    again.className = "ghost";
+    again.textContent = "Send again (" + fmtNum(done) + ")";
+    again.title = "They are recorded as backed up. Google Photos skips what it "
+                + "already holds, so this is for something you deleted there "
+                + "and want back. A file whose date was rewritten since it "
+                + "went will upload as a new copy.";
+    armed(again, "Sure? Send " + fmtNum(done) + " again",
+          () => sendPeriod(period, group, true));
+    wrap.appendChild(again);
+  }
+  return wrap;
+}
 
 function monthFigureText(m){
   const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " done"];
@@ -2171,6 +2291,15 @@ function monthNode(m, openMonths){
   const tags = document.createElement("span");
   paintMonthTags(tags, m);
 
+  // On the row itself. "Send the whole month" used to live in the footer of
+  // the expanded body, so sending a month meant opening it first and
+  // scrolling past everything in it.
+  const mc = sendControls(m.month, null, {
+    remaining: (m.remaining || 0) + (m.dismissed || 0),
+    confirmed: m.confirmed || 0,
+  });
+  mc.classList.add("whenshut");
+
   // Three states, in the order the pipeline runs: backed up, in the outbox,
   // going out. What is left unpainted is resting or excluded -- which is
   // the point, since an empty bar means nothing is going to happen here.
@@ -2179,7 +2308,7 @@ function monthNode(m, openMonths){
   paintMonthBar(bar, m);
 
   tlMonthRows.set(m.month, {md, right, tags, bar});
-  sum.append(nm, mid, right, tags, bar);
+  sum.append(nm, mid, right, tags, mc, bar);
   md.appendChild(sum);
 
   const body = document.createElement("div");
@@ -2238,24 +2367,21 @@ function paintMonthBody(m, host, d){
 
     // Dismissed files count as sendable: dismissing is an exclusion, and
     // "send this month" is how you take it back.
-    const sendable = g.remaining + (g.dismissed || 0);
-    if (sendable > 0){
-      const b = document.createElement("button");
-      b.textContent = "Send " + fmtNum(sendable);
-      if (g.dismissed) b.title = fmtNum(g.dismissed) + " of these were dismissed";
-      b.onclick = async () => {
-        b.disabled = true; b.textContent = "Queuing";
-        await fetch("/api/month/send", {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({month: m.month, group: g.group})
-        });
-        await tick();
-      };
-      el.appendChild(b);
-    } else {
-      el.appendChild(Object.assign(document.createElement("span"),
-        {className:"cfig", textContent:"all sent"}));
+    //
+    // The same pair as the month and the year above it. A category could
+    // send what was left and then, once nothing was, said "all sent" and
+    // offered no way back -- the only control here that could not undo what
+    // it had just done.
+    const cc = sendControls(m.month, g.group, {
+      remaining: g.remaining + (g.dismissed || 0),
+      confirmed: g.confirmed || 0,
+    });
+    if (g.dismissed && cc.firstChild){
+      cc.firstChild.title = fmtNum(g.dismissed) + " of these were dismissed";
     }
+    if (cc.children.length) el.appendChild(cc);
+    else el.appendChild(Object.assign(document.createElement("span"),
+      {className:"cfig", textContent:"all sent"}));
     host.appendChild(el);
   });
 
@@ -2287,6 +2413,7 @@ function paintMonthBody(m, host, d){
     foot.appendChild(all);
   }
 
+
   // Excluding a month here is what replaces sweeping the backlog: the
   // decision belongs beside the month it is about.
   if (excludable > 0){
@@ -2295,10 +2422,7 @@ function paintMonthBody(m, host, d){
     no.textContent = "Don't send (" + fmtNum(excludable) + ")";
     no.title = "Leaves them in the ledger, sends nothing, and can be undone "
              + "by sending the month again";
-    no.onclick = async () => {
-      if (!confirm(`Stop sending ${fmtNum(excludable)} file(s) from `
-                 + `${m.month}?\n\nNothing is deleted. Sending the month `
-                 + `again brings them back.`)) return;
+    armed(no, "Sure? Stop sending " + fmtNum(excludable), async () => {
       no.disabled = true;
       const was = no.textContent; no.textContent = "Excluding";
       try {
@@ -2308,7 +2432,7 @@ function paintMonthBody(m, host, d){
         monthCache.delete(m.month);
         await tick();
       } finally { no.textContent = was; no.disabled = false; }
-    };
+    });
     foot.appendChild(no);
   }
 
@@ -2319,15 +2443,12 @@ function paintMonthBody(m, host, d){
     const again = document.createElement("button");
     again.className = "ghost";
     again.textContent = "Send again (" + fmtNum(confirmed) + " already backed up)";
-    again.onclick = async () => {
-      if (!confirm(`Send ${fmtNum(confirmed)} file(s) from ${m.month} again?`
-                 + `\n\nThey are recorded as backed up. Google Photos skips `
-                 + `anything it already holds, so this is for a month you have `
-                 + `deleted from Google Photos and want back.\n\nFiles whose `
-                 + `dates were rewritten since they went will upload as new `
-                 + `copies.`)) return;
-      await post(again, {month: m.month, resend: true}, "Queuing");
-    };
+    again.title = "They are recorded as backed up. Google Photos skips what it "
+                + "already holds, so this is for a month you deleted there and "
+                + "want back. A file whose date was rewritten since it went "
+                + "will upload as a new copy.";
+    armed(again, "Sure? Send " + fmtNum(confirmed) + " again",
+          () => post(again, {month: m.month, resend: true}, "Queuing"));
     foot.appendChild(again);
   }
 
@@ -2454,15 +2575,14 @@ async function toggleMonth(month, host, btn){
 
       el.append(nm, fig);
 
-      if (g.remaining > 0){
-        const b = document.createElement("button");
-        b.textContent = "Send " + fmtNum(g.remaining);
-        b.onclick = () => sendMonth(month, g.group, b, host, btn);
-        el.appendChild(b);
-      } else {
-        el.appendChild(Object.assign(document.createElement("span"),
-          {className:"cfig", textContent:"all sent"}));
-      }
+      // The same pair as every other level. A category could send what was
+      // left and then, once nothing was, said "all sent" and offered no way
+      // back -- the one control that could not undo what it had just done.
+      const cc = sendControls(month, g.group,
+                              {remaining: g.remaining, confirmed: g.confirmed});
+      if (cc.children.length) el.appendChild(cc);
+      else el.appendChild(Object.assign(document.createElement("span"),
+        {className:"cfig", textContent:"all sent"}));
       host.appendChild(el);
     });
 

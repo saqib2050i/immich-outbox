@@ -10,6 +10,37 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.12.0
+
+**Sending says the same thing at every level.** It did not. A **year**
+offered nothing at all, so sending 2023 meant opening it and pressing
+twelve months one at a time. A **month** could be sent, but only from the
+footer of its own expanded body — so sending a month meant opening it and
+scrolling past everything in it first. A **category** could send what was
+left and then, once nothing was, said "all sent" and offered no way back:
+the only control here that could not undo what it had just done.
+
+Three levels, three vocabularies, drifting apart one edit at a time. There
+is one builder now and all three call it, so a year, a month and a category
+each offer the same two things and word them the same way.
+
+The year's and the month's controls sit on the row itself and hide when it
+is expanded — with the months on screen, "send the year" is a question
+about things you are already looking at individually, and the answer
+belongs beside each of them.
+
+**And the confirmations moved into the buttons.** `confirm()` opens a
+different window, with buttons nobody here styled, asking about a page you
+can no longer see. *Send again* and *Don't send* now arm on the first press
+— the button itself becomes "Sure? Send 4 again" — and disarm themselves
+after four seconds, so a stray press does not leave a loaded button on the
+page. A plain send is still one press.
+
+Server-side, `force_send_month` matches by the length of what it is given,
+so "2023" is a year and "2023-03" a month through one query that cannot
+drift. Anything else is refused: `"20"` is a prefix of every date this
+library holds, and `substr` would have matched the lot.
+
 ## 2.11.1
 
 **A corrected file still read as a broken one.** Tracing a file that phase
