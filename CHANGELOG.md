@@ -10,6 +10,25 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.14.1
+
+**"Nothing held" was offered as a guess between two opposite meanings.** The
+empty Dates list said *either every file read carries a date Google Photos
+can use, or the check is off* — and left the reader to pick. Somebody sent a
+whole year through with the check off, read that as a clean result, and had
+no way to tell from the page that nothing had been looked at.
+
+The server knows which it is, so it says: whether checking is on at all, and
+how many files have had their bytes read. Three states, three sentences —
+*nothing has been checked*, *checking is on but nothing read yet*, or
+*nothing held, all N read so far carry a usable date*.
+
+The tally beside the controls says it too, whether or not anything is held.
+With checking off a short list is not a good sign; it is an absence of
+evidence, and it is coloured accordingly.
+
+`check_dates` is off by default, and merging a release does not turn it on.
+
 ## 2.14.0
 
 **A Dates tab: what was held back, and what would be written to it.**

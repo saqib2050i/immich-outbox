@@ -1316,6 +1316,18 @@ def record_check(asset_id: str, seen: dict) -> None:
         _bump()
 
 
+def checked_count() -> int:
+    """How many files have had their own bytes read.
+
+    The difference between "nothing is wrong" and "nothing was looked at",
+    which an empty list cannot tell you and which the page used to offer as
+    a guess between two possibilities.
+    """
+    return connect().execute(
+        "SELECT COUNT(*) n FROM assets WHERE checked_at IS NOT NULL"
+    ).fetchone()["n"]
+
+
 def release_held(ids: list[str]) -> int:
     """Sign held files off: back to pending, and forced so they go next.
 
