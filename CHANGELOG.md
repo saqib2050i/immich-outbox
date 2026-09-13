@@ -10,6 +10,39 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.15.0
+
+**A send button that could not tell you it had worked.** Press "Send 1,620"
+on a year, wait, and it comes back reading "Send 1,620" — so there is no way
+to know whether the press registered, and pressing again does the same
+nothing.
+
+Two causes, both real:
+
+**It counted the wrong files.** Forcing does not change a file's state, so
+`remaining` — everything pending — is the same number before and after. The
+count is of `resting` now: files nobody has asked for yet. Asking turns
+resting into sending, so a successful press takes the count to zero and the
+button disappears. That is the feedback. `month_detail` gained a `resting`
+per category so all four levels — year, month, category, footer — count the
+same thing.
+
+**It put the old number back.** The handler restored the label in a
+`finally`, painting "Send 1,620" over a year that had just been asked for.
+It does not, and the control is repainted with the figures instead —
+otherwise it keeps whatever number it was born with, since the timeline only
+rebuilds its structure when months appear or vanish.
+
+Two faults found while fixing it, both by testing rather than by reading:
+
+- `tlYearRows.set(..., {ctl: yc})` ran before `const yc`, which threw and
+  left the **whole Library page blank**. Only the browser found it; the
+  syntax is fine.
+- The repaint guard read the button's label back to avoid clobbering
+  "Queuing" — and matched a button that had *finished* queuing, so once a
+  count came back it would refuse to relabel and leave "Queuing" on screen
+  for good. It is a flag now.
+
 ## 2.14.4
 
 **The queue said nothing while a file was being worked on.** The progress
