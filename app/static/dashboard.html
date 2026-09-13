@@ -647,6 +647,53 @@
   .propgrid > div.v{color:var(--transit)}
   .propgrid > div.src{color:var(--dim);font-size:11.5px;line-height:1.5}
   .propwhy{margin:10px 0 0;font-size:11.5px;color:var(--dim);line-height:1.6}
+
+  /* Dates: what was read on the way past and kept back. */
+  .dbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 6px;
+        font-size:12.5px}
+  .dbar label{color:var(--dim);font-size:11.5px}
+  .dbar select{font-size:12.5px;padding:5px 8px}
+  .dgroup{border:1px solid var(--rule);border-radius:var(--r-sm);margin-top:10px;
+          overflow:hidden}
+  .dgroup > summary{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;
+    align-items:center;padding:11px 13px;cursor:pointer;list-style:none;
+    font-size:13px;background:var(--panel-2)}
+  .dgroup > summary::-webkit-details-marker{display:none}
+  /* summary::before is the first grid item; the column count above includes it. */
+  .dgroup > summary::before{content:"";width:0;height:0;flex:none;
+    border-left:5px solid var(--dim);border-top:4px solid transparent;
+    border-bottom:4px solid transparent;transition:transform .15s}
+  .dgroup[open] > summary::before{transform:rotate(90deg)}
+  .dgroup .gname{font-weight:650}
+  .dgroup .gwhy{display:block;font-size:11.5px;color:var(--dim);font-weight:400;
+                margin-top:2px}
+  .dgroup .gfig{color:var(--dim);font-size:12.5px;white-space:nowrap;
+                text-align:right}
+  .drow{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;
+        align-items:center;padding:9px 13px;border-top:1px solid var(--rule);
+        font-size:12.5px}
+  .drow .dname{overflow-wrap:anywhere}
+  .drow .dwrites{display:block;font-size:11.5px;color:var(--transit);
+                 margin-top:2px;overflow-wrap:anywhere}
+  .drow .dwhen{color:var(--dim);font-size:11.5px;white-space:nowrap}
+  .drow.sent{background:color-mix(in srgb,var(--alarm) 7%,transparent)}
+  /* Already in Google Photos wearing the wrong date. Split out hard rather
+     than offered as a grouping: correcting one means clearing the old copy
+     from Google Photos first, which is a different action and not this
+     service's to take. */
+  .dsent{border:1px solid var(--alarm);border-radius:var(--r-sm);padding:11px 13px;
+         margin:12px 0;font-size:12.5px;color:var(--dim);line-height:1.6}
+  .dsent b{color:var(--ink)}
+  .dsoon{border:1px dashed var(--rule-2);border-radius:var(--r-sm);
+         padding:11px 13px;margin-top:10px;font-size:12.5px;color:var(--dim);
+         line-height:1.6}
+  .dsoon b{color:var(--ink)}
+  @media (max-width:640px){
+    .dgroup > summary,.drow{grid-template-columns:auto 1fr}
+    .dgroup .gfig,.drow .dwhen{grid-column:1/-1;text-align:left}
+    .dgroup > summary .sendctl,.drow .sendctl{grid-column:1/-1;
+                                              justify-content:flex-start}
+  }
   @media (max-width:640px){
     .propgrid{grid-template-columns:1fr}
     .propgrid > div.h:not(:first-child){display:none}
@@ -864,6 +911,7 @@
   <a href="#queue" data-for="queue" role="tab">Queue<span class="tbadge" id="badgeQueue" hidden></span></a>
   <a href="#problems" data-for="problems" role="tab">Problems<span class="tbadge alarmb" id="badgeProblems" hidden></span></a>
   <a href="#library" data-for="library" role="tab">Library</a>
+  <a href="#dates" data-for="dates" role="tab">Dates<span class="tbadge" id="badgeDates" hidden></span></a>
   <a href="#settings" data-for="settings" role="tab">Settings</a>
   <a href="#tools" data-for="tools" role="tab">Tools</a>
   <span class="spacer"></span>
@@ -1354,6 +1402,48 @@
     </div>
   </form>
 </div>
+
+<section class="dates" id="nav-dates" data-tab="dates">
+  <h2>Files that would land on the wrong date</h2>
+  <p class="hint" id="datesLead">Read on their way past and kept back, so they
+     never reach the phone wearing a date nobody meant. Immich cannot answer
+     this on its own — its date fields come from the Takeout sidecar and say
+     nothing about what is in the file — so each one here had its bytes read
+     as it was fetched.</p>
+
+  <div class="dbar">
+    <label for="dGroup">Group by</label>
+    <select id="dGroup">
+      <option value="fault">What is wrong</option>
+      <option value="zone">Where the zone comes from</option>
+      <option value="family">Filename family</option>
+      <option value="year">Year</option>
+      <option value="month">Month</option>
+      <option value="kind">Photos and videos</option>
+      <option value="all">All together</option>
+    </select>
+    <label for="dSort">Sort</label>
+    <select id="dSort">
+      <option value="new">Newest first</option>
+      <option value="old">Oldest first</option>
+      <option value="name">Name A–Z</option>
+      <option value="rname">Name Z–A</option>
+      <option value="size">Largest first</option>
+      <option value="shift">Biggest date change first</option>
+    </select>
+    <span class="spacer"></span>
+    <span class="hint" id="dCount"></span>
+  </div>
+
+  <div id="datesOut"></div>
+
+  <h3 style="margin-top:26px">Corrections Immich does not have</h3>
+  <p class="hint">Every date below was worked out here and written into the copy
+     on its way to the phone. Immich's own file was not touched, so Immich goes
+     on showing a date it holds only in its database while the file beside it
+     has none.</p>
+  <div id="datesOwed"></div>
+</section>
 
 <section class="timeline" id="nav-timeline" data-tab="library">
   <h2>Months</h2>
@@ -2097,6 +2187,308 @@ async function drawTimeline(){
 // created or update one already on screen. Everything below writes text and
 // widths and nothing else: no element is replaced, so no <details> closes
 // and no `toggle` fires to refetch a body.
+
+// ---- Dates: what was read on the way past and kept back -------------------
+//
+// Grouped and sorted in the browser. A few thousand rows is a few hundred KB,
+// and paging it server-side would make every regroup a round trip to answer a
+// question the page already holds the data for.
+
+const FAMILY = [
+  [/^PXL_/i,          "Pixel camera"],
+  [/^Snapchat[-_]/i,  "Snapchat"],
+  [/^IMG[-_]/i,       "IMG_ (older phones and cameras)"],
+  [/^VID[-_]/i,       "VID_ (older video)"],
+  [/^MVIMG[-_]/i,     "Motion photos"],
+  [/^DSC/i,           "DSC (cameras)"],
+  [/^GOPR|^GP\d/i,    "GoPro"],
+  [/COLLAGE|_exported_|-EFFECTS|-ANIMATION/i, "Google Photos creations"],
+  [/^WA|-WA\d/i,      "WhatsApp"],
+  [/^Screenshot/i,    "Screenshots"],
+];
+
+const FAULT = {
+  blank: ["A date tag that is empty",
+          "The tag is in the file with nothing in it. Google Photos reads no "
+          + "date and files the photo under the day it was uploaded — the "
+          + "worst of the three, and the one that is certainly wrong."],
+  absent: ["No date tag at all",
+           "Nothing for Google Photos to read, so it falls back to the file's "
+           + "modification time, which this service sets. The day lands right; "
+           + "the time of day is out by the capture zone."],
+  unfixable: ["Nothing here can fix",
+              "No zone in the file, no coordinates, and outside the rule in "
+              + "Settings. DateTimeOriginal is local time, so without a zone "
+              + "there is no honest value to write. This is the ceiling."],
+};
+
+const ZONE = {
+  file: ["The file says so", "It carries its own offset. Certain."],
+  gps:  ["Its coordinates say so",
+         "Immich derived the zone from where the shutter was pressed. Certain."],
+  immich: ["Immich holds one", "Not from the file, but not a guess either."],
+  assumed: ["This library's rule",
+            "No zone anywhere, so the date in Settings decides. Right for a "
+            + "photo taken at home and wrong for one taken on a trip — the "
+            + "only group here that can be wrong."],
+  none: ["No zone at all", "Nothing to go on."],
+};
+
+let datesRows = [];
+
+function dateFamily(name){
+  for (const [re, label] of FAMILY) if (re.test(name || "")) return label;
+  return "Everything else";
+}
+
+function dateShiftHours(r){
+  // How far the proposed date moves the file. Biggest first puts anything odd
+  // at the top, which is where you would want it.
+  const w = (r.writes || []).find(x => x.tag === "DateTimeOriginal");
+  if (!w || !r.taken_at) return 0;
+  const to = Date.parse(String(w.value).replace(/^(\d{4}):(\d{2}):/, "$1-$2-")
+                        .replace(" ", "T") + "Z");
+  const from = Date.parse(r.taken_at);
+  return (isNaN(to) || isNaN(from)) ? 0 : Math.abs(to - from) / 3600000;
+}
+
+function groupDates(rows, by){
+  const keyOf = {
+    fault:  r => r.hold_kind || "unfixable",
+    zone:   r => r.hold_zone || "none",
+    family: r => dateFamily(r.filename),
+    year:   r => (r.taken_at || "").slice(0, 4) || "undated",
+    month:  r => (r.taken_at || "").slice(0, 7) || "undated",
+    kind:   r => (r.kind === "VIDEO" ? "Videos" : "Photos"),
+    all:    () => "Everything",
+  }[by] || (() => "Everything");
+
+  const out = new Map();
+  rows.forEach(r => {
+    const k = keyOf(r);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(r);
+  });
+  return out;
+}
+
+function sortDates(rows, how){
+  const by = {
+    new:   (a, b) => (b.taken_at || "").localeCompare(a.taken_at || ""),
+    old:   (a, b) => (a.taken_at || "").localeCompare(b.taken_at || ""),
+    name:  (a, b) => a.filename.localeCompare(b.filename),
+    rname: (a, b) => b.filename.localeCompare(a.filename),
+    size:  (a, b) => (b.size || 0) - (a.size || 0),
+    shift: (a, b) => dateShiftHours(b) - dateShiftHours(a),
+  }[how] || (() => 0);
+  return [...rows].sort(by);
+}
+
+function groupHeading(by, key){
+  if (by === "fault") return FAULT[key] || [key, ""];
+  if (by === "zone") return ZONE[key] || [key, ""];
+  if (by === "month" && /^\d{4}-\d{2}$/.test(key))
+    return [MONTH_NAMES[+key.slice(5, 7) - 1] + " " + key.slice(0, 4), ""];
+  return [key, ""];
+}
+
+async function signOff(ids, btn){
+  if (!ids.length) return;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "Signing off";
+  try {
+    await fetch("/api/dates/release", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ids})});
+    await renderDates();
+    await tick();
+  } finally { btn.textContent = was; btn.disabled = false; }
+}
+
+function dateRow(r){
+  const el = document.createElement("div");
+  el.className = "drow" + (r.already_sent ? " sent" : "");
+
+  const mark = document.createElement("span");
+  mark.textContent = r.already_sent ? "!" : "";
+  const name = document.createElement("span");
+  name.className = "dname";
+  name.textContent = r.filename;
+  const w = document.createElement("small");
+  w.className = "dwrites";
+  w.textContent = (r.writes || []).length
+    ? (r.writes || []).map(x => x.tag + " " + x.value).join("  ·  ")
+    : "nothing can be written — " + (ZONE[r.hold_zone] || ["", ""])[1];
+  name.appendChild(w);
+
+  const when = document.createElement("span");
+  when.className = "dwhen";
+  when.textContent = (r.taken_at || "").slice(0, 10) + " · "
+                   + fmtBytes(r.size || 0);
+
+  el.append(mark, name, when);
+
+  // Per file, for the first fifty. Bulk, on the group, for the next two
+  // thousand.
+  if ((r.writes || []).length){
+    const b = document.createElement("button");
+    b.textContent = "Sign off";
+    b.onclick = () => signOff([r.id], b);
+    el.appendChild(b);
+  } else {
+    el.appendChild(Object.assign(document.createElement("span"),
+      {className: "dwhen", textContent: "—"}));
+  }
+  return el;
+}
+
+async function renderDates(){
+  const host = document.getElementById("datesOut");
+  if (!host) return;
+  let d;
+  try { d = await (await fetch("/api/dates/held")).json(); }
+  catch { host.innerHTML = '<p class="empty">Could not load.</p>'; return; }
+  datesRows = d.held || [];
+
+  const badge = document.getElementById("badgeDates");
+  if (badge){
+    badge.hidden = !datesRows.length;
+    badge.textContent = fmtNum(datesRows.length);
+  }
+  document.getElementById("dCount").textContent =
+    datesRows.length ? fmtNum(datesRows.length) + " held" : "";
+
+  host.innerHTML = "";
+  if (!datesRows.length){
+    host.innerHTML = '<p class="empty">Nothing held. Either every file read so '
+      + 'far carries a date Google Photos can use, or the check is off — it '
+      + 'reads each file as it is fetched, so this fills up as batches run.</p>';
+    renderOwed();
+    return;
+  }
+
+  // Already in Google Photos wearing the wrong date. Split out hard, because
+  // signing one of these off sends a corrected copy alongside the old one.
+  const sent = datesRows.filter(r => r.already_sent);
+  if (sent.length){
+    const box = document.createElement("div");
+    box.className = "dsent";
+    const b = document.createElement("b");
+    b.textContent = fmtNum(sent.length)
+      + " of these are already in Google Photos";
+    box.append(b, document.createTextNode(
+      " wearing the wrong date. A corrected copy does not replace the old one "
+      + "— Google Photos matches uploads by content, and a corrected file "
+      + "is different content, so it arrives as a second photo. Clear the old "
+      + "ones from Google Photos first. They are marked below."));
+    host.appendChild(box);
+  }
+
+  const by = document.getElementById("dGroup").value;
+  const how = document.getElementById("dSort").value;
+
+  [...groupDates(datesRows, by).entries()].forEach(([key, rows], i) => {
+    const det = document.createElement("details");
+    det.className = "dgroup";
+    if (i === 0) det.open = true;
+    const sum = document.createElement("summary");
+
+    const [label, why] = groupHeading(by, key);
+    const nm = document.createElement("span");
+    nm.className = "gname";
+    nm.textContent = label;
+    if (why){
+      const sm = document.createElement("small");
+      sm.className = "gwhy";
+      sm.textContent = why;
+      nm.appendChild(sm);
+    }
+    const fig = document.createElement("span");
+    fig.className = "gfig";
+    const fixable = rows.filter(r => (r.writes || []).length);
+    fig.textContent = fmtNum(rows.length) + " file"
+      + (rows.length === 1 ? "" : "s")
+      + (fixable.length < rows.length
+         ? " · " + fmtNum(rows.length - fixable.length)
+           + " with nothing to write" : "");
+    sum.append(nm, fig);
+
+    // Bulk. Armed like every other control that cannot be undone by pressing
+    // it again.
+    if (fixable.length){
+      const ctl = document.createElement("span");
+      ctl.className = "sendctl";
+      ctl.addEventListener("click", e => e.stopPropagation());
+      const b = document.createElement("button");
+      b.className = "ghost";
+      b.textContent = "Sign off all " + fmtNum(fixable.length);
+      armed(b, "Sure? Sign off " + fmtNum(fixable.length),
+            () => signOff(fixable.map(r => r.id), b));
+      ctl.appendChild(b);
+      sum.appendChild(ctl);
+    }
+    det.appendChild(sum);
+    sortDates(rows, how).forEach(r => det.appendChild(dateRow(r)));
+    host.appendChild(det);
+  });
+
+  renderOwed();
+}
+
+async function renderOwed(){
+  const host = document.getElementById("datesOwed");
+  if (!host) return;
+  let d;
+  try { d = await (await fetch("/api/dates/to-immich")).json(); }
+  catch { return; }
+  host.innerHTML = "";
+
+  const rows = d.pending || [];
+  if (!rows.length){
+    host.innerHTML =
+      '<p class="empty">No corrections have been written yet.</p>';
+  } else {
+    const det = document.createElement("details");
+    det.className = "dgroup";
+    const sum = document.createElement("summary");
+    const nm = document.createElement("span");
+    nm.className = "gname";
+    nm.textContent = fmtNum(rows.length) + " file"
+      + (rows.length === 1 ? "" : "s") + " corrected in transit";
+    const fig = document.createElement("span");
+    fig.className = "gfig";
+    fig.textContent = "Immich still holds none of these";
+    sum.append(nm, fig);
+    det.appendChild(sum);
+    rows.slice(0, 500).forEach(r => {
+      const el = document.createElement("div");
+      el.className = "drow";
+      const name = document.createElement("span");
+      name.className = "dname";
+      name.textContent = r.filename;
+      const w = document.createElement("small");
+      w.className = "dwrites";
+      w.textContent = (r.writes || []).map(x => x.tag + " " + x.value)
+                        .join("  ·  ") || r.stamped_note || "";
+      name.appendChild(w);
+      const when = document.createElement("span");
+      when.className = "dwhen";
+      when.textContent = (r.stamped_at || "").slice(0, 10);
+      el.append(document.createElement("span"), name, when,
+                document.createElement("span"));
+      det.appendChild(el);
+    });
+    host.appendChild(det);
+  }
+
+  const soon = document.createElement("div");
+  soon.className = "dsoon";
+  const b = document.createElement("b");
+  b.textContent = "Writing these back into Immich — coming soon. ";
+  soon.append(b, document.createTextNode(d.why || ""));
+  host.appendChild(soon);
+}
 
 // ---- sending, one control at every level --------------------------------
 //
@@ -4187,10 +4579,14 @@ function setLiveBadge(on){
 // The page used to be one long scroll with jump anchors; each area is now
 // a tab. Hash-routed so tabs survive reload and can be linked. Old anchors
 // (#nav-queue, #settings, ...) map onto their tab so bookmarks keep working.
-const TABS = ["overview","queue","problems","library","settings","tools"];
+// A name missing here silently becomes "overview": setTab falls back rather
+// than failing, so a tab whose panel exists and whose link is in the bar
+// still shows nothing at all.
+const TABS = ["overview","queue","problems","library","dates","settings","tools"];
 const LEGACY = {"nav-queue":"queue","nav-attention":"problems","top":"overview",
                 "nav-timeline":"library","nav-library":"library",
-                "nav-tools":"tools","settings":"settings"};
+                "nav-tools":"tools","settings":"settings",
+                "nav-dates":"dates"};
 
 function setTab(raw){
   const name = TABS.includes(raw) ? raw : (LEGACY[raw] || "overview");
@@ -4203,7 +4599,18 @@ function setTab(raw){
   });
   // Tools is a <details>; opening the tab should not leave it collapsed.
   if (name === "tools") document.getElementById("nav-tools").open = true;
+  // Fetched when the tab is opened rather than on every tick: it is the
+  // whole held set, and nobody is watching it change while they read
+  // something else.
+  if (name === "dates") renderDates();
 }
+
+// Regrouping and re-sorting is a redraw of what the page already holds, so
+// it does not go back to the server for it.
+["dGroup", "dSort"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.onchange = () => renderDates();
+});
 
 window.addEventListener("hashchange",
   () => setTab(location.hash.replace(/^#/, "")));

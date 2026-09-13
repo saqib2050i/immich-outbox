@@ -195,6 +195,11 @@ anywhere to share one from. Three things in it are load-bearing:
   `armed()` turns the first press into "Sure? ..." and disarms itself after
   four seconds, so a stray press leaves nothing loaded. Only the two
   destructive controls use it; a plain send is one press.
+- **A tab needs three things, and the third fails silently.** A panel
+  (`data-tab`), a link (`data-for`), and its name in `TABS` -- `setTab`
+  falls back to "overview" for anything it does not recognise, so a tab
+  missing only the third has a link that appears to do nothing and logs
+  nothing. A test now checks the three agree.
 - **`summary::before` is a grid item.** Every disclosure row here is a grid
   whose first column is the caret, so the column count must include it. Both
   timeline rows were a column short, which pushed the last child onto a
