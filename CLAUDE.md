@@ -195,6 +195,15 @@ anywhere to share one from. Three things in it are load-bearing:
   `armed()` turns the first press into "Sure? ..." and disarms itself after
   four seconds, so a stray press leaves nothing loaded. Only the two
   destructive controls use it; a plain send is one press.
+- **An approval has to survive into the next fetch.** A signed-off file goes
+  back to `pending`, and the fill that picks it up would otherwise read it,
+  reach the same conclusion, and hold it again -- a loop in which the
+  correction is never written. `approved_at` says the decision was taken;
+  the feeder writes the tags recorded for the file rather than classifying
+  it a second time, and spends the approval in the same breath so it cannot
+  fire twice. A correction that cannot be written fails the file rather than
+  delivering it uncorrected: delivered, it is in Google Photos wearing the
+  wrong date for good, and a failure can be retried.
 - **Nothing lists which settings are checkboxes.** There was such a list,
   and a checkbox whose key was missing from it was completely inert:
   `fillSettings` wrote the stored value into `.value` rather than

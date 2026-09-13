@@ -1320,6 +1320,32 @@ async def classify(path: str, row: dict) -> dict:
 # writes, and it writes to the outbox copy and nothing else.
 # ---------------------------------------------------------------------------
 
+def write_tags(path: str, writes: list[dict]) -> tuple[bool, str]:
+    """Write the proposed tags into a file, in place.
+
+    Only ever called on a file nothing else can see yet -- the `.partial-`
+    the feeder is still filling, or the temporary copy `_stamp` makes. A
+    file already in the outbox is edited through `_stamp`, which stages and
+    renames, because Syncthing is watching that directory.
+    """
+    if not writes:
+        return True, ""
+    args = [f"-{w['tag']}={w['value']}" for w in writes]
+    try:
+        r = subprocess.run(
+            ["exiftool", "-overwrite_original", "-P", *args, "-q", path],
+            capture_output=True, timeout=180, check=False)
+    except FileNotFoundError:
+        return False, ("exiftool is not installed in this image, so nothing "
+                       "can be written.")
+    except (subprocess.SubprocessError, OSError) as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    if r.returncode != 0:
+        detail = (r.stderr or b"").decode(errors="replace").strip()[:200]
+        return False, f"exiftool refused the file: {detail}"
+    return True, ""
+
+
 def _stamp(path: str, writes: list[dict]) -> tuple[bool, str]:
     """Write the proposed tags into a copy, then move it over the original.
 
@@ -1333,19 +1359,15 @@ def _stamp(path: str, writes: list[dict]) -> tuple[bool, str]:
     `sweep_partials()` already knows both names this can leave behind, its
     own and exiftool's, so a crash mid-write cleans up on the next cycle.
     """
-    args = [f"-{w['tag']}={w['value']}" for w in writes]
     tmp = None
     try:
         fd, tmp = tempfile.mkstemp(dir=config.OUTBOX_DIR,
                                    prefix=".partial-", suffix=".part")
         os.close(fd)
         shutil.copy2(path, tmp)          # copy2: the mtime comes with it
-        r = subprocess.run(
-            ["exiftool", "-overwrite_original", "-P", *args, "-q", tmp],
-            capture_output=True, timeout=180, check=False)
-        if r.returncode != 0:
-            detail = (r.stderr or b"").decode(errors="replace").strip()[:200]
-            return False, f"exiftool refused the file: {detail}"
+        ok, why = write_tags(tmp, writes)
+        if not ok:
+            return False, why
         os.replace(tmp, path)
         os.chmod(path, 0o664)
         tmp = None

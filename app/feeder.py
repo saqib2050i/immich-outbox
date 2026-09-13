@@ -493,8 +493,31 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                 # confirmed. The temp file goes in the `finally` below, so
                 # signing one off downloads it again -- cheap over a LAN,
                 # and it keeps disk use at nothing.
-                if cfg.check_dates:
+                if cfg.check_dates or row["approved_at"]:
                     from . import diagnose
+                    import json as _json
+
+                # A file signed off on the Dates tab carries the correction
+                # that was approved for it. Write that rather than reading
+                # the file again and reaching the same conclusion: without
+                # this, signing off released a file which was fetched,
+                # classified, found faulty and held again -- a loop, with
+                # the correction never written and the tab never emptying.
+                if row["approved_at"]:
+                    try:
+                        writes = _json.loads(row["hold_writes"] or "[]")
+                    except ValueError:
+                        writes = []
+                    ok, why = diagnose.write_tags(tmp, writes)
+                    if ok and writes:
+                        size = os.path.getsize(tmp)
+                        db.mark_stamped(asset_id, writes)
+                        db.log("info", f"{filename}: wrote the approved date "
+                                       f"correction — {len(writes)} tag(s)")
+                    elif not ok:
+                        raise IOError(f"could not write the approved "
+                                      f"correction: {why}")
+                elif cfg.check_dates:
                     seen = await diagnose.classify(tmp, dict(row))
                     db.record_check(asset_id, seen)
                     if seen.get("hold"):
