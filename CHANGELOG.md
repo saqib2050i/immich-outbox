@@ -10,6 +10,48 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.13.0
+
+**Phase 4, the spine: a file is read on its way past, and kept back if it
+would land wrong.** Off by default — `check_dates` in Settings — because it
+holds files back, and a setting that quietly stops a backup should be one
+somebody turned on.
+
+The check happens during delivery, in the temporary file, before the rename
+into the outbox. That is not an implementation detail: Immich's metadata
+*cannot* say whether a file carries a date, since its date fields are
+filled from the Takeout sidecar at import, and the one moment the bytes are
+here is this one. A held file is never renamed into the outbox, so it never
+reaches Syncthing, never reaches the phone, and cannot be read as backed up.
+
+What it records, for every file it reads and not only the ones it keeps: the
+fault (`blank`, `absent`, `unfixable`, `ok`), where a zone could be had
+(`file`, `gps`, `immich`, `assumed`, `none`) and the proposal as JSON. Keyed
+on the checksum, so a file replaced in Immich is read again rather than
+trusted from an answer about different bytes — and a known-good answer saves
+the next pass a download just as a known-bad one does.
+
+**Corrections owed to Immich are kept as a list.** Every date written into a
+delivered copy is one Immich does not have: its own file is untouched,
+deliberately, so it goes on showing a date held only in its database while
+the file beside it has none. Closing that gap needs the `asset.update`
+scope, and invariant 3 grants three read scopes and no write — which is what
+makes "it cannot alter your library" a fact rather than a promise. So the
+record is structured enough to be replayed, `can_apply` is false, and the
+reason is given rather than the button.
+
+Three faults found while building it, each by a test:
+
+- The hook read `seen['why']` inside the `try` that marks an asset failed,
+  so a missing key recorded the file as a failed *download* — after the
+  check had been written, leaving a row that was held and failed at once.
+- `outbox_name` is reserved before the download, so a held file carried a
+  name for a file that was never written. Cleared with the state: a row
+  naming a file that is not there is the shape of a delivery that went
+  missing, and nothing should have to tell those two apart later.
+- `continue` where `fetch_one` handles one asset, not a loop. `ast.parse`
+  accepts that; only `compile` rejects it.
+
 ## 2.12.0
 
 **Sending says the same thing at every level.** It did not. A **year**

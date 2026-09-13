@@ -1244,6 +1244,78 @@ def propose(rep: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4: classifying a file on its way past, while its bytes are in hand.
+#
+# Immich's metadata cannot answer this. Its date fields are filled from the
+# Takeout sidecar at import and say nothing about what is in the file --
+# which is the whole reason a library of undated photos reads as zero on the
+# Problems tab. Only the bytes know, and the one moment they are here is
+# during delivery, in the temporary file, before the rename into the outbox.
+# ---------------------------------------------------------------------------
+
+BLANK_FAULT, ABSENT_FAULT, UNFIXABLE, FINE = "blank", "absent", "unfixable", "ok"
+
+
+async def classify(path: str, row: dict) -> dict:
+    """What is wrong with this file's date, and what would put it right.
+
+    Returns a verdict the feeder can act on without knowing any of this:
+    `hold` says whether to keep it back, and `writes` is what would be
+    written if it goes on. Never raises -- a file that cannot be classified
+    is delivered exactly as it would have been before any of this existed,
+    because a diagnostic that can stop a backup is worse than no diagnostic.
+    """
+    out = {"hold": False, "kind": FINE, "zone": None, "writes": [],
+           "why": "", "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    try:
+        exif = read_exif(path)
+        if "error" in exif:
+            out["why"] = exif["error"]
+            return out
+
+        kind = row.get("kind")
+        video = is_video(exif, kind)
+        state, raw, _ = date_state(exif, *(VIDEO_DATE if video else PHOTO_DATE))
+        if state == VALUE:
+            # It carries its own date. Nothing here second-guesses that;
+            # a date that disagrees with Immich is fix_dates' business.
+            out["why"] = f"carries {str(raw).strip()}"
+            return out
+
+        says = await immich.asset_detail(row["id"])
+        zkind, zone = zone_source(exif, says if says.get("ok") else {},
+                                  row.get("taken_at"))
+        out["zone"] = zkind
+        out["kind"] = BLANK_FAULT if state == BLANK else ABSENT_FAULT
+
+        prop = propose({
+            "asset": {"id": row.get("id"), "kind": kind,
+                      "taken_at": row.get("taken_at")},
+            "says": says,
+            "outbox": {"present": True, "exif": exif,
+                       "verdict": verdict(exif, kind, says=says,
+                                          taken_at=row.get("taken_at"))},
+        })
+        if not prop.get("needed"):
+            # Nothing can be written: no zone to be had, or Immich holds no
+            # date either. Held all the same, because it is going to land
+            # wrong and saying so is the point -- but marked as the ceiling
+            # rather than as work waiting to be signed off.
+            out["kind"] = UNFIXABLE
+            out["hold"] = True
+            out["why"] = prop.get("why", "")
+            return out
+
+        out["writes"] = prop["writes"]
+        out["hold"] = True
+        out["why"] = prop.get("why", "")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out["why"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        return out
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: applying one correction. The only place in this module that
 # writes, and it writes to the outbox copy and nothing else.
 # ---------------------------------------------------------------------------
@@ -1356,8 +1428,13 @@ async def apply_correction(filename: str) -> dict:
     note = ", ".join(f"{w['tag']}={w['value']}" for w in prop["writes"])
     c = db.connect()
     with db._lock:  # noqa: SLF001
-        c.execute("UPDATE assets SET stamped_at = ?, stamped_note = ? "
-                  "WHERE id = ?", (db.now(), note, rep["asset"]["id"]))
+        # Both: the sentence is for a person reading a trace, and the JSON
+        # is what a future "push this into Immich" would replay. A record
+        # kept only as prose would have to be parsed back into tags.
+        c.execute("UPDATE assets SET stamped_at = ?, stamped_note = ?, "
+                  "                  hold_writes = ? WHERE id = ?",
+                  (db.now(), note, json.dumps(prop["writes"]),
+                   rep["asset"]["id"]))
         c.commit()
         db._bump()  # noqa: SLF001
     db.log("info", f"{filename}: wrote a missing capture date into the "

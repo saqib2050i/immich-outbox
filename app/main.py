@@ -439,6 +439,43 @@ async def diagnose_apply(payload: dict | None = None):
     return await diagnose.apply_correction(str(d.get("filename") or ""))
 
 
+@app.get("/api/dates/held")
+async def dates_held():
+    """Files read on their way past and kept back, with what would be
+    written to each. The whole set at once: a few thousand rows is a few
+    hundred KB, and the page groups and sorts it without another round trip.
+    """
+    return {"held": db.held(), "counts": db.counts()}
+
+
+@app.post("/api/dates/release")
+async def dates_release(payload: dict | None = None):
+    """Sign held files off. They go next, carrying the correction recorded
+    for them."""
+    ids = [str(i) for i in ((payload or {}).get("ids") or []) if i]
+    n = db.release_held(ids)
+    if n:
+        db.log("send", f"{n} held file(s) signed off — queued with their "
+                       "recorded date correction")
+    return {"ok": True, "released": n}
+
+
+@app.get("/api/dates/to-immich")
+async def dates_to_immich():
+    """Corrections written into delivered files that Immich still lacks.
+
+    Read-only, and deliberately so: pushing these back would need an Immich
+    write scope, which invariant 3 does not grant. This is the record of
+    what would be sent if that decision were ever taken.
+    """
+    return {"pending": db.pending_to_immich(), "can_apply": False,
+            "why": "Writing dates back into Immich needs the asset.update "
+                   "scope. This service holds three read scopes and no write "
+                   "— which is what makes 'it cannot alter your library' a "
+                   "fact rather than a promise. Granting it is a decision to "
+                   "take deliberately, not a button to add."}
+
+
 @app.get("/api/date-mismatch")
 async def date_mismatch():
     """Files whose date was corrected in Immich but not in the file."""

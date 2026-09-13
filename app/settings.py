@@ -47,6 +47,11 @@ SPEC: dict[str, tuple[type, object]] = {
     # spans a move. Anything taken before the date is assumed to be at the
     # offset; anything after it, and anything carrying a zone of its own at
     # any date, is left alone. Blank switches the assumption off.
+    # Read each file on its way past and keep back the ones that will land
+    # in Google Photos with the wrong date. Off by default: it holds files
+    # back, and a setting that quietly stops a backup should be one somebody
+    # turned on.
+    "check_dates": (bool, False),
     "assume_zone_before": (str, ""),        # YYYY-MM-DD
     "assume_zone_offset": (str, ""),        # +05:00
     "ongoing_enabled": (bool, True),
@@ -129,6 +134,7 @@ class Settings:
     include_video: bool
     fix_dates: bool
     max_asset_mb: int
+    check_dates: bool
     assume_zone_before: str
     assume_zone_offset: str
     ongoing_enabled: bool
