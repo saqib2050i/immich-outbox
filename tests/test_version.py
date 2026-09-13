@@ -209,3 +209,37 @@ def test_empty_environment_variables_are_treated_as_unset():
     bare = re.findall(r'System\.getenv\("[A-Z_]+"\)\s*\?:', gradle)
     assert not bare, \
         f"bare `System.getenv(...) ?:` cannot survive an empty secret: {bare}"
+
+
+# ---- the app is rebuilt only when the app has changed ---------------------
+
+def test_the_apk_is_reused_when_its_sources_have_not_changed():
+    """Since the version split the APK does not move when the server does,
+    and most runs are server-only -- so most runs rebuilt, from scratch, an
+    APK identical to the one before it, on the critical path because the
+    image bundles the result."""
+    wf = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    assert "actions/cache/restore@" in wf
+    assert "hashFiles('companion/**')" in wf, \
+        "the key must be the app's own sources and nothing else"
+
+
+def test_the_cache_is_written_only_after_a_successful_build():
+    """The combined cache action writes from a post step that runs even when
+    the job failed, which here would store a dist/ holding nothing under
+    these sources' key -- and every later run would hit it, ship no app, and
+    say nothing."""
+    wf = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    assert "actions/cache@" not in wf, "use restore/save, not the combined one"
+    save = wf[wf.index("actions/cache/save@") - 400:]
+    save = save[:save.index("actions/cache/save@") + 200]
+    assert "success()" in save
+    assert "test -s dist/companion.apk" in wf, \
+        "an empty dist/ must never be cached as though it were a build"
+
+
+def test_debug_and_release_do_not_share_a_cache_key():
+    """The same sources signed two different ways are two different files,
+    and which one a run produces depends on whether the secret is there."""
+    wf = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    assert "apk-${{ steps.want.outputs.kind }}-" in wf

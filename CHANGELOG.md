@@ -10,6 +10,30 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.16.1
+
+**The app is rebuilt only when the app has changed.** Since the version
+split the APK does not move when the server does, and nearly every run here
+is server-only — so nearly every run spent about two minutes rebuilding,
+from scratch, an APK byte-identical to the one before it. On the critical
+path, too, because the image bundles the result.
+
+The build is keyed on `companion/**` and nothing else. A change to any file
+under it misses and rebuilds; a server-only change restores what was built
+for those exact sources and skips the JDK, the Android SDK, the signing
+step and Gradle entirely. The recorded build time stays as it was, which is
+when the APK on the phone was actually made.
+
+Debug and release do not share a key: the same sources signed two different
+ways are two different files, and which one a run produces depends on
+whether the signing secret is there.
+
+It uses `restore` and `save` rather than the combined action, and saves only
+after a build that worked. The combined one writes from a post step that
+runs **even when the job has failed** — which here would have stored a
+`dist/` holding nothing under those sources' key, and every later run would
+have hit it, shipped no app, and said nothing.
+
 ## 2.16.0
 
 **A refresh threw away everything the reader had chosen.** The Dates tab

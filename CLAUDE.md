@@ -636,6 +636,15 @@ The button labels the app looks for are a *setting*, not a constant. Google
 renames them, and a rename should be a text field in the dashboard, not a
 new APK.
 
+CI rebuilds the APK only when `companion/**` has changed, and restores what
+was built for those exact sources otherwise -- the version split is what
+makes that safe, since the APK no longer moves when the server does, and
+nearly every run here is server-only. `restore` and `save` rather than the
+combined action, and saved only after a build that worked: the combined one
+writes from a post step that runs even when the job failed, which would
+store an empty `dist/` under those sources' key and leave every later run
+hitting it, shipping no app, and saying nothing.
+
 CI builds the APK and bundles it into the image at `dist/companion.apk`, so
 the phone updates itself from `/app` rather than from a cable. Two things
 follow. **The app keeps its own version in `companion/VERSION`**, separate
