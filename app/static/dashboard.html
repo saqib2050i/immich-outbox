@@ -1098,6 +1098,16 @@
             passed through untouched.</span></div>
         <input type="checkbox" id="s_fix_dates">
       </div>
+      <div class="field">
+        <div class="lab"><label for="s_check_dates">Check each file's date on its way past</label>
+          <span class="hint">Reads every file as it is fetched and keeps back the ones
+            that would land in Google Photos wearing the wrong date. Immich cannot
+            answer this — its date fields come from the Takeout sidecar and say
+            nothing about what is in the file — so only reading the bytes can, and
+            this is the one moment they are here. Held files never reach the outbox
+            or the phone; they wait on the Dates tab for you to sign them off.</span></div>
+        <input type="checkbox" id="s_check_dates">
+      </div>
     </section>
 
     <section class="sgroup" id="set-flow">

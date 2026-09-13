@@ -482,6 +482,38 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                     raise IOError(
                         f"size mismatch: got {size}, expected {row['size']}")
 
+                # The one moment this file's own bytes are here to read.
+                # Immich's metadata cannot say whether it carries a date --
+                # its date fields come from the Takeout sidecar -- so a file
+                # that will land in Google Photos dated today is
+                # indistinguishable from a good one until now.
+                #
+                # Held files are not renamed into the outbox: they never
+                # reach Syncthing, never reach the phone, and cannot be
+                # confirmed. The temp file goes in the `finally` below, so
+                # signing one off downloads it again -- cheap over a LAN,
+                # and it keeps disk use at nothing.
+                if cfg.check_dates:
+                    from . import diagnose
+                    seen = await diagnose.classify(tmp, dict(row))
+                    db.record_check(asset_id, seen)
+                    if seen.get("hold"):
+                        # .get throughout: this runs inside the try that
+                        # marks an asset failed, so a KeyError here would
+                        # record the file as a failed download -- which is
+                        # exactly what it did, after the check had already
+                        # been written, leaving a row that was held and
+                        # failed at once.
+                        db.log("info", f"{filename}: held back — "
+                                       f"{seen.get('why') or seen.get('kind')}")
+                        async with guard:
+                            if BATCH:
+                                BATCH["files_done"] += 1
+                        # `return`, not `continue`: fetch_one handles one
+                        # asset. The `finally` below still runs, so the
+                        # temporary file goes with it.
+                        return
+
                 # Integrity is confirmed against Immich above; only now is
                 # it safe to alter the file, and only its date. Still on the
                 # temporary copy, so Syncthing never sees a partial edit.

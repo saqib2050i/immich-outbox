@@ -15,6 +15,7 @@ State machine for every asset:
     skipped    -> deliberately excluded (oversized, or video when off)
 """ 
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -97,6 +98,24 @@ MIGRATIONS = (
     # the one confusion this whole tool exists to end.
     ("stamped_at", "TEXT"),
     ("stamped_note", "TEXT"),
+    # What reading the file's own bytes found, and when. Immich's metadata
+    # cannot answer this -- its date fields come from the Takeout sidecar
+    # and say nothing about what is in the file -- so the answer is only
+    # knowable once the file has been fetched, and is worth keeping.
+    ("checked_at", "TEXT"),
+    # The checksum it was checked at, so a file replaced in Immich is
+    # checked again instead of trusting an answer about different bytes.
+    ("checked_sum", "TEXT"),
+    # 'blank' | 'absent' | 'unfixable' | 'ok'
+    ("hold_kind", "TEXT"),
+    # Where a zone could be had: 'file' | 'gps' | 'immich' | 'assumed' | 'none'.
+    # The trust axis -- the first two are readings and the fourth is a
+    # decision about where its owner was living.
+    ("hold_zone", "TEXT"),
+    # The proposal, as JSON. Structured rather than a sentence, so a
+    # correction could one day be pushed back into Immich without parsing
+    # English back into tags.
+    ("hold_writes", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -1266,6 +1285,119 @@ def month_detail(month: str) -> dict:
     return {"month": month, "groups": groups}
 
 
+def record_check(asset_id: str, seen: dict) -> None:
+    """What reading the file's own bytes found.
+
+    Kept whether or not it held anything back, because a known-good answer
+    is worth as much as a known-bad one: both save the next pass a download,
+    and the cache is keyed on the checksum so a file replaced in Immich is
+    read again rather than trusted from an answer about other bytes.
+    """
+    hold = bool(seen.get("hold"))
+    state = "held" if hold else None
+    writes = seen.get("writes") or []
+    c = connect()
+    with _lock:
+        c.execute(
+            "UPDATE assets SET checked_at = ?, checked_sum = ?, hold_kind = ?,"
+            "                  hold_zone = ?, hold_writes = ?"
+            # The name is reserved before the download, so a held file
+            # carries one for a file that was never written. Cleared with
+            # the state: a row naming a file that is not there is the shape
+            # of a delivery that went missing, and nothing should have to
+            # tell those two apart later.
+            + (", state = ?, outbox_name = NULL" if state else "")
+            + " WHERE id = ?",
+            ([seen.get("checked_at") or now(), seen.get("checked_sum"),
+              seen.get("kind"), seen.get("zone"),
+              json.dumps(writes) if writes else None]
+             + ([state] if state else []) + [asset_id]))
+        c.commit()
+        _bump()
+
+
+def release_held(ids: list[str]) -> int:
+    """Sign held files off: back to pending, and forced so they go next.
+
+    They keep their recorded proposal -- the feeder reads it on the way past
+    to know what to write, and it is the record of what was decided.
+    """
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"""UPDATE assets SET state='pending', forced=1, attempts=0,
+                                  last_error=NULL
+                 WHERE id IN ({marks}) AND state='held'""", ids)
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
+def held(limit: int = 5000) -> list[dict]:
+    """Everything read and kept back, with what would be written to it.
+
+    The whole set at once and grouped in the browser: a few thousand rows is
+    a few hundred KB, and paging it server-side would make every regroup a
+    round trip to answer a question the page already has the data for.
+    """
+    rows = connect().execute(
+        """SELECT id, filename, taken_at, kind, size, hold_kind, hold_zone,
+                  hold_writes, checked_at, state, confirmed_at, stamped_at
+             FROM assets
+            WHERE state = 'held'
+            ORDER BY taken_at DESC, filename ASC
+            LIMIT ?""", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["writes"] = json.loads(d.pop("hold_writes") or "[]")
+        except ValueError:
+            d["writes"] = []
+        # Already in Google Photos wearing the wrong date. Split out hard
+        # rather than offered as a grouping: correcting one of these means
+        # clearing the old copy from Google Photos first, which is a
+        # different action and somebody else's to take.
+        d["already_sent"] = bool(d.pop("confirmed_at"))
+        out.append(d)
+    return out
+
+
+def pending_to_immich(limit: int = 5000) -> list[dict]:
+    """Corrections written into a delivered file that Immich still lacks.
+
+    Every one of these is a date this service worked out and wrote into the
+    outbox copy on its way past. Immich's own file is untouched, deliberately
+    -- invariant 3 gives this service three read scopes and no write -- so
+    Immich goes on showing a date it holds only in its database while the
+    file beside it has none.
+
+    Kept as a list because closing that gap is a decision nobody has taken
+    yet: pushing these back would need `asset.update`, which is an invariant
+    to change rather than a feature to add. Until then this is the record of
+    what would be sent, and it is structured so it could be.
+    """
+    rows = connect().execute(
+        """SELECT id, filename, taken_at, kind, stamped_at, stamped_note,
+                  hold_writes, hold_zone, state
+             FROM assets
+            WHERE stamped_at IS NOT NULL
+            ORDER BY stamped_at DESC
+            LIMIT ?""", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["writes"] = json.loads(d.pop("hold_writes") or "[]")
+        except ValueError:
+            d["writes"] = []
+        out.append(d)
+    return out
+
+
 def force_send_month(month: str, group: str | None = None,
                      resend: bool = False) -> int:
     """Queue a period, or one of its four categories, ahead of everything else.
@@ -1501,7 +1633,10 @@ def counts() -> dict:
     c = connect()
     out = {r["state"]: r["n"] for r in c.execute(
         "SELECT state, COUNT(*) n FROM assets GROUP BY state")}
-    for s in ("pending", "queued", "confirmed", "failed", "skipped"):
+    # 'held' is listed so it cannot vanish from a total. A state missing
+    # here is counted in nothing and shows as a gap between figures that
+    # should add up.
+    for s in ("pending", "queued", "confirmed", "failed", "skipped", "held"):
         out.setdefault(s, 0)
     out["outbox_bytes"] = c.execute(
         "SELECT COALESCE(SUM(size),0) b FROM assets WHERE state='queued'").fetchone()["b"]
