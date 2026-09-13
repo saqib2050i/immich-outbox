@@ -10,6 +10,30 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.11.1
+
+**A corrected file still read as a broken one.** Tracing a file that phase
+3 had just fixed came back with two warnings and a cross: *Immich knows
+when this was taken and the file does not*, *no zone in the file*, and
+*Immich's original — its own metadata would not date it*. All three were
+true of Immich's untouched original and none of them true of the file
+actually going to the phone, which was sitting one line below being
+reported as correct.
+
+One line caused it. Every date and zone finding read `ref`, and `ref`
+preferred Immich's copy — which can *never* carry a correction, because not
+touching Immich is the whole of invariant 3. The findings are about the
+delivered copy now, and fall back to Immich's only when there is not one.
+
+And Immich's own verdict is context rather than a score once a delivered
+copy exists. It will always read as undated for exactly the files this tool
+corrects, so marking it pass/fail put a cross beside a file that had just
+been fixed. It is drawn muted, with no tick or cross, and the outbox copy —
+the one that reaches Google Photos — carries the answer.
+
+Before a correction, with nothing in the outbox to defer to, Immich's
+verdict is still the answer and still scored. A test holds each half.
+
 ## 2.11.0
 
 **A free-up that takes minutes is now watched to the end.** Clearing

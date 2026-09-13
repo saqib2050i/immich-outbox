@@ -610,6 +610,10 @@
     border:1px solid var(--rule);border-radius:var(--r-sm);padding:10px 12px;
     font-size:12.5px;line-height:1.55}
   .vrow.bad{border-color:var(--alarm)}
+  /* Context, not a verdict: Immich's untouched original beside a delivered
+     copy that has been corrected. */
+  .vrow.note{opacity:.62}
+  .vrow.note .vm{color:var(--dim)}
   .vrow .vm{font-weight:700}
   .vrow.good .vm{color:var(--done)}
   .vrow.bad .vm{color:var(--alarm)}
@@ -3001,7 +3005,9 @@ function renderTrace(d){
     row.className = f.level === "bad" ? "fail" : f.level === "ok" ? "pass" : "";
     const mark = document.createElement("span");
     mark.className = "mark";
-    mark.textContent = f.level === "bad" ? "✕" : f.level === "ok" ? "✓" : "!";
+    mark.textContent = f.level === "bad" ? "✕"
+                     : f.level === "ok" ? "✓"
+                     : f.level === "note" ? "·" : "!";
     const det = document.createElement("span");
     det.className = "det";
     det.textContent = f.text;
@@ -3016,14 +3022,20 @@ function renderTrace(d){
   const copies = [["Immich's original", d.immich], ["In the outbox", d.outbox]];
   const vl = document.createElement("div");
   vl.className = "vlist";
+  // Immich's original is context once there is a copy in the outbox: the
+  // outbox copy is what reaches the phone, and Immich's is never corrected
+  // because correcting it is forbidden. Marking it pass/fail put a cross
+  // beside a file that had just been fixed.
+  const shipping = !!((d.outbox || {}).verdict);
   copies.forEach(([who, copy]) => {
     const v = (copy || {}).verdict;
     if (!v) return;
+    const context = shipping && who === "Immich's original";
     const row = document.createElement("div");
-    row.className = "vrow " + (v.dated ? "good" : "bad");
+    row.className = "vrow " + (context ? "note" : v.dated ? "good" : "bad");
     const mark = document.createElement("span");
     mark.className = "vm";
-    mark.textContent = v.dated ? "✓" : "✕";
+    mark.textContent = context ? "·" : v.dated ? "✓" : "✕";
     const body = document.createElement("div");
     const head = document.createElement("b");
     head.textContent = who + " — " + v.headline;

@@ -915,7 +915,17 @@ def _findings(rep: dict) -> list[dict]:
             out.append({"level": "bad", "text": f"Could not read {where}: {err}"})
 
     kind = asset.get("kind")
-    ref = src if src and "error" not in src else dst
+    # The delivered copy first, and Immich's only when there is not one.
+    #
+    # Every date and zone finding below is about one file, and the file that
+    # matters is the one that reaches the phone. Preferring Immich's copy
+    # meant they all described the untouched original -- which, once a
+    # correction has been written, can never carry it, because not touching
+    # Immich is the whole of invariant 3. A corrected file came back reading
+    # "Immich knows when this was taken and the file does not" and "no zone
+    # in the file", both stale, both alarming, directly above a green line
+    # saying the outbox copy was now dated correctly.
+    ref = dst if dst and "error" not in dst else src
 
     # 1. The question the whole thing is for: will Google Photos read a date
     #    out of this, or file it under the upload? Asked of each copy that
@@ -936,7 +946,15 @@ def _findings(rep: dict) -> list[dict]:
         # a reader should not be told the same thing twice. The line stays
         # in the findings list: that list is the machine-readable answer and
         # the thing that must never come back empty.
-        out.append({"level": v["level"], "kind": "verdict",
+        # Once there is a delivered copy, it is the answer and Immich's is
+        # background. Immich's original will always read as undated for
+        # exactly the files this tool corrects -- correcting it is
+        # forbidden -- so scoring it pass/fail puts a cross beside a file
+        # that has just been fixed.
+        context = (where == "Immich's original"
+                   and isinstance((rep.get("outbox") or {}).get("exif"), dict))
+        out.append({"level": "note" if context else v["level"],
+                    "kind": "verdict", "context": context,
                     "text": f"{where}: {v['headline']}. {v['reason']}"})
 
     # 2. And having a date is not the same as having the right one.
@@ -1422,10 +1440,12 @@ async def trace(filename: str, send: bool = False) -> dict:
     # One corrected wall clock, computed once and handed to the page, so it
     # cannot print a different time from the findings beneath it.
     if (rep.get("says") or {}).get("ok"):
-        ref = (rep["immich"].get("exif") if isinstance(
-            rep["immich"].get("exif"), dict) else None) or {}
-        if "error" in ref:
-            ref = (rep["outbox"].get("exif") or {})
+        # Same order as _findings, and for the same reason: the corrected
+        # copy is the one whose zone the page should be reading.
+        ref = (rep["outbox"].get("exif") if isinstance(
+            rep["outbox"].get("exif"), dict) else None) or {}
+        if not ref or "error" in ref:
+            ref = (rep["immich"].get("exif") or {})
         local, off, zkind = wall_clock(rep["says"], ref, row.get("taken_at"))
         rep["says"]["wall_clock"] = (
             local.strftime("%Y-%m-%d %H:%M:%S") if local else None)
