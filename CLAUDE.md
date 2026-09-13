@@ -183,6 +183,14 @@ anywhere to share one from. Three things in it are load-bearing:
   source order. `.grid{display:grid}` did that and put the Overview cards on
   every tab; `.setwrap{display:grid}` did it earlier and put the entire
   settings form there. Two tests guard this.
+- **A send button counts `resting`, never `remaining`.** Forcing does not
+  change a file's state, so `remaining` reads the same before and after and
+  the button cannot report its own success -- it said "Send 1,620" over a
+  year that had just been asked for, and pressing again did the same
+  nothing. `resting` is what nobody has asked for yet, so asking takes it to
+  zero and the button disappears. The control repaints with the figures for
+  the same reason: the timeline rebuilds its structure only when months
+  appear or vanish, so anything left to a rebuild keeps a stale number.
 - **Sending is one builder, called from three places.** Year, month and
   category each drew their own controls and drifted: the year had none, the
   month's lived inside its own expanded body, and a category could send but

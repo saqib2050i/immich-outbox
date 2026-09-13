@@ -2168,17 +2168,25 @@ async function drawTimeline(){
     const yi = document.createElement("i");
     yb.appendChild(yi);
     paintYearFigures({yf, yi}, list);
-    tlYearRows.set(year, {yf, yi});
-    // No spacer: `summary::before` is itself the first grid item, and a
-    // fourth span pushed the figures onto a second row.
+
+    // `resting`, not `remaining`. Forcing a file does not change its state,
+    // so a count of everything pending cannot move when you press the
+    // button -- it said "Send 1,620" before and after, and pressing again
+    // did the same nothing. `resting` is what nobody has asked for yet, so
+    // asking takes it to zero.
+    //
     // Hidden while the year is open: with the months on screen, "send the
     // year" is a question about things you are already looking at
     // individually, and the answer belongs beside each of them.
     const yc = sendControls(year, null, {
-      remaining: list.reduce((a, m) => a + (m.remaining || 0) + (m.dismissed || 0), 0),
+      remaining: list.reduce(
+        (a, m) => a + (m.resting || 0) + (m.dismissed || 0), 0),
       confirmed: list.reduce((a, m) => a + (m.confirmed || 0), 0),
     });
     yc.classList.add("whenshut");
+    tlYearRows.set(year, {yf, yi, ctl: yc});
+    // No spacer: `summary::before` is itself the first grid item, and a
+    // fourth span pushed the figures onto a second row.
     ys.append(yn, yf, yc, yb);
     yd.appendChild(ys);
 
@@ -2582,15 +2590,36 @@ function sendControls(period, group, counts, opts){
 
   if (left > 0){
     const b = document.createElement("button");
-    b.textContent = (opts && opts.short ? "Send " : "Send ") + fmtNum(left);
+    b.textContent = "Send " + fmtNum(left);
     b.title = "Queue these ahead of everything else";
+    let busy = false;
     b.onclick = async () => {
+      busy = true;
       b.disabled = true;
-      const was = b.textContent; b.textContent = "Queuing";
+      b.textContent = "Queuing";
       try { await sendPeriod(period, group, false); }
-      finally { b.textContent = was; b.disabled = false; }
+      finally { busy = false; b.disabled = false; }
+      // The old label is deliberately not restored. The count is of files
+      // nobody has asked for yet, so a successful press takes it to zero
+      // and the repaint below hides the button. Putting the number back
+      // said "Send 1,620" over a year that had just been asked for, with
+      // no way to tell whether the press had registered.
     };
     wrap.appendChild(b);
+    // Repainted in place with the figures, like everything else on these
+    // rows: the structure only rebuilds when months appear or vanish, so a
+    // control left to a rebuild keeps a stale number indefinitely.
+    //
+    // Guarded by a flag rather than by reading the label back. Sniffing for
+    // "Queuing" also matched a button that had *finished* queuing, so once
+    // a count came back -- a rescan finding more, a send taking some back --
+    // it would refuse to relabel it and leave "Queuing" on screen for good.
+    wrap.repaint = counts2 => {
+      if (busy) return;
+      const n = counts2.remaining || 0;
+      b.hidden = n <= 0;
+      if (n > 0) b.textContent = "Send " + fmtNum(n);
+    };
   }
 
   // The only route back for something already backed up, so it asks first.
@@ -2680,10 +2709,20 @@ function paintFigures(months, years){
     paintMonthTags(row.tags, m);
     paintMonthBar(row.bar, m);
     row.md.classList.toggle("done", m.total > 0 && m.confirmed === m.total);
+    // The send control is a figure too. Left to the structure rebuild it
+    // kept whatever number it was born with, which after a send is the one
+    // number that is certainly wrong.
+    if (row.ctl && row.ctl.repaint)
+      row.ctl.repaint({remaining: (m.resting || 0) + (m.dismissed || 0)});
   }
   for (const [year, list] of years){
     const row = tlYearRows.get(year);
-    if (row) paintYearFigures(row, list);
+    if (row){
+      paintYearFigures(row, list);
+      if (row.ctl && row.ctl.repaint)
+        row.ctl.repaint({remaining: list.reduce(
+          (a, m) => a + (m.resting || 0) + (m.dismissed || 0), 0)});
+    }
   }
 }
 
@@ -2724,7 +2763,7 @@ function monthNode(m, openMonths){
   // the expanded body, so sending a month meant opening it first and
   // scrolling past everything in it.
   const mc = sendControls(m.month, null, {
-    remaining: (m.remaining || 0) + (m.dismissed || 0),
+    remaining: (m.resting || 0) + (m.dismissed || 0),
     confirmed: m.confirmed || 0,
   });
   mc.classList.add("whenshut");
@@ -2736,7 +2775,7 @@ function monthNode(m, openMonths){
   bar.className = "mb";
   paintMonthBar(bar, m);
 
-  tlMonthRows.set(m.month, {md, right, tags, bar});
+  tlMonthRows.set(m.month, {md, right, tags, bar, ctl: mc});
   sum.append(nm, mid, right, tags, mc, bar);
   md.appendChild(sum);
 
@@ -2801,8 +2840,10 @@ function paintMonthBody(m, host, d){
     // send what was left and then, once nothing was, said "all sent" and
     // offered no way back -- the only control here that could not undo what
     // it had just done.
+    // `resting`, like the month and year rows above: a count including
+    // files already asked for cannot move when the button is pressed.
     const cc = sendControls(m.month, g.group, {
-      remaining: g.remaining + (g.dismissed || 0),
+      remaining: (g.resting || 0) + (g.dismissed || 0),
       confirmed: g.confirmed || 0,
     });
     if (g.dismissed && cc.firstChild){
@@ -2815,7 +2856,8 @@ function paintMonthBody(m, host, d){
   });
 
   const groups = d.groups || [];
-  const remaining = groups.reduce((a, g) => a + g.remaining + (g.dismissed || 0), 0);
+  const remaining = groups.reduce(
+    (a, g) => a + (g.resting || 0) + (g.dismissed || 0), 0);
   const excludable = groups.reduce((a, g) => a + g.remaining, 0);
   const confirmed = groups.reduce((a, g) => a + g.confirmed, 0);
 
@@ -3007,8 +3049,12 @@ async function toggleMonth(month, host, btn){
       // The same pair as every other level. A category could send what was
       // left and then, once nothing was, said "all sent" and offered no way
       // back -- the one control that could not undo what it had just done.
+      // Same source as every other level: /api/month/{month}, and the same
+      // field. A count including files already asked for cannot move when
+      // the button is pressed.
       const cc = sendControls(month, g.group,
-                              {remaining: g.remaining, confirmed: g.confirmed});
+                              {remaining: (g.resting || 0) + (g.dismissed || 0),
+                               confirmed: g.confirmed});
       if (cc.children.length) el.appendChild(cc);
       else el.appendChild(Object.assign(document.createElement("span"),
         {className:"cfig", textContent:"all sent"}));

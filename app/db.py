@@ -1254,6 +1254,15 @@ def month_detail(month: str) -> dict:
                SUM(CASE WHEN state = 'queued'    THEN 1 ELSE 0 END)  AS queued,
                SUM(CASE WHEN state IN ('pending','failed') THEN 1 ELSE 0 END)
                                                                      AS remaining,
+               -- What nobody has asked for yet. `remaining` counts files
+               -- already forced too, so a button counting it cannot move
+               -- when pressed -- it read "Send 1,620" before and after, and
+               -- pressing again did the same nothing. Forcing turns resting
+               -- into sending, so a count of resting goes to zero and the
+               -- button can say so by disappearing.
+               SUM(CASE WHEN state IN ('pending','failed')
+                         AND forced = 0 AND NOT {ELIGIBLE_SQL}
+                        THEN 1 ELSE 0 END)                            AS resting,
                -- Counted separately so a dismissed month cannot read as
                -- finished, and so the send button knows there is still
                -- something it can be asked to send.
@@ -1263,9 +1272,9 @@ def month_detail(month: str) -> dict:
         FROM assets
         WHERE id NOT IN (SELECT id FROM motion_parts)
           AND missing_at IS NULL
-          AND substr(taken_at, 1, 7) = ?
+          AND substr(taken_at, 1, 7) = :month
         GROUP BY kind, gains
-    """, (month,)).fetchall()
+    """, {"month": month, **_window_params()}).fetchall()
 
     groups = []
     for r in rows:

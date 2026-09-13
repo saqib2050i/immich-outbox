@@ -487,3 +487,31 @@ def test_the_page_names_every_phase_the_feeder_sets():
     set_by.add("fetching")          # the starting value, set on the entry
     named = set(re.findall(r'^\s+(\w+):\s+"', block, re.M))
     assert set_by <= named, f"the feeder sets phases the page cannot name: {set_by - named}"
+
+
+def test_every_send_control_counts_what_has_not_been_asked_for():
+    """`remaining` counts files already forced, so a button reading it
+    cannot move when pressed: it said "Send 1,620" before and after, and
+    pressing again did the same nothing. Forcing turns resting into
+    sending, so a count of resting goes to zero and the button says so by
+    disappearing."""
+    for call in re.findall(r"sendControls\([^;]*?\);", HTML, re.S):
+        if "remaining:" not in call:
+            continue
+        # The key is `remaining:`; what matters is which field it reads.
+        assert ".remaining" not in call, \
+            f"reads .remaining, which includes files already asked for:\n{call}"
+        assert ".resting" in call, f"reads neither:\n{call}"
+
+
+def test_a_send_control_repaints_with_the_figures():
+    """Left to the structure rebuild it keeps whatever number it was born
+    with, which after a send is the one number certainly wrong."""
+    src = HTML[HTML.index("function sendControls("):]
+    src = src[:src.index("\nfunction monthFigureText")]
+    assert "wrap.repaint" in src
+    assert "if (busy) return;" in src, \
+        "reading the label back also matched a button that had finished"
+    paint = HTML[HTML.index("function paintFigures("):]
+    paint = paint[:paint.index("function monthNode(")]
+    assert paint.count("repaint(") == 2, "months and years both"
