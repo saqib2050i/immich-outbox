@@ -67,7 +67,8 @@ def test_the_camera_name_is_read_as_a_local_time(name, when):
 
 def _report(src, dst=None, name="PXL_20230101_025759225.jpg", **asset_over):
     a = {"state": "queued", "taken_at": None, "exif_taken_at": None,
-         "date_mismatch": 0, "forced": 0, "outbox_name": name}
+         "date_mismatch": 0, "forced": 0, "outbox_name": name,
+         "stamped_at": None, "stamped_note": None}
     a.update(asset_over)
     rep = {"filename": name, "asset": a,
            "immich": {"ok": True, "bytes": 100, "sha256": "aaa", "exif": src}}
@@ -343,11 +344,16 @@ def test_a_pakistan_era_still_is_not_shifted_five_hours(rig):
     every GMT+5 photo in this library look five hours wrong. It is the same
     error the filename check already had to be corrected for."""
     from app import diagnose
+    # As the live API actually returns it. A localDateTime five hours from
+    # fileCreatedAt with no zone named is an impossible payload: that gap is
+    # Immich having applied one.
     says = {"ok": True, "local_date_time": "2024-01-05T08:47:33.000Z",
-            "file_created_at": "2024-01-05T03:47:33.000Z"}
+            "file_created_at": "2024-01-05T03:47:33.000Z",
+            "time_zone": "Asia/Karachi"}
     out = diagnose._agrees_with_immich(
         {"EXIF:DateTimeOriginal": "2024:01:05 08:47:33",
-         "EXIF:OffsetTimeOriginal": "+05:00"}, says, "IMAGE")
+         "EXIF:OffsetTimeOriginal": "+05:00"}, says, "IMAGE",
+        "2024-01-05T03:47:33.000Z")
     assert out["level"] == "ok", out
 
 
@@ -1368,3 +1374,195 @@ async def test_the_trace_carries_the_proposal(rig):
     # rather than returning an empty box.
     assert rep["proposal"]["needed"] is False
     assert rep["proposal"]["why"]
+
+
+# ---- phase 3: applying one correction ------------------------------------
+#
+# The only write in this module. It touches the outbox copy and nothing
+# else: Immich stays read-only, the ledger records that the difference was
+# deliberate, and the file is read back before anything is claimed.
+
+async def _in_outbox(rig, name="IMG_0001.jpg", **over):
+    """A ledger row with a real file behind it in the outbox."""
+    import os
+    import shutil
+    from app import config, db
+    db.upsert_assets([asset(1, name=name, taken="2024-01-01T06:20:38.000Z")])
+    src = os.path.join(os.path.dirname(__file__), "..", "app", "static",
+                       "dashboard.html")
+    path = os.path.join(config.OUTBOX_DIR, name)
+    shutil.copyfile(src, path)          # stands in for a photo
+    c = db.connect()
+    sets = {"state": "queued", "outbox_name": name,
+            "taken_at": "2024-01-01T06:20:38.000Z"}
+    sets.update(over)
+    c.execute(f"UPDATE assets SET {', '.join(k + '=?' for k in sets)} "
+              "WHERE id='asset-1'", tuple(sets.values()))
+    c.commit()
+    return path
+
+
+async def test_a_correction_needs_an_outbox_copy_to_apply_to(rig):
+    """It is applied to the file on its way to the phone, never to Immich's
+    original -- so with nothing in the outbox there is nothing to correct."""
+    from app import db, diagnose
+    db.upsert_assets([asset(1, name="IMG_0001.jpg")])
+    out = await diagnose.apply_correction("IMG_0001.jpg")
+    assert out["ok"] is False
+    assert "never to Immich's original" in out["text"]
+
+
+async def test_a_name_that_matches_nothing_writes_nothing(rig):
+    from app import diagnose
+    out = await diagnose.apply_correction("ghost.jpg")
+    assert out["ok"] is False and "ghost.jpg" in out["text"]
+
+
+async def test_applying_re_derives_rather_than_trusting_the_page(rig):
+    """A proposal describes a file as it was, and the file can have moved
+    on. The trace and the proposal are both recomputed here."""
+    import inspect
+    from app import diagnose
+    body = inspect.getsource(diagnose.apply_correction)
+    assert "await trace(" in body
+    assert "read_exif(" in body, "and the file is re-read before writing"
+
+
+async def test_a_date_that_is_already_there_is_never_overwritten(rig, monkeypatch):
+    """Checked against the file at the moment of writing, not against the
+    report that was drawn a minute earlier."""
+    from app import diagnose
+    calls = []
+
+    async def fake_trace(name, send=False):
+        return {"filename": name,
+                "asset": {"id": "asset-1", "kind": "IMAGE",
+                          "taken_at": "2024-01-01T06:20:38.000Z"},
+                "outbox": {"present": True, "path": "/nonexistent"},
+                "proposal": {"needed": True, "writes": [
+                    {"tag": "DateTimeOriginal", "value": "2024:01:01 11:20:38",
+                     "from": "x"}]}}
+
+    # monkeypatch, not assignment: these are module attributes, and a test
+    # that swaps one and forgets to put it back leaves the next test
+    # inspecting a lambda.
+    monkeypatch.setattr(diagnose, "trace", fake_trace)
+    monkeypatch.setattr(diagnose, "read_exif",
+                        lambda p: {"EXIF:DateTimeOriginal": "2019:05:05 10:00:00"})
+    monkeypatch.setattr(diagnose, "_stamp",
+                        lambda *a: (calls.append(a), (True, ""))[1])
+    out = await diagnose.apply_correction("IMG_0001.jpg")
+
+    assert out["ok"] is False
+    assert "never overwritten" in out["text"]
+    assert calls == [], "nothing was written"
+
+
+async def test_the_ledger_records_a_deliberate_correction(rig, monkeypatch):
+    """Because from the trace's side a corrected file and a corrupted one
+    look identical, and telling those apart is the whole point of it."""
+    from app import db, diagnose
+    path = await _in_outbox(rig)
+    reads = iter([{"EXIF:Software": "x"},
+                  {"EXIF:DateTimeOriginal": "2024:01:01 11:20:38"}])
+
+    async def fake_trace(name, send=False):
+        return {"filename": name,
+                "asset": {"id": "asset-1", "kind": "IMAGE",
+                          "taken_at": "2024-01-01T06:20:38.000Z"},
+                "outbox": {"present": True, "path": path},
+                "proposal": {"needed": True, "writes": [
+                    {"tag": "DateTimeOriginal", "value": "2024:01:01 11:20:38",
+                     "from": "Immich's localDateTime"}]}}
+
+    monkeypatch.setattr(diagnose, "trace", fake_trace)
+    monkeypatch.setattr(diagnose, "read_exif", lambda p: next(reads))
+    monkeypatch.setattr(diagnose, "_stamp", lambda *a: (True, ""))
+    out = await diagnose.apply_correction("IMG_0001.jpg")
+    assert out["ok"] is True, out
+    assert "read back" in out["text"]
+
+    row = dict(db.connect().execute(
+        "SELECT * FROM assets WHERE id='asset-1'").fetchone())
+    assert row["stamped_at"]
+    assert "DateTimeOriginal=2024:01:01 11:20:38" in row["stamped_note"]
+
+
+def test_a_stamped_difference_is_not_reported_as_damage(rig):
+    """Invariant 2a's alarm would otherwise fire on a file this service
+    deliberately corrected."""
+    from app import diagnose
+    rep = _report({"EXIF:DateTimeOriginal": ""},
+                  {"EXIF:DateTimeOriginal": "2024:01:01 11:20:38"},
+                  stamped_at="2026-09-13T10:00:00Z",
+                  stamped_note="DateTimeOriginal=2024:01:01 11:20:38")
+    rep["outbox"]["sha256"] = "bbb"
+    out = diagnose._findings(rep)
+    assert any("written into it here" in f["text"] and f["level"] == "ok"
+               for f in out), out
+    # Immich's own copy is still undated and still says so; what must not
+    # appear is the integrity alarm about the two differing.
+    assert not [f for f in out if f["level"] == "bad"
+                and "differs from Immich's original" in f["text"]], out
+
+
+def test_an_unexplained_difference_is_still_an_alarm(rig):
+    """The guard has to keep working for everything that is not this."""
+    from app import diagnose, settings
+    settings.save({"fix_dates": False})
+    rep = _report({"EXIF:DateTimeOriginal": "2023:01:01 02:57:59"},
+                  {"EXIF:DateTimeOriginal": "2023:01:01 07:57:59"})
+    rep["outbox"]["sha256"] = "bbb"
+    out = diagnose._findings(rep)
+    assert any(f["level"] == "bad" and "rewriting is OFF" in f["text"]
+               for f in out), out
+
+
+async def test_a_stamped_file_is_never_sent_to_google_photos_twice(rig):
+    """The re-send exception rests on the bytes being unchanged. A stamped
+    file's are not, so Google Photos sees one it has never held."""
+    from app import diagnose
+    out = await diagnose._send_now(_row(state="confirmed",
+                                        stamped_at="2026-09-13T10:00:00Z"))
+    assert out["ok"] is False and out["moved"] is False
+    assert "second copy" in out["text"]
+
+
+def test_the_write_never_edits_a_file_where_it_lies(rig):
+    """The outbox is a Syncthing folder. A file edited in place is one
+    Syncthing may start transferring halfway through the edit."""
+    import inspect
+    from app import diagnose
+    body = inspect.getsource(diagnose._stamp)
+    assert "mkstemp" in body and "os.replace" in body
+    assert 'prefix=".partial-"' in body, "the name sweep_partials knows"
+    assert "dir=config.OUTBOX_DIR" in body, "inside the outbox, or EXDEV"
+
+
+def test_immich_applying_a_zone_is_visible_in_the_numbers(rig):
+    """localDateTime is fileCreatedAt converted through Immich's zone, so
+    the two differing IS Immich having applied one -- stronger than the
+    label, because it cannot be out of step with the numbers beside it."""
+    from app import diagnose
+    assert diagnose._immich_knew_the_zone(
+        {"local_date_time": "2024-01-05T08:47:33.000Z",
+         "file_created_at": "2024-01-05T03:47:33.000Z"}) is True
+    assert diagnose._immich_knew_the_zone(
+        {"local_date_time": "2024-01-01T06:30:52.000Z",
+         "file_created_at": "2024-01-01T06:30:52.000Z",
+         "time_zone": "UTC+0"}) is False
+
+
+def test_a_corrected_file_is_not_then_accused_of_disagreeing(rig):
+    """The bug this found: stamping a file gave it a zone, which flipped
+    the wall-clock derivation, and the next trace reported the file as five
+    hours from Immich -- exactly the correction just applied on purpose."""
+    from app import diagnose
+    _rule(rig)
+    says = dict(BLIND_SAYS, file_created_at="2024-01-01T06:29:52.000Z",
+                local_date_time="2024-01-01T06:29:52.000Z")
+    stamped = {"EXIF:DateTimeOriginal": "2024:01:01 11:29:52",
+               "EXIF:OffsetTimeOriginal": "+05:00"}
+    out = diagnose._agrees_with_immich(stamped, says, "IMAGE",
+                                       "2024-01-01T06:29:52.000Z")
+    assert out["level"] == "ok", out

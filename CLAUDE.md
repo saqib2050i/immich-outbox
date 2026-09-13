@@ -35,15 +35,40 @@ and `reconcile()` must keep returning early while it is missing.
 phone's queue folder, so capping the outbox caps the phone. Never add a code
 path that writes past the cap.
 
-**2a. The file is passed through byte for byte — with one exception.**
+**2a. The file is passed through byte for byte — with two exceptions, both
+deliberate and both recorded.**
 When a date has been corrected in Immich, that correction lives in Immich's
 database and `/original` still serves the untouched file, so Google Photos
 would use the stale embedded date. `rewrite_capture_date()` writes the
 corrected date in, and only then. It runs on the temp file after the size
 check, so integrity is verified against Immich before anything is altered
 and Syncthing never sees a partial edit. A file whose own date agrees with
-Immich, or which carries no date at all, is never touched. Turned off with
-the `fix_dates` setting.
+Immich, or which carries no date at all, is never touched by it. Turned off
+with the `fix_dates` setting.
+
+The second is `diagnose.apply_correction()`, one file at a time, from a
+button in Tools. It writes a capture date into a file that has *none* — the
+opposite population to the rule above, and the reason Google Photos dates a
+Takeout-imported library to the day it was uploaded. It never overwrites a
+date that is already there, and it checks that against the file at the
+moment of writing rather than against the report on screen.
+
+Both write to the outbox copy and never to Immich, and both go through a
+`.partial-` dotfile inside the outbox followed by `os.replace`, so
+Syncthing never sees a partial edit. `sweep_partials()` already knows both
+names a crash can leave behind.
+
+**A deliberate correction is recorded, because otherwise it is
+indistinguishable from damage.** `stamped_at` and `stamped_note` in the
+ledger are what let `trace()` say "this differs from Immich because a date
+was written into it here" instead of raising the alarm above — and telling
+a corrected file from a corrupted one is the entire purpose of that tool,
+so adding a fresh way to confuse the two while fixing one would be
+careless. An unexplained difference is still an alarm.
+
+It also narrows the re-send exception under invariant 4: that rests on the
+bytes being unchanged, and a stamped file's are not, so a confirmed file
+carrying `stamped_at` is refused again.
 
 **2b. The companion presses a button; it never deletes.** `companion.py`
 and the phone app exist to make files leave the outbox *sooner*, by tapping
@@ -269,6 +294,20 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 `exifInfo.make` and `.model` come back as `""` rather than null on a file
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
+
+**Immich's `localDateTime` is the wall clock only where Immich knew a
+zone.** It is `fileCreatedAt` converted through `exifInfo.timeZone`, so
+where that was the UTC fallback the two are the same number and the true
+wall clock is that plus the offset. `_immich_knew_the_zone()` decides, and
+asks three things: coordinates, a non-UTC `timeZone`, and finally whether
+`localDateTime` and `fileCreatedAt` differ at all -- which they can only do
+if Immich applied a zone, and which cannot be out of step with the numbers
+beside it.
+
+Keying that on *our* provenance instead was a live bug: correcting a file
+gave it an `OffsetTimeOriginal`, which flipped the derivation, and the very
+next trace accused the file of being five hours from Immich -- exactly the
+correction it had just been given on purpose.
 
 **Proposing a correction (phase 2).** `diagnose.propose()` describes what
 would be written and writes nothing -- a test asserts its source contains

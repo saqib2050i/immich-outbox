@@ -3089,6 +3089,37 @@ function renderTrace(d){
       p.textContent = prop.untouched;
       box.appendChild(p);
     }
+
+    // The write. Deliberately inside the proposal rather than beside the
+    // trace: the only way to reach it is to have opened the suggestion and
+    // read what it would do.
+    const doit = document.createElement("div");
+    doit.className = "act";
+    doit.style.marginTop = "12px";
+    const apply = document.createElement("button");
+    apply.textContent = "Write this into the outbox copy";
+    const said = document.createElement("p");
+    said.className = "propwhy";
+    apply.onclick = async () => {
+      apply.disabled = true;
+      said.textContent = "Writing, then reading it back…";
+      try {
+        const r = await fetch("/api/diagnose/apply", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({filename: (d.filename || "").trim()})});
+        const out = await r.json();
+        said.textContent = out.text || "No answer from the server.";
+        said.style.color = out.ok ? "var(--done)" : "var(--alarm)";
+        if (out.ok && out.trace) setTimeout(() => runTrace(false), 900);
+      } catch (e) {
+        said.textContent = "Could not reach the server.";
+        said.style.color = "var(--alarm)";
+      } finally {
+        apply.disabled = false;
+      }
+    };
+    doit.appendChild(apply);
+    box.append(doit, said);
   } else if (prop.why){
     traceOut.appendChild(traceLine("Correction: " + prop.why));
   }
