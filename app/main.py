@@ -445,7 +445,12 @@ async def dates_held():
     written to each. The whole set at once: a few thousand rows is a few
     hundred KB, and the page groups and sorts it without another round trip.
     """
-    return {"held": db.held(), "counts": db.counts()}
+    return {"held": db.held(), "counts": db.counts(),
+            # An empty list has two causes with opposite meanings: every file
+            # read was fine, or nothing was read. The page used to offer both
+            # and let the reader pick.
+            "checking": settings.load().check_dates,
+            "checked": db.checked_count()}
 
 
 @app.post("/api/dates/release")

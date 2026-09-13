@@ -279,3 +279,26 @@ async def _in_outbox_stub(rig, name="IMG_0001.jpg"):
               "WHERE id='asset-1'", (name, "2024-01-01T06:20:38.000Z"))
     c.commit()
     return path
+
+
+async def test_the_endpoint_says_whether_it_is_even_checking(rig):
+    """An empty held list means either every file was fine or nothing was
+    looked at. The server knows which; the page used to guess."""
+    from fastapi.testclient import TestClient
+    from app import auth, db, settings
+    from app.main import app
+    auth.set_password("a-good-password")
+    c = TestClient(app)
+    c.post("/api/login", json={"password": "a-good-password"})
+
+    settings.save({"check_dates": False})
+    d = c.get("/api/dates/held").json()
+    assert d["checking"] is False and d["checked"] == 0
+
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(1)])
+    db.record_check("asset-1", {"hold": False, "kind": "ok",
+                                "checked_at": db.now(), "checked_sum": "x"})
+    d = c.get("/api/dates/held").json()
+    assert d["checking"] is True and d["checked"] == 1
+    assert d["held"] == [], "and it was fine, which is not the same as unread"
