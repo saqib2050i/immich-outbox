@@ -757,17 +757,35 @@ def wall_clock(says: dict, exif: dict,
     base = _naive(says.get("local_date_time"))
     if base is None:
         return None, off, kind
-    # The question is whether *Immich* knew a zone, not where we found one.
-    # localDateTime is fileCreatedAt converted through Immich's own
-    # timeZone, so when that was a default the two are the same number and
-    # the offset still has to be added -- even once the file itself carries
-    # one, because writing a tag into the outbox copy does not change what
-    # Immich holds. Keying this on our provenance instead meant a file went
-    # from "11:29:52" to "06:29:52" the moment it was corrected, and the
-    # report then accused it of disagreeing with Immich by exactly the five
-    # hours it had just been given on purpose.
-    if not _immich_knew_the_zone(says) and off:
-        return base + timedelta(hours=off), off, kind
+    # The clock has to follow the zone that was chosen, not the one Immich
+    # chose. `localDateTime` is `fileCreatedAt` converted through Immich's
+    # own `timeZone`, so it is the wall clock only while that zone is the
+    # one being used.
+    #
+    # Where the rule wins, it wins *against* Immich's zone -- a 2022 Karachi
+    # photo Immich filed at UTC+1 -- so the wall clock is the instant plus
+    # the rule's offset, and taking Immich's converted value would apply the
+    # zone that was just rejected. Where Immich's zone or the coordinates
+    # are what is being used, its conversion is already right.
+    #
+    # It was keyed on whether Immich knew *a* zone, which was the same thing
+    # only while the rule could not outrank one.
+    # Immich's conversion is usable only when the zone it converted through
+    # is the zone being used. Two ways it is not:
+    #
+    #   assumed   the rule won against Immich's zone, so taking Immich's
+    #             converted value applies the zone just rejected
+    #   file      the offset is in the file but Immich never saw it -- it
+    #             was written into the outbox copy after the import, and
+    #             Immich's own file still has none
+    #
+    # Both are answered by asking whether Immich had a zone of its own and
+    # whether that is the one winning.
+    ours = kind in ("gps", "immich") or (
+        kind == "file" and _immich_knew_the_zone(says))
+    if not ours and off is not None:
+        instant = _naive(says.get("file_created_at"))
+        return (instant or base) + timedelta(hours=off), off, kind
     return base, off, kind
 
 
@@ -1303,6 +1321,8 @@ async def classify(path: str, row: dict) -> dict:
             return out
 
         says = await immich.asset_detail(row["id"])
+        if says.get("ok"):
+            out["says"] = says          # kept, so a verdict can be redone
         zkind, zone = zone_source(exif, says if says.get("ok") else {},
                                   row.get("taken_at"))
         out["zone"] = zkind
@@ -1333,6 +1353,45 @@ async def classify(path: str, row: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         out["why"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         return out
+
+
+def rejudge(row: dict) -> dict:
+    """Work a held file's verdict out again from what was kept about it.
+
+    A held file is never fetched a second time, so its stored answer is
+    frozen at whatever the build and the settings said that day -- and a
+    rule changed afterwards never reaches it. Everything needed is already
+    here: the fault came from the file and does not change, and the zone
+    comes from Immich and the rule, both of which are in hand.
+
+    `file` and `gps` are left alone. Those are readings, and no setting
+    improves on them.
+    """
+    says, zone_was = row.get("says"), row.get("hold_zone")
+    if not says or zone_was in ("file", "gps"):
+        return row
+    exif = ({"EXIF:DateTimeOriginal": ""} if row.get("hold_kind") == BLANK_FAULT
+            else {})
+    if (row.get("kind") or "").upper() == "VIDEO":
+        exif["File:MIMEType"] = "video/mp4"
+    prop = propose({
+        "asset": {"id": row.get("id"), "kind": row.get("kind"),
+                  "taken_at": row.get("taken_at")},
+        "says": says,
+        "outbox": {"present": True, "exif": exif,
+                   "verdict": verdict(exif, row.get("kind"), says=says,
+                                      taken_at=row.get("taken_at"))},
+    })
+    out = dict(row)
+    out["hold_zone"] = zone_source(exif, says, row.get("taken_at"))[0]
+    out["writes"] = prop.get("writes") or []
+    if not out["writes"]:
+        out["hold_kind"] = UNFIXABLE
+        out["why"] = prop.get("why", "")
+    elif row.get("hold_kind") == UNFIXABLE:
+        # It was the ceiling and is not any more.
+        out["hold_kind"] = BLANK_FAULT if exif else ABSENT_FAULT
+    return out
 
 
 # ---------------------------------------------------------------------------

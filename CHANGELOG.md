@@ -10,6 +10,42 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.16.0
+
+**Forty-seven photos from 2022 sat under "outside the rule in Settings"
+while the rule covered every one of them.** Their verdicts were written when
+the file was read, and a held file is never claimed a second time — so the
+answer was frozen at whatever the build and the settings said that day.
+Those had been judged before the rule outranked a bare Immich zone, and
+nothing ever looked again.
+
+What Immich said about a file is kept now, so a verdict can be worked out
+again without fetching anything: the fault came from the file and does not
+change, and the zone comes from Immich and the rule, both of which are in
+hand. The Dates tab re-judges every row as it draws it, so **a rule changed
+in Settings reaches files that were read before it**. Readings are left
+alone — coordinates and the file's own offset are not improved on by a
+setting.
+
+Rows read by a build that kept nothing get a **"Read N again"** button
+instead. They go back without an approval, so the next fetch classifies them
+fresh rather than writing tags nobody has reviewed.
+
+**And the clock has to follow the zone that was chosen.** `localDateTime` is
+`fileCreatedAt` converted through Immich's *own* `timeZone`, so it is the
+wall clock only while that zone is the one being used. Two cases where it is
+not, and both were wrong:
+
+- the rule wins **against** Immich's zone, so taking Immich's converted
+  value applies the zone that just lost — a 2022 Karachi photo came out at
+  14:53:54 instead of 18:53:54
+- the offset is in the file but Immich never saw it, because we wrote it
+  into the outbox copy after the import
+
+It was keyed on whether Immich knew *a* zone, which was the same question
+only while the rule could not outrank one. It asks whether Immich's zone is
+the one winning. Four cases, each with a test.
+
 ## 2.15.1
 
 **Forty-two files were called unfixable while Immich was holding their zone

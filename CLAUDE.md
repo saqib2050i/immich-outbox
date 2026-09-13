@@ -336,6 +336,24 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
 
+**A held file's verdict must not go stale.** It is never claimed a second
+time, so whatever was decided when it was read is what it keeps -- and a
+rule changed in Settings afterwards never reaches it. `hold_says` keeps what
+Immich said, `diagnose.rejudge()` works the answer out again from that as
+the Dates tab draws each row, and rows kept by a build that stored nothing
+get a "Read N again" that sends them back *without* an approval. Readings --
+coordinates, the file's own offset -- are left alone, because no setting
+improves on them.
+
+**The wall clock follows the zone that was chosen, not the one Immich
+chose.** `localDateTime` is `fileCreatedAt` converted through Immich's own
+`timeZone`, so it is the wall clock only while that zone is the one in use.
+Two cases where it is not: the rule wins *against* Immich's zone, so its
+conversion applies the zone that just lost; and an offset in the file that
+Immich never saw, because it was written into the outbox copy after import.
+Both were wrong while this was keyed on whether Immich knew *a* zone -- the
+same question only for as long as the rule could not outrank one.
+
 **Immich's `localDateTime` is the wall clock only where Immich knew a
 zone.** It is `fileCreatedAt` converted through `exifInfo.timeZone`, so
 where that was the UTC fallback the two are the same number and the true

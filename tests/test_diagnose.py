@@ -1748,3 +1748,56 @@ def test_a_file_immich_has_a_zone_for_is_no_longer_unfixable(rig):
     w = {x["tag"]: x["value"] for x in p["writes"]}
     assert w["DateTimeOriginal"] == "2022:07:02 14:53:54"
     assert w["OffsetTimeOriginal"] == "+01:00"
+
+
+# ---- the clock follows the zone that was chosen --------------------------
+#
+# localDateTime is fileCreatedAt converted through Immich's own timeZone, so
+# it is the wall clock only while that zone is the one being used. Four
+# cases, and two of them are not.
+
+def test_the_rule_winning_means_immichs_conversion_is_the_wrong_one(rig):
+    """It converted through the zone that just lost."""
+    from app import diagnose
+    _rule(rig)
+    says = {"ok": True, "time_zone": "UTC+1", "latitude": None,
+            "longitude": None,
+            "local_date_time": "2022-07-02T14:53:54.000Z",
+            "file_created_at": "2022-07-02T13:53:54.000Z"}
+    local, off, kind = diagnose.wall_clock(says, {}, "2022-07-02T13:53:54Z")
+    assert kind == "assumed" and off == 5.0
+    assert local.strftime("%H:%M:%S") == "18:53:54", "13:53:54Z plus five"
+
+
+def test_an_offset_we_wrote_ourselves_is_not_one_immich_saw(rig):
+    """Stamping the outbox copy does not change Immich's file, so Immich's
+    localDateTime was never converted through it."""
+    from app import diagnose
+    _rule(rig)
+    says = {"ok": True, "time_zone": "UTC+0", "latitude": None,
+            "longitude": None,
+            "local_date_time": "2024-01-01T06:29:52.000Z",
+            "file_created_at": "2024-01-01T06:29:52.000Z"}
+    local, off, kind = diagnose.wall_clock(
+        says, {"EXIF:OffsetTimeOriginal": "+05:00"}, "2024-01-01T06:29:52Z")
+    assert kind == "file"
+    assert local.strftime("%H:%M:%S") == "11:29:52"
+
+
+def test_a_zone_immich_derived_is_one_immich_converted_through(rig):
+    """Coordinates, and an offset Immich read at import. Its localDateTime
+    is already the wall clock and must not be shifted again."""
+    from app import diagnose
+    _rule(rig)
+    local, _, kind = diagnose.wall_clock(GPS_SAYS, {}, "2024-01-01T06:20:38Z")
+    assert kind == "gps"
+    assert local.strftime("%H:%M:%S") == "11:20:38"
+
+    says = {"ok": True, "time_zone": "Asia/Karachi", "latitude": None,
+            "longitude": None,
+            "local_date_time": "2024-01-05T08:47:33.000Z",
+            "file_created_at": "2024-01-05T03:47:33.000Z"}
+    local, _, kind = diagnose.wall_clock(
+        says, {"EXIF:OffsetTimeOriginal": "+05:00"}, "2024-01-05T03:47:33Z")
+    assert kind == "file"
+    assert local.strftime("%H:%M:%S") == "08:47:33", "not shifted twice"

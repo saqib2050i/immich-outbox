@@ -445,7 +445,12 @@ async def dates_held():
     written to each. The whole set at once: a few thousand rows is a few
     hundred KB, and the page groups and sorts it without another round trip.
     """
-    return {"held": db.held(), "counts": db.counts(),
+    # Judged again from what was kept about each file, so a rule changed in
+    # Settings reaches files that were read before it. A held file is never
+    # fetched twice, so without this its answer stays frozen at whatever the
+    # build and the settings said that day.
+    held = [diagnose.rejudge(r) for r in db.held()]
+    return {"held": held, "counts": db.counts(),
             # An empty list has two causes with opposite meanings: every file
             # read was fine, or nothing was read. The page used to offer both
             # and let the reader pick.
@@ -463,6 +468,25 @@ async def dates_release(payload: dict | None = None):
         db.log("send", f"{n} held file(s) signed off — queued with their "
                        "recorded date correction")
     return {"ok": True, "released": n}
+
+
+@app.post("/api/dates/recheck")
+async def dates_recheck(payload: dict | None = None):
+    """Read these files again instead of trusting what was decided before.
+
+    For rows kept by a build or a setting that has since changed and which
+    nothing here can work out again -- ones read before their answer was
+    worth keeping. They go back without an approval, so the next fetch
+    classifies them fresh rather than writing tags nobody has reviewed.
+    """
+    ids = [str(i) for i in ((payload or {}).get("ids") or []) if i]
+    n = db.recheck(ids)
+    if n:
+        db.log("info", f"{n} held file(s) will be read again")
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
+    return {"ok": True, "rechecking": n}
 
 
 @app.get("/api/dates/to-immich")

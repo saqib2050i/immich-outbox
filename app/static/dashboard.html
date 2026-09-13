@@ -2453,6 +2453,30 @@ async function renderDates(){
            + " with nothing to write" : "");
     sum.append(nm, fig);
 
+    // Read again. For rows kept before their answer was worth keeping, so
+    // nothing here can work out a fresh one: a held file is never fetched
+    // twice, and a rule changed in Settings cannot reach it.
+    const stale = rows.filter(r => !r.says);
+    if (stale.length){
+      const ctl = document.createElement("span");
+      ctl.className = "sendctl";
+      ctl.addEventListener("click", e => e.stopPropagation());
+      const rb = document.createElement("button");
+      rb.className = "ghost";
+      rb.textContent = "Read " + fmtNum(stale.length) + " again";
+      rb.title = "These were judged before there was enough kept about them "
+               + "to judge again. Reading them fetches each one afresh.";
+      armed(rb, "Sure? Read " + fmtNum(stale.length) + " again", async () => {
+        await fetch("/api/dates/recheck", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ids: stale.map(r => r.id)})});
+        await renderDates();
+        await tick();
+      });
+      ctl.appendChild(rb);
+      sum.appendChild(ctl);
+    }
+
     // Bulk. Armed like every other control that cannot be undone by pressing
     // it again.
     if (fixable.length){
