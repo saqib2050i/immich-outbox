@@ -1566,3 +1566,97 @@ def test_a_corrected_file_is_not_then_accused_of_disagreeing(rig):
     out = diagnose._agrees_with_immich(stamped, says, "IMAGE",
                                        "2024-01-01T06:29:52.000Z")
     assert out["level"] == "ok", out
+
+
+# ---- a corrected file must read as corrected ----------------------------
+#
+# The whole report was about Immich's copy, and Immich's copy can never
+# carry a correction because correcting it is forbidden. So a file that had
+# just been fixed came back with two warnings and a cross: "Immich knows
+# when this was taken and the file does not", "no zone in the file", and
+# "Immich's original -- its own metadata would not date it" -- all true of
+# the original, none of them true of the file going to the phone.
+
+CORRECTED = {"EXIF:DateTimeOriginal": "2024:01:01 11:31:32",
+             "EXIF:OffsetTimeOriginal": "+05:00",
+             "EXIF:CreateDate": "2024:01:01 11:31:32",
+             "File:MIMEType": "image/jpeg"}
+UNTOUCHED = {"EXIF:Software": "Picasa", "File:MIMEType": "image/jpeg"}
+
+
+def _after_correction(rig):
+    _rule(rig)
+    rep = _report(UNTOUCHED, CORRECTED, name="Snapchat-1976568031.jpg",
+                  taken_at="2024-01-01T06:31:32.000Z",
+                  stamped_at="2026-09-13T08:42:57Z",
+                  stamped_note="DateTimeOriginal=2024:01:01 11:31:32")
+    rep["says"] = dict(BLIND_SAYS, local_date_time="2024-01-01T06:31:32.000Z",
+                       file_created_at="2024-01-01T06:31:32.000Z")
+    rep["outbox"]["sha256"] = "bbb"
+    rep["outbox"]["verdict"] = diagnose_verdict(CORRECTED)
+    rep["immich"]["verdict"] = diagnose_verdict(UNTOUCHED)
+    return rep
+
+
+def diagnose_verdict(exif):
+    from app import diagnose
+    return diagnose.verdict(exif, "IMAGE")
+
+
+def test_a_corrected_file_is_not_still_told_it_has_no_date(rig):
+    """The finding read the untouched original and said "the file does not"
+    about a file that now does."""
+    from app import diagnose
+    said = " ".join(f["text"] for f in diagnose._findings(_after_correction(rig)))
+    assert "and the file does not" not in said, said
+
+
+def test_a_corrected_file_is_not_still_told_it_has_no_zone(rig):
+    """Same cause: the outbox copy carries +05:00 now."""
+    from app import diagnose
+    out = diagnose._findings(_after_correction(rig))
+    said = " ".join(f["text"] for f in out)
+    assert "No zone in the file" not in said, said
+    assert "records its own time zone" in said, said
+
+
+def test_immichs_untouched_original_is_context_not_a_failure(rig):
+    """It will always read as undated for exactly the files this corrects,
+    because correcting Immich is forbidden. Scoring it pass/fail puts a
+    cross beside a file that has just been fixed."""
+    from app import diagnose
+    out = diagnose._findings(_after_correction(rig))
+    immich = [f for f in out if f["text"].startswith("Immich's original")]
+    assert immich and immich[0]["level"] == "note", immich
+    assert immich[0]["context"] is True
+
+
+def test_the_delivered_copy_is_still_scored(rig):
+    """Demoting the original must not demote the answer."""
+    from app import diagnose
+    out = diagnose._findings(_after_correction(rig))
+    ob = [f for f in out if f["text"].startswith("the outbox copy")]
+    assert ob and ob[0]["level"] == "ok", ob
+
+
+def test_nothing_red_survives_a_correction(rig):
+    """The whole complaint in one assertion: a fixed file reads as fixed."""
+    from app import diagnose
+    bad = [f["text"] for f in diagnose._findings(_after_correction(rig))
+           if f["level"] == "bad"]
+    assert bad == [], bad
+
+
+def test_before_a_correction_immichs_copy_is_still_the_answer(rig):
+    """With nothing in the outbox there is no delivered copy to defer to,
+    and Immich's verdict is the only one there is."""
+    from app import diagnose
+    _rule(rig)
+    rep = _report(UNTOUCHED, name="Snapchat-1976568031.jpg",
+                  taken_at="2024-01-01T06:31:32.000Z")
+    rep.pop("outbox", None)
+    rep["says"] = dict(BLIND_SAYS, local_date_time="2024-01-01T06:31:32.000Z")
+    rep["immich"]["verdict"] = diagnose_verdict(UNTOUCHED)
+    out = diagnose._findings(rep)
+    immich = [f for f in out if f["text"].startswith("Immich's original")]
+    assert immich and immich[0]["level"] == "bad", immich

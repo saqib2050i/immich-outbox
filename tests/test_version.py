@@ -126,16 +126,20 @@ def test_the_apps_version_only_ever_goes_up():
         a, b, c = (int(x) for x in v.split("."))
         return a * 10000 + b * 100 + c
 
+    # The last release built from the shared VERSION file, and so the
+    # highest number any phone can already be carrying from that era. Fixed
+    # rather than read from CHANGELOG.md: that is the *server's* changelog
+    # now, and the server moves on its own clock -- deriving the floor from
+    # it would drag the app's version up behind every server release, which
+    # is the coupling this split removed.
+    SHARED_ERA_LAST = "2.10.0"
+
     app = (ROOT / "companion" / "VERSION").read_text().strip()
-    # Every number this app has ever been released under came from the
-    # shared file, so the highest of those is the floor.
-    shipped = max(code(m) for m in re.findall(
-        r"^## (\d+\.\d+\.\d+)", (ROOT / "CHANGELOG.md").read_text(),
-        re.M))
-    assert code(app) >= shipped, (
+    assert code(app) >= code(SHARED_ERA_LAST), (
         f"companion/VERSION is {app} (code {code(app)}), at or below the "
-        f"{shipped} already installed from the shared-file era; Android "
-        "would refuse it as a downgrade")
+        f"{SHARED_ERA_LAST} (code {code(SHARED_ERA_LAST)}) a phone may "
+        "already be carrying from the shared-file era; Android would refuse "
+        "it as a downgrade, silently")
 
 
 def test_the_app_does_not_hardcode_a_version_anywhere():

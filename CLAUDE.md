@@ -309,6 +309,20 @@ gave it an `OffsetTimeOriginal`, which flipped the derivation, and the very
 next trace accused the file of being five hours from Immich -- exactly the
 correction it had just been given on purpose.
 
+**Every finding is about the delivered copy.** `ref` in `_findings()` is
+the outbox copy, and Immich's only when there is not one. It used to be the
+other way round, and the consequence only appeared once phase 3 existed: a
+file that had just been corrected came back saying "Immich knows when this
+was taken and the file does not" and "no zone in the file", because the
+copy those read was the untouched original -- which can never carry a
+correction, since not touching Immich is invariant 3.
+
+For the same reason Immich's own verdict is **context, not a score**, once
+a delivered copy exists. It will always read as undated for exactly the
+files this corrects, so scoring it pass/fail puts a cross beside a fixed
+file. With nothing in the outbox it is the only verdict there is, and then
+it is scored normally.
+
 **Proposing a correction (phase 2).** `diagnose.propose()` describes what
 would be written and writes nothing -- a test asserts its source contains
 no `subprocess`, no `open(`, no `os.utime` and no `UPDATE`. It rides on the
