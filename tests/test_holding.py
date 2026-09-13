@@ -418,3 +418,52 @@ async def test_a_correction_that_cannot_be_written_fails_loudly(rig, monkeypatch
     assert row["state"] == "failed"
     assert "exiftool is not installed" in (row["last_error"] or "")
     assert row["outbox_name"] is None or not row["stamped_at"]
+
+
+# ---- saying what is happening, not just how many bytes -------------------
+
+async def test_each_phase_of_a_transfer_is_named(rig, monkeypatch):
+    """The bar tracked bytes and nothing else. A file now has its EXIF read
+    after the download and a correction written into it, both real time
+    spent with the bar already full -- so a file being worked on looked
+    stuck, and the only figure on screen said 100%."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    seen = []
+
+    async def fake(path, row):
+        seen.append(feeder.TRANSFERS[row["id"]]["phase"])
+        return {"hold": False, "kind": "ok", "checked_at": db.now(),
+                "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    assert seen == ["checking"]
+
+
+async def test_an_approved_correction_says_it_is_correcting(rig, monkeypatch):
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    seen = []
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank",
+                "writes": [{"tag": "DateTimeOriginal", "value": "x",
+                            "from": "y"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    db.release_held([r["id"] for r in db.held()])
+
+    def watch(path, writes):
+        seen.append(feeder.TRANSFERS["asset-0"]["phase"])
+        return True, ""
+    monkeypatch.setattr(diagnose, "write_tags", watch)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    assert seen == ["correcting"]

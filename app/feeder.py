@@ -448,11 +448,22 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                         BATCH["bytes_done"] += existing
                 return
 
+            # `phase` alongside the bytes, because bytes are no longer the
+            # whole of it. A file now has its own EXIF read after the
+            # download, and an approved correction written into it -- both
+            # real time, both spent with the bar sitting at 100% saying
+            # nothing, so a file that was being worked on looked stuck.
             TRANSFERS[asset_id] = {
                 "filename": filename, "asset_id": asset_id, "kind": kind,
                 "bytes": 0, "size": row["size"] or 0,
+                "phase": "fetching",
                 "started": time.monotonic(),
             }
+
+            def phase(name: str) -> None:
+                entry = TRANSFERS.get(asset_id)
+                if entry is not None:
+                    entry["phase"] = name
             tmp = None
             try:
                 # The temp file goes INSIDE the outbox, hidden and
@@ -504,6 +515,7 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                 # classified, found faulty and held again -- a loop, with
                 # the correction never written and the tab never emptying.
                 if row["approved_at"]:
+                    phase("correcting")
                     try:
                         writes = _json.loads(row["hold_writes"] or "[]")
                     except ValueError:
@@ -518,6 +530,7 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                         raise IOError(f"could not write the approved "
                                       f"correction: {why}")
                 elif cfg.check_dates:
+                    phase("checking")
                     seen = await diagnose.classify(tmp, dict(row))
                     db.record_check(asset_id, seen)
                     if seen.get("hold"):
@@ -542,11 +555,13 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                 # temporary copy, so Syncthing never sees a partial edit.
                 if cfg.fix_dates and needs_date_fix(row["taken_at"],
                                                     row["exif_taken_at"]):
+                    phase("correcting")
                     if rewrite_capture_date(tmp, row["taken_at"]):
                         size = os.path.getsize(tmp)
                         db.log("info", f"{filename}: wrote the corrected date "
                                        f"from Immich into the file")
 
+                phase("landing")
                 os.replace(tmp, dest)
                 os.chmod(dest, 0o664)
                 stamp_capture_time(dest, row["taken_at"])

@@ -475,3 +475,15 @@ def test_every_boolean_setting_has_a_checkbox_to_match():
         assert m, f"s_{key} has no control"
         assert 'type="checkbox"' in m.group(0), \
             f"s_{key} is a bool but not a checkbox"
+
+
+def test_the_page_names_every_phase_the_feeder_sets():
+    """A phase with no label falls through to the byte figures, which is
+    the stalled-looking bar this was added to replace."""
+    feeder_src = (ROOT / "app" / "feeder.py").read_text()
+    block = HTML[HTML.index("const PHASE = {"):]
+    block = block[:block.index("};")]
+    set_by = set(re.findall(r'phase\("(\w+)"\)', feeder_src))
+    set_by.add("fetching")          # the starting value, set on the entry
+    named = set(re.findall(r'^\s+(\w+):\s+"', block, re.M))
+    assert set_by <= named, f"the feeder sets phases the page cannot name: {set_by - named}"

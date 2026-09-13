@@ -647,6 +647,10 @@
   .propgrid > div.v{color:var(--transit)}
   .propgrid > div.src{color:var(--dim);font-size:11.5px;line-height:1.5}
   .propwhy{margin:10px 0 0;font-size:11.5px;color:var(--dim);line-height:1.6}
+  /* Past the download and being worked on: the bar is full and the file is
+     not finished, so the bar stops claiming to be the whole story. */
+  .qpfile.working .qpbar i{background:var(--transit);opacity:.45}
+  .qpfile.working .qprate{color:var(--transit)}
 
   /* Dates: what was read on the way past and kept back. */
   .dbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 6px;
@@ -3337,15 +3341,31 @@ function paintTransfer(state){
     const rate = document.createElement("span");
     rate.className = "qprate";
 
+    // Bytes are not the whole of it any more. A file has its EXIF read
+    // after the download and an approved correction written into it, both
+    // of which take real time with the bar already full -- so a file being
+    // worked on looked stuck, and the only figure on screen said 100%.
+    const PHASE = {
+      fetching:   "",
+      checking:   "reading its date",
+      correcting: "writing the correction",
+      landing:    "moving into the outbox",
+    };
     const pct = t.size ? Math.min(100, (t.bytes / t.size) * 100) : 0;
     const bits = [];
-    if (t.size) bits.push(fmtBytes(t.bytes) + " of " + fmtBytes(t.size)
-                          + " · " + Math.round(pct) + "%");
-    const r = fmtRate(t.bytes_per_second);
-    if (r) bits.push(r);
-    const eta = fmtEta(t.eta_seconds);
-    if (eta) bits.push(eta);
+    const doing = PHASE[t.phase || "fetching"];
+    if (doing){
+      bits.push(doing);
+    } else {
+      if (t.size) bits.push(fmtBytes(t.bytes) + " of " + fmtBytes(t.size)
+                            + " · " + Math.round(pct) + "%");
+      const r = fmtRate(t.bytes_per_second);
+      if (r) bits.push(r);
+      const eta = fmtEta(t.eta_seconds);
+      if (eta) bits.push(eta);
+    }
     rate.textContent = bits.join(" · ");
+    if (doing) row.classList.add("working");
 
     line.append(spin, kind, name, rate);
     const bar = document.createElement("div");
