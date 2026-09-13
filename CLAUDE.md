@@ -426,8 +426,10 @@ at Greenwich. It was taken in Pakistan, and it is five hours early on both
 screens.
 
 That is a decision rather than a reading, so it lives in two settings --
-`assume_zone_before` and `assume_zone_offset`, here 2026-03-04 and +05:00,
-the date its owner left Pakistan. A file carrying a zone of its own is
+`assume_zone_before` and `assume_zone_offset` -- the date its owner left
+Pakistan, and the offset they were living at. Deliberately not written down
+here: it is a setting, and a copy of it in a document is a copy that goes
+stale without anything failing. A file carrying a zone of its own is
 honoured whatever its date, coordinates outrank the rule because a photo
 taken on a trip says so itself, and the rule applies only when there is
 nothing else. Blank either half and it assumes nothing.

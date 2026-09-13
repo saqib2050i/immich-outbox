@@ -480,8 +480,8 @@ too — local 02:00 at +05:00 is 21:00 the day before.
 
 **Two new settings say where its owner was living**, because nothing in a
 file without a zone or coordinates can. `assume_zone_before` and
-`assume_zone_offset` — 2026-03-04 and +05:00 here, the date the move
-happened. The precedence is strict and each step outranks the next: the
+`assume_zone_offset` — the date the move happened and the offset they were
+living at. The precedence is strict and each step outranks the next: the
 file's own `OffsetTimeOriginal`, honoured whatever the date; coordinates,
 since a photo taken on a trip says so itself; anything else Immich holds;
 then the rule. Blank either half and nothing is assumed.
