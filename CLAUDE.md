@@ -399,6 +399,19 @@ this library:
     PXL_20240101_062038690   Model Town, Punjab, Pakistan  -> Asia/Karachi
     Snapchat-618209934       no coordinates at all         -> "UTC+0"
 
+Immich also writes offsets as `UTC+1`, `UTC+05:30`, `UTC-3` where it has no
+IANA name, which is neither an EXIF offset nor a zone name. A parser knowing
+only `+05:00` reported 42 files as having no zone at all while Immich was
+holding one for every one of them.
+
+And a zone Immich reports with no offset tag in the file and no coordinates
+is Immich's own default -- in practice the machine that ran the import. A
+2022 Karachi photo came back `UTC+1` because that is where its owner lives
+now. So the owner's rule outranks it, and the order is what each one is: the
+file's own offset (the camera), coordinates (where the shutter was pressed),
+the rule (somebody saying where they were living), Immich's `timeZone` (a
+server saying where *it* is), nothing.
+
 `zone_source()` separates them into four: the file's own offset (best --
 honour it whatever the date), GPS-derived, something else Immich holds, and
 nothing at all. In that last case the wall clock Immich shows *is* the UTC

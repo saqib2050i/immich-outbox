@@ -1660,3 +1660,91 @@ def test_before_a_correction_immichs_copy_is_still_the_answer(rig):
     out = diagnose._findings(rep)
     immich = [f for f in out if f["text"].startswith("Immich's original")]
     assert immich and immich[0]["level"] == "bad", immich
+
+
+# ---- the zone Immich actually sends --------------------------------------
+#
+# EXIF writes "+05:00". Immich writes "UTC+1", "UTC+05:30", "UTC-3" wherever
+# it has no IANA name, and a parser that knew only the first called 42 files
+# unfixable while Immich was holding their zone the whole time.
+
+@pytest.mark.parametrize("text,hours", [
+    ("+05:00", 5.0), ("-05:00", -5.0), ("+0530", 5.5), ("-0330", -3.5),
+    ("UTC+1", 1.0), ("UTC+5", 5.0), ("UTC-3", -3.0), ("UTC+05:30", 5.5),
+    ("GMT-3", -3.0), ("utc+1", 1.0), ("UTC+0", 0.0),
+])
+def test_every_shape_a_zone_arrives_in(text, hours):
+    from app import diagnose
+    assert diagnose._offset_hours(text) == hours
+
+
+@pytest.mark.parametrize("text", ["Asia/Karachi", "", "nonsense", "UTC", None])
+def test_what_is_not_an_offset(text):
+    from app import diagnose
+    assert diagnose._offset_hours(text) is None
+
+
+def test_a_named_zone_still_resolves_through_the_database(rig):
+    from app import diagnose
+    assert diagnose.zone_hours("gps", "Asia/Karachi",
+                               "2022-07-02T13:53:54Z") == 5.0
+
+
+# ---- and how much it is worth --------------------------------------------
+
+def test_the_owners_rule_outranks_a_bare_immich_zone(rig):
+    """With no offset tag and no coordinates Immich has nothing to derive a
+    zone from, so what it reports is its own default -- in practice the
+    machine that ran the import. A 2022 photo taken in Karachi came back as
+    UTC+1 because that is where its owner lives now, and honouring it would
+    have written a wall clock four hours out."""
+    from app import diagnose
+    _rule(rig)
+    says = {"ok": True, "time_zone": "UTC+1", "latitude": None,
+            "longitude": None,
+            "local_date_time": "2022-07-02T14:53:54.000Z",
+            "file_created_at": "2022-07-02T13:53:54.000Z"}
+    kind, zone = diagnose.zone_source({}, says, "2022-07-02T13:53:54Z")
+    assert (kind, zone) == ("assumed", "+05:00")
+
+
+def test_coordinates_still_outrank_the_rule(rig):
+    """A photo taken on a trip says so itself."""
+    from app import diagnose
+    _rule(rig)
+    assert diagnose.zone_source({}, GPS_SAYS, "2024-01-01T06:20:38Z")[0] == "gps"
+
+
+def test_the_files_own_offset_still_outranks_everything(rig):
+    from app import diagnose
+    _rule(rig)
+    says = {"ok": True, "time_zone": "UTC+1", "latitude": None,
+            "longitude": None}
+    assert diagnose.zone_source({"EXIF:OffsetTimeOriginal": "+09:00"}, says,
+                                "2022-07-02T13:53:54Z") == ("file", "+09:00")
+
+
+def test_immichs_default_is_used_when_the_rule_does_not_reach(rig):
+    """Better than nothing once the rule's date has passed."""
+    from app import diagnose
+    _rule(rig)
+    says = {"ok": True, "time_zone": "UTC+1", "latitude": None,
+            "longitude": None}
+    assert diagnose.zone_source({}, says, "2026-08-01T12:00:00Z") == (
+        "immich", "UTC+1")
+
+
+def test_a_file_immich_has_a_zone_for_is_no_longer_unfixable(rig):
+    """42 of them were, because the zone could not be parsed."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "", "assume_zone_offset": ""})
+    says = {"ok": True, "time_zone": "UTC+1", "latitude": None,
+            "longitude": None,
+            "local_date_time": "2022-07-02T14:53:54.000Z",
+            "file_created_at": "2022-07-02T13:53:54.000Z"}
+    rep = _traced({"EXIF:Software": "Picasa"}, says, "2022-07-02T13:53:54.000Z")
+    p = diagnose.propose(rep)
+    assert p["needed"] is True, p.get("why")
+    w = {x["tag"]: x["value"] for x in p["writes"]}
+    assert w["DateTimeOriginal"] == "2022:07:02 14:53:54"
+    assert w["OffsetTimeOriginal"] == "+01:00"

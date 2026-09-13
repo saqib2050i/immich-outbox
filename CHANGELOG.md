@@ -10,6 +10,36 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.15.1
+
+**Forty-two files were called unfixable while Immich was holding their zone
+all along.** EXIF writes an offset as `+05:00`. Immich writes `UTC+1`,
+`UTC+05:30`, `UTC-3` wherever it has no IANA name, and the parser knew only
+the first shape — so every one of those came back as *no zone at all*, and
+the Dates tab filed them under "nothing here can fix".
+
+    UTC+1  UTC+5  UTC-3  UTC+05:30  GMT-3  -0330   all read now
+
+**But reading it is not the same as trusting it**, and fixing only the
+parser would have turned 42 files declared unfixable into 42 confidently
+wrong corrections. `FB_IMG_1656770033857.jpg` carries no offset and no
+coordinates, and Immich reports `UTC+1` — which is where its owner lives
+now, not where a 2022 photo was taken. Honouring that writes a wall clock
+four hours out.
+
+So the owner's rule now outranks a bare Immich zone. The order is what each
+one actually is:
+
+    the file's own offset   the camera saying what it was set to
+    coordinates             where the shutter was pressed
+    the rule in Settings    somebody saying where they were living
+    Immich's timeZone       a server saying where *it* is
+    nothing
+
+Immich's default is still used once the rule's date has passed, because it
+beats nothing — but it is reported as what it is, at `warn`, rather than as
+*"Immich holds the zone"* with a tick beside it.
+
 ## 2.15.0
 
 **A send button that could not tell you it had worked.** Press "Send 1,620"

@@ -299,15 +299,23 @@ def _exif_dt(value) -> datetime | None:
         return None
 
 
+# Every shape a zone arrives in. EXIF writes "+05:00"; Immich writes
+# "UTC+1", "UTC+05:30", "UTC-3" wherever it has no IANA name, and a parser
+# that only knew the first called 42 files unfixable while Immich was
+# holding their zone all along.
+OFFSET = re.compile(r"^(?:UTC|GMT)?\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?$",
+                    re.IGNORECASE)
+
+
 def _offset_hours(value) -> float | None:
-    """"+05:00" as 5.0. The zone the file says its own clock was in."""
+    """"+05:00" as 5.0, and so are "UTC+5", "UTC+05:30" and "GMT-3"."""
     if not isinstance(value, str):
         return None
-    m = re.match(r"([+-])(\d{2}):?(\d{2})", value.strip())
+    m = OFFSET.match(value.strip())
     if not m:
         return None
     sign = -1 if m.group(1) == "-" else 1
-    return sign * (int(m.group(2)) + int(m.group(3)) / 60)
+    return sign * (int(m.group(2)) + int(m.group(3) or 0) / 60)
 
 
 def pick(exif: dict, *candidates: str) -> tuple[object, str | None]:
@@ -717,11 +725,19 @@ def zone_source(exif: dict, says: dict,
     zone = says.get("time_zone")
     if says.get("latitude") is not None and says.get("longitude") is not None:
         return "gps", zone
-    if zone and str(zone).strip().lower() not in UTC_ISH:
-        return "immich", str(zone).strip()
+
+    # The owner's rule outranks a bare Immich zone, and that order matters.
+    # With no offset tag and no coordinates Immich has nothing to derive a
+    # zone from, so what it reports is its own default -- in practice the
+    # machine that ran the import. A 2022 photo taken in Karachi came back
+    # as UTC+1 because that is where its owner lives now, and honouring it
+    # would have written a wall clock four hours out. The rule is somebody
+    # saying where they were; this is a server saying where it is.
     guess = _assumed(taken_at)
     if guess:
         return "assumed", guess[0]
+    if zone and str(zone).strip().lower() not in UTC_ISH:
+        return "immich", str(zone).strip()
     return "none", zone
 
 
@@ -1007,8 +1023,12 @@ def _findings(rep: dict) -> list[dict]:
                         "coordinates in the file"
                         + (f" ({place})." if place else ".")})
         elif src_kind == "immich":
-            out.append({"level": "ok", "text":
-                        f"Immich holds the zone as {zone}."})
+            out.append({"level": "warn", "text":
+                        f"The only zone going is Immich's own default, "
+                        f"{zone}. The file carries no offset and Immich has "
+                        "no coordinates to derive one from, so this is where "
+                        "the server was rather than where the photo was "
+                        "taken. Set the rule in Settings if you know better."})
         elif src_kind == "assumed":
             out.append({"level": "warn", "text":
                         f"No zone in the file and no coordinates, so this "
