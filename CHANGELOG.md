@@ -10,6 +10,52 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.14.0
+
+**A Dates tab: what was held back, and what would be written to it.**
+
+Grouped seven ways, and the first two are the ones that decide anything:
+
+- **What is wrong** — an empty date tag (lands on today, certainly wrong),
+  no tag at all (lands on the right day, wrong hour), or nothing that can be
+  fixed at all. That last group is the ceiling, and it is on screen so it
+  stops being a mystery.
+- **Where the zone comes from** — the file's own offset, coordinates, Immich,
+  or this library's rule. The first two are readings and the last is a
+  decision about where its owner was living, so it is the only group here
+  that can be wrong. Bulk-approve the certain ones; look at that one.
+
+Then by filename family (Pixel, Snapchat, WhatsApp, GoPro, screenshots,
+Google Photos creations, and so on — files from one source share a fault and
+share a fix), year, month, photos and videos, or all together. Sorted newest,
+oldest, by name either way, by size, or **by how far the date moves** — which
+puts anything odd at the top.
+
+Sign off one file or a whole group. Bulk arms first, like every other control
+here that pressing again cannot undo. A file with nothing to write is not
+offered a button, because it would never do anything and would never stop
+appearing.
+
+**Files already in Google Photos are called out, not grouped away.** A
+corrected copy does not replace the old one — Google Photos matches uploads
+by content and a corrected file is different content, so it arrives as a
+second photo. Those rows are marked and counted at the top.
+
+**And the corrections Immich does not have.** Every date written into a
+delivered copy, with its tags and values, and a *coming soon* for pushing
+them back — carrying the reason from the server rather than a copy of it:
+that needs the `asset.update` scope, and invariant 3 grants three read scopes
+and no write.
+
+Grouping and sorting happen in the browser. A few thousand rows is a few
+hundred KB, and paging it server-side would make every regroup a round trip
+to answer a question the page already has the data for.
+
+One fault found while building it, now guarded by a test: `setTab` falls back
+to "overview" for a name it does not recognise, so the new tab had a panel, a
+link in the bar, and showed nothing at all — with no error anywhere. Every
+`data-for` and every `data-tab` must appear in `TABS`.
+
 ## 2.13.0
 
 **Phase 4, the spine: a file is read on its way past, and kept back if it

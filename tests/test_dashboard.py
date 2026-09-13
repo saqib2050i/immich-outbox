@@ -346,3 +346,83 @@ def test_both_summaries_count_their_caret_as_a_column():
     assert "grid-template-columns:auto 1fr auto auto" in year
     # caret + name + counts + figures + tags + controls
     assert "minmax(66px,auto) 1fr auto auto" in month
+
+
+def test_every_tab_in_the_bar_is_one_setTab_will_switch_to():
+    """setTab falls back to "overview" for a name it does not know, rather
+    than failing -- so a tab with a panel and a link in the bar can show
+    nothing at all and give no clue why. It did."""
+    bar = set(re.findall(r'data-for="(\w+)"', HTML))
+    panels = set(re.findall(r'data-tab="(\w+)"', HTML))
+    known = set(re.findall(r'const TABS = \[([^\]]+)\]', HTML)[0]
+                .replace('"', "").split(","))
+    assert bar <= known, f"in the bar but not in TABS: {bar - known}"
+    assert panels <= known, f"has a panel but not in TABS: {panels - known}"
+
+
+# ---- the Dates tab --------------------------------------------------------
+
+def test_the_dates_tab_has_a_panel_a_link_and_a_renderer():
+    assert 'data-tab="dates"' in HTML
+    assert 'data-for="dates"' in HTML
+    assert "async function renderDates(" in HTML
+    assert '"dates"' in HTML[HTML.index("const TABS = ["):][:200]
+
+
+def test_grouping_and_sorting_do_not_go_back_to_the_server():
+    """A few thousand rows is a few hundred KB. Paging it server-side would
+    make every regroup a round trip to answer a question the page already
+    holds the data for."""
+    src = HTML[HTML.index("function groupDates("):HTML.index("async function signOff(")]
+    assert "fetch(" not in src
+
+
+def test_every_grouping_offered_has_a_key():
+    """A select option with no branch groups everything under one heading
+    and looks like the data is wrong rather than the code."""
+    opts = set(re.findall(r'<option value="(\w+)">', 
+                          HTML[HTML.index('id="dGroup"'):HTML.index('id="dSort"')]))
+    src = HTML[HTML.index("function groupDates("):]
+    src = src[:src.index("function sortDates(")]
+    for key in opts:
+        assert f"{key}:" in src, f"group '{key}' is offered but not implemented"
+
+
+def test_every_sort_offered_has_a_comparator():
+    start = HTML.index('id="dSort"')
+    opts = set(re.findall(r'<option value="(\w+)">',
+                          HTML[start:HTML.index("</select>", start)]))
+    src = HTML[HTML.index("function sortDates("):]
+    src = src[:src.index("function groupHeading(")]
+    for key in opts:
+        assert f"{key}:" in src, f"sort '{key}' is offered but not implemented"
+
+
+def test_a_file_with_nothing_to_write_is_not_offered_a_sign_off():
+    """The unfixable group is the ceiling, not work waiting to be done.
+    A button there would never do anything and would never stop appearing."""
+    src = HTML[HTML.index("function dateRow("):HTML.index("async function renderDates(")]
+    assert "(r.writes || []).length" in src
+    assert "nothing can be written" in src
+
+
+def test_bulk_sign_off_is_armed_like_every_other_irreversible_control():
+    src = HTML[HTML.index("async function renderDates("):HTML.index("async function renderOwed(")]
+    assert "armed(b," in src
+    assert "stopPropagation" in src, "it sits in a <summary> and would toggle it"
+
+
+def test_already_sent_files_are_called_out_rather_than_grouped_away():
+    """Signing one of these off sends a corrected copy alongside the old
+    one, which is a different decision and needs a different action first."""
+    src = HTML[HTML.index("async function renderDates("):]
+    src = src[:src.index("async function renderOwed(")]
+    assert "already_sent" in src
+    assert "arrives as a second photo" in src
+
+
+def test_pushing_to_immich_is_shown_as_coming_soon_with_the_reason():
+    src = HTML[HTML.index("async function renderOwed("):]
+    src = src[:src.index("\n// ---- sending")]
+    assert "coming soon" in src
+    assert "d.why" in src, "the reason comes from the server, not a copy of it"
