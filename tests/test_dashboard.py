@@ -426,3 +426,22 @@ def test_pushing_to_immich_is_shown_as_coming_soon_with_the_reason():
     src = src[:src.index("\n// ---- sending")]
     assert "coming soon" in src
     assert "d.why" in src, "the reason comes from the server, not a copy of it"
+
+
+def test_an_empty_dates_list_says_which_of_its_two_causes_it_is():
+    """"Nothing held" means either every file read was fine or nothing was
+    read, and those are opposite. Offering both and letting the reader pick
+    sent a whole year through unexamined and read as a clean result."""
+    src = HTML[HTML.index("async function renderDates("):]
+    src = src[:src.index("async function renderOwed(")]
+    assert "d.checking" in src and "d.checked" in src
+    assert "is off in Settings" in src
+    assert "or the check is off" not in src, "the old guess is still there"
+
+
+def test_the_tally_says_so_even_when_something_is_held():
+    """With checking off a short list is not a good sign; it is an absence
+    of evidence."""
+    src = HTML[HTML.index("async function renderDates("):]
+    src = src[:src.index("async function renderOwed(")]
+    assert "not checking" in src

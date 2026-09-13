@@ -2356,14 +2356,35 @@ async function renderDates(){
     badge.hidden = !datesRows.length;
     badge.textContent = fmtNum(datesRows.length);
   }
-  document.getElementById("dCount").textContent =
-    datesRows.length ? fmtNum(datesRows.length) + " held" : "";
+  // Said whether or not anything is held: with checking off, a short list
+  // is not a good sign, it is an absence of evidence.
+  const tally = document.getElementById("dCount");
+  tally.textContent = (d.checking
+      ? fmtNum(d.checked || 0) + " read"
+        + (datesRows.length ? " · " + fmtNum(datesRows.length) + " held" : "")
+      : "not checking — files go to the phone unread");
+  tally.style.color = d.checking ? "" : "var(--alarm)";
 
   host.innerHTML = "";
   if (!datesRows.length){
-    host.innerHTML = '<p class="empty">Nothing held. Either every file read so '
-      + 'far carries a date Google Photos can use, or the check is off — it '
-      + 'reads each file as it is fetched, so this fills up as batches run.</p>';
+    // "Nothing held" has two causes with opposite meanings, and the server
+    // knows which. Offering both and letting the reader pick sent somebody a
+    // whole year unexamined and told them it had come back clean.
+    const p = document.createElement("p");
+    p.className = "empty";
+    if (!d.checking){
+      p.textContent = "Nothing has been checked: \u201cCheck each file\u2019s "
+        + "date on its way past\u201d is off in Settings. Files are going to "
+        + "the phone without being read, so this list being empty says nothing "
+        + "about them.";
+    } else if (!d.checked){
+      p.textContent = "Checking is on, but no file has been read yet. A file is "
+        + "read as it is fetched, so send a month and this fills up.";
+    } else {
+      p.textContent = "Nothing held. All " + fmtNum(d.checked) + " file(s) read "
+        + "so far carry a date Google Photos can use.";
+    }
+    host.appendChild(p);
     renderOwed();
     return;
   }
