@@ -122,7 +122,12 @@ jobs:
           import hashlib, json, os, datetime
           blob = open("dist/companion.apk", "rb").read()
           print(json.dumps({
-              "version": open("VERSION").read().strip(),
+              # companion/VERSION, not the root one. The app and the
+              # server are released on their own clocks now: the server
+              # moves for reasons the app has no part in, and telling a
+              # phone it is out of date over an APK identical to the one
+              # already on it is how nine releases in two days looked.
+              "version": open("companion/VERSION").read().strip(),
               "sha256": hashlib.sha256(blob).hexdigest(),
               "size": len(blob),
               "signed": os.environ["KIND"],
@@ -205,6 +210,17 @@ jobs:
             [0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "::error::VERSION is '$version', expected x.y.z"; exit 1 ;;
           esac
+
+          # The app keeps its own, and it has to be x.y.z for the same
+          # reason: build.gradle.kts turns it into a versionCode, and
+          # Android refuses an APK whose code is not above the installed
+          # one. A malformed file there becomes 0 and is uninstallable.
+          app="$(tr -d ' \t\n\r' < companion/VERSION)"
+          case "$app" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::companion/VERSION is '$app', expected x.y.z"; exit 1 ;;
+          esac
+          echo "server $version, app $app"
 
           if [ "${{ github.ref_type }}" = "tag" ]; then
             tag="${{ github.ref_name }}"

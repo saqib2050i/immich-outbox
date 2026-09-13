@@ -10,6 +10,49 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.11.0
+
+**A free-up that takes minutes is now watched to the end.** Clearing
+5.85 GB reported 3.5 GB. The walk's budget is `MAX_STEPS` x `POLL_MS` —
+about half a minute — and emptying several gigabytes on a 2016 phone takes
+several. So it ran out of steps, fell through to its "believe the disk"
+fallback, measured free space *mid-operation*, and returned that as the
+final figure. Google Photos carried on to the full 5.85 GB and nothing ever
+told the server.
+
+`waitForQuiet()` waits for the disk to stop changing before reading what
+was freed, on both paths — the figure Photos puts on screen and the
+free-space diff. The signal is free space climbing, deliberately: it needs
+no labels at all, and the labels are the part of this app most likely to be
+renamed without warning. A progress indicator is exactly the kind of string
+that would be; a disk getting emptier is not.
+
+When the budget does run out with the figure still moving, that is now
+*said* rather than rounded up. The report carries `settled`, the run stays
+a success — the button was pressed and space was freed — and the dashboard
+writes "at least 3.5 GB freed". The screen wake lock covers the wait, since
+a lock expiring mid-clear-out puts the screen out and a screen that is off
+draws no windows to read.
+
+**The app and the server have separate version numbers.** They shared one
+file so that a pair could never be untested together. But the server moves
+for reasons the app has no part in, and nine server releases in two days
+each told the phone it was out of date over an APK byte-identical to the
+one already on it. What a build can actually do is carried by the
+`features` list in the protocol — which says so directly, where a matching
+number only looked as though it did.
+
+`companion/VERSION` is the app's, bumped when something in `companion/`
+changes; the root `VERSION` stays the server's. CI validates both and
+stamps the APK's metadata from the app's. `apk_info()` no longer falls back
+to the server's number, because after the split that fallback would
+announce an update every time the server moved.
+
+It starts at **2.11.0** rather than 1.0.0, and a test now enforces that
+floor. Android compares by `versionCode`, so a companion at 1.0.0 is code
+10000 against the 21000 already on the phone — which Android would have
+refused as a downgrade, silently, forever.
+
 ## 2.10.0
 
 **Phase 3: one correction, written.** The proposal grows a second button —

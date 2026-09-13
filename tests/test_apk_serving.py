@@ -94,11 +94,17 @@ async def test_a_missing_checksum_is_computed(rig, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_version_falls_back_to_the_servers_own(rig, tmp_path, monkeypatch):
-    """One VERSION file builds both, so they agree unless told otherwise."""
+async def test_an_apk_with_no_metadata_reports_an_unknown_version(rig, tmp_path,
+                                                                  monkeypatch):
+    """It used to fall back to the *server's* number, which was honest while
+    one file built both. They are released on separate clocks now, so that
+    fallback would announce an update every time the server moved and the
+    app did not -- which is precisely the churn the split was for."""
     from app import config, companion
     put_apk(tmp_path, monkeypatch, meta={})
-    assert companion.apk_info()["version"] == config.APP_VERSION
+    info = companion.apk_info()
+    assert info["version"] == "unknown"
+    assert info["version"] != config.APP_VERSION
 
 
 @pytest.mark.asyncio

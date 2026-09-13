@@ -2,11 +2,20 @@ plugins {
     id("com.android.application")
 }
 
-// One VERSION file for the whole project, the same one the server reports.
-// The app and the server speak a protocol to each other, so letting their
-// numbers drift apart would mean guessing which pairs are compatible. It
-// was hardcoded here and had already gone stale by a release.
-val declaredVersion: String = rootProject.file("../VERSION").readText().trim()
+// The app's own version, not the server's.
+//
+// They shared one file so that a pair could never be untested together --
+// but the server moves for reasons the app has no part in, and nine server
+// releases in two days each told a phone it was out of date over an APK
+// identical to the one already on it. Compatibility is carried by the
+// `features` list in the protocol, which says what a build can actually
+// do; a matching number never said that and only looked as though it did.
+//
+// Bump this when something in companion/ changes. It is still read from a
+// file rather than hardcoded here: a `const val` beside it went stale by a
+// release, and a freshly installed build announced the old number and was
+// offered an update it already had, forever.
+val declaredVersion: String = rootProject.file("VERSION").readText().trim()
 
 // Android compares updates by versionCode, an integer that must only ever
 // go up; it never looks at the name. 1.2.0 -> 10200, which stays ordered as

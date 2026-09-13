@@ -135,7 +135,7 @@ class FreeSpaceService : AccessibilityService() {
             (if (outcome.dwelledSeconds > 0) " Stayed ${outcome.dwelledSeconds}s." else "")
         relay.report(instruction.requestId, instruction.action, outcome.ok,
                      outcome.detail, outcome.items, outcome.freedBytes,
-                     outcome.dwelledSeconds, outcome.backup)
+                     outcome.dwelledSeconds, outcome.backup, outcome.settled)
         return instruction.nextPollSeconds
     }
 
@@ -146,6 +146,13 @@ class FreeSpaceService : AccessibilityService() {
         val detail: String,
         val items: Int = 0,
         val freedBytes: Long = 0,
+        /**
+         * Whether Google Photos had actually stopped when this figure was
+         * read. False means the number is a floor and not a total: it used
+         * to be reported as a total regardless, so a 5.85 GB clear-out went
+         * back to the server as 3.5 GB and the rest was never mentioned.
+         */
+        val settled: Boolean = true,
     ) {
         /** What Google Photos said about its own backup, if we got to see
          *  it. Attached after the walk, because the only screen that shows
@@ -307,8 +314,22 @@ class FreeSpaceService : AccessibilityService() {
             //    phone writing a file mid-run would corrupt that. Believed
             //    only after we pressed the button that produces it.
             if (freed != null && pressed) {
-                return Outcome(true, "Freed ${Labels.format(freed)} on the phone.",
-                               0, freed)
+                // The figure on screen is Photos' own and beats diffing the
+                // disk -- but only once it has stopped changing. Photos
+                // updates it as it goes, so reading it the moment it appears
+                // catches a clear-out in the middle of itself.
+                val settled = waitForQuiet()
+                val onDisk = freedSince(before)
+                val total = maxOf(freed, onDisk)
+                // ok stays true either way: the button was pressed and
+                // space was freed. Only the watching stopped early, and
+                // `settled` is what says so.
+                return Outcome(
+                    true,
+                    if (settled) "Freed ${Labels.format(total)} on the phone."
+                    else "Freed at least ${Labels.format(total)} — Google Photos " +
+                         "was still working when the app stopped watching.",
+                    0, total, settled)
             }
 
             // 2. Also finished, with nothing to do. This is a success: the
@@ -364,10 +385,18 @@ class FreeSpaceService : AccessibilityService() {
 
         if (pressed) {
             // Pressed, and the confirmation screen never appeared or was
-            // missed. Believe the disk rather than the screen.
+            // missed. Believe the disk rather than the screen -- but only
+            // after it has stopped moving. This is the path that reported
+            // 3.5 GB of a 5.85 GB clear-out as though it were the whole of
+            // it: the walk simply ran out of steps while Photos worked on.
+            val settled = waitForQuiet()
             val freed = freedSince(before)
             return if (freed > 0)
-                Outcome(true, "Freed ${Labels.format(freed)} on the phone.", 0, freed)
+                Outcome(true,
+                    if (settled) "Freed ${Labels.format(freed)} on the phone."
+                    else "Freed at least ${Labels.format(freed)} — Google Photos " +
+                         "was still working when the app stopped watching.",
+                    0, freed, settled)
             else
                 Outcome(true, "Pressed the button; nothing needed clearing.", 0, 0)
         }
@@ -483,7 +512,14 @@ class FreeSpaceService : AccessibilityService() {
         pm.newWakeLock(
             android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
             android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
-            "companion:freeup").apply { acquire((180L + dwellSeconds) * 1000L) }
+            // Long enough to cover the walk, the dwell, and a settle that
+            // may run to SETTLE_STEPS. A lock that expires mid-clear-out
+            // puts the screen out, and a screen that is off draws no
+            // windows for the service to read.
+            "companion:freeup").apply {
+                acquire((180L + dwellSeconds) * 1000L +
+                        SETTLE_STEPS * SETTLE_MS)
+            }
     } catch (e: Exception) {
         null
     }
@@ -502,6 +538,43 @@ class FreeSpaceService : AccessibilityService() {
             km?.isKeyguardLocked == true -> LOCKED
             else -> "the screen was on and unlocked"
         }
+    }
+
+    /**
+     * Wait for a free-up to finish before reading what it freed.
+     *
+     * The walk's own budget is MAX_STEPS x POLL_MS -- about half a minute --
+     * and clearing several gigabytes on a 2016 phone takes several minutes.
+     * So it ran out, measured free space mid-operation, and returned that as
+     * the final figure: 3.5 GB of a 5.85 GB clear-out, reported as a
+     * success, with Google Photos still visibly working and the remaining
+     * 2.3 GB never mentioned to anybody.
+     *
+     * Free space climbing is the signal, and deliberately so: it needs no
+     * labels at all. The labels are the part of this app most likely to be
+     * renamed without warning, and a progress indicator is exactly the kind
+     * of string that would be. A disk getting emptier is not.
+     *
+     * Returns true when it settled, false when the budget ran out with the
+     * figure still moving -- which the caller has to pass on rather than
+     * round up into a total.
+     */
+    private fun waitForQuiet(): Boolean {
+        var best = relay.freeBytes()
+        if (best <= 0) return true          // cannot measure; nothing to wait for
+        var quiet = 0
+        for (step in 0 until SETTLE_STEPS) {
+            sleep(SETTLE_MS)
+            val now = relay.freeBytes()
+            if (now > best + SETTLE_SLACK) {
+                best = now
+                quiet = 0
+            } else {
+                quiet++
+                if (quiet >= SETTLE_QUIET) return true
+            }
+        }
+        return false
     }
 
     private fun freedSince(before: Long): Long {
@@ -599,6 +672,17 @@ class FreeSpaceService : AccessibilityService() {
         private const val MAX_STEPS = 45
         private const val MAX_NODES = 600
         private const val POLL_MS = 700L
+
+        // Waiting for a free-up to finish. Several gigabytes on a 2016
+        // phone is minutes of work, so the budget is generous; the loop
+        // leaves as soon as the disk stops changing, so a small clear-out
+        // still costs about SETTLE_QUIET x SETTLE_MS.
+        private const val SETTLE_MS = 3000L
+        private const val SETTLE_QUIET = 4          // 12s of no change
+        private const val SETTLE_STEPS = 200        // 10 minutes, then give up
+        // Ordinary background writes are not progress. Deletion moves free
+        // space by megabytes; a log line does not.
+        private const val SETTLE_SLACK = 4L * 1024 * 1024
 
         // Backing out of a stale result mid-walk. Three is already more
         // screens than the path has; past that, Back is not working and

@@ -93,12 +93,49 @@ COMPANION = ROOT / "companion" / "app" / "src" / "main" / "java" / "com" / \
             "immichoutbox" / "companion"
 
 
-def test_the_app_takes_its_version_from_the_file_too():
-    """build.gradle.kts must read VERSION rather than carry a copy."""
+def test_the_app_takes_its_version_from_its_own_file():
+    """build.gradle.kts must read companion/VERSION rather than carry a copy.
+
+    Its own, not the server's. They shared one file so a pair could never be
+    untested together, but the server moves for reasons the app has no part
+    in and every such move told a phone it was out of date over an APK
+    identical to the one on it. What a build can actually do is carried by
+    the `features` list in the protocol; a matching number never said that
+    and only looked as though it did.
+    """
     gradle = (ROOT / "companion" / "app" / "build.gradle.kts").read_text()
-    assert 'rootProject.file("../VERSION")' in gradle
+    assert 'rootProject.file("VERSION")' in gradle
+    assert 'rootProject.file("../VERSION")' not in gradle, \
+        "that is the server's version, and the two are separate now"
     assert not re.search(r'versionName\s*=\s*"\d', gradle), \
-        "versionName is hardcoded and will drift from VERSION"
+        "versionName is hardcoded and will drift from the file"
+
+
+def test_the_app_has_a_version_of_its_own():
+    app = (ROOT / "companion" / "VERSION").read_text().strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", app), app
+
+
+def test_the_apps_version_only_ever_goes_up():
+    """Android compares by versionCode and refuses anything not above what
+    is installed. The split nearly shipped a companion at 1.0.0 -- code
+    10000, against 21000 already on the phone -- which Android would have
+    turned down as a downgrade, silently, forever.
+    """
+    def code(v):
+        a, b, c = (int(x) for x in v.split("."))
+        return a * 10000 + b * 100 + c
+
+    app = (ROOT / "companion" / "VERSION").read_text().strip()
+    # Every number this app has ever been released under came from the
+    # shared file, so the highest of those is the floor.
+    shipped = max(code(m) for m in re.findall(
+        r"^## (\d+\.\d+\.\d+)", (ROOT / "CHANGELOG.md").read_text(),
+        re.M))
+    assert code(app) >= shipped, (
+        f"companion/VERSION is {app} (code {code(app)}), at or below the "
+        f"{shipped} already installed from the shared-file era; Android "
+        "would refuse it as a downgrade")
 
 
 def test_the_app_does_not_hardcode_a_version_anywhere():
