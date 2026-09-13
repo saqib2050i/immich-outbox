@@ -1730,18 +1730,20 @@ function setDirty(v){
     if (e.target.closest("#settings")) setDirty(true);
   }));
 
-const BOOLS = ["paused","include_video","ongoing_enabled","backfill_enabled",
-               "backup_enabled",
-               "companion_enabled","companion_auto","companion_dwell_enabled",
-               "companion_wait_for_backup",
-               "fix_dates"];
+// No list of which settings are checkboxes. There was one, and adding a
+// checkbox without remembering to add its name to it made the control
+// completely inert: fillSettings wrote the stored value into `.value`
+// instead of `.checked`, so it always drew unticked, and readSettings sent
+// that same `.value` back instead of what had been clicked. The box could
+// be ticked, saved, and reported as saved, and nothing had been read from
+// it at any point. The DOM already knows what a checkbox is.
 const SECRETS = ["immich_api_key","syncthing_api_key"];
 
 function fillSettings(cfg){
   for (const [k, v] of Object.entries(cfg)){
     const el = document.getElementById("s_" + k);
     if (!el) continue;
-    if (BOOLS.includes(k)) el.checked = !!v;
+    if (el.type === "checkbox") el.checked = !!v;
     else if (SECRETS.includes(k)) el.placeholder = v ? "unchanged" : "not set";
     else el.value = v;
   }
@@ -1751,7 +1753,7 @@ function readSettings(){
   const out = {};
   document.querySelectorAll("#settings input").forEach(el => {
     const k = el.id.replace(/^s_/, "");
-    out[k] = BOOLS.includes(k) ? el.checked
+    out[k] = el.type === "checkbox" ? el.checked
            : el.type === "number" ? Number(el.value) : el.value;
   });
   return out;
