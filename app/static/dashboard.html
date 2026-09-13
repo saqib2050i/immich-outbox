@@ -2240,11 +2240,15 @@ const ZONE = {
   file: ["The file says so", "It carries its own offset. Certain."],
   gps:  ["Its coordinates say so",
          "Immich derived the zone from where the shutter was pressed. Certain."],
-  immich: ["Immich holds one", "Not from the file, but not a guess either."],
   assumed: ["This library's rule",
-            "No zone anywhere, so the date in Settings decides. Right for a "
-            + "photo taken at home and wrong for one taken on a trip — the "
-            + "only group here that can be wrong."],
+            "No zone in the file and no coordinates, so the date in Settings "
+            + "decides. Right for a photo taken at home and wrong for one "
+            + "taken on a trip."],
+  immich: ["Only what Immich defaults to",
+           "No offset in the file, no coordinates, and outside the rule in "
+           + "Settings — so this is Immich's own default, which in practice "
+           + "is the machine that ran the import rather than anywhere the "
+           + "photo was taken. The weakest thing here."],
   none: ["No zone at all", "Nothing to go on."],
 };
 
