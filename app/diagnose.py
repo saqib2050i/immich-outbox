@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -740,11 +741,39 @@ def wall_clock(says: dict, exif: dict,
     base = _naive(says.get("local_date_time"))
     if base is None:
         return None, off, kind
-    if kind == "assumed" and off:
-        # localDateTime is the instant here, because Immich had nothing to
-        # go on. Every other provenance means Immich already applied one.
+    # The question is whether *Immich* knew a zone, not where we found one.
+    # localDateTime is fileCreatedAt converted through Immich's own
+    # timeZone, so when that was a default the two are the same number and
+    # the offset still has to be added -- even once the file itself carries
+    # one, because writing a tag into the outbox copy does not change what
+    # Immich holds. Keying this on our provenance instead meant a file went
+    # from "11:29:52" to "06:29:52" the moment it was corrected, and the
+    # report then accused it of disagreeing with Immich by exactly the five
+    # hours it had just been given on purpose.
+    if not _immich_knew_the_zone(says) and off:
         return base + timedelta(hours=off), off, kind
     return base, off, kind
+
+
+def _immich_knew_the_zone(says: dict) -> bool:
+    """Did Immich have anything to derive a zone from?
+
+    Coordinates, or a timeZone that is not its UTC fallback. Immich reads an
+    offset tag at import too, but that shows up as a non-UTC timeZone here,
+    so both routes are covered by the same two checks.
+    """
+    if says.get("latitude") is not None and says.get("longitude") is not None:
+        return True
+    zone = says.get("time_zone")
+    if zone and str(zone).strip().lower() not in UTC_ISH:
+        return True
+    # And the data says so itself: localDateTime is fileCreatedAt converted
+    # through Immich's zone, so the two differing *is* Immich having applied
+    # one. Stronger than the label, since it cannot be out of step with the
+    # numbers beside it.
+    local, created = (_naive(says.get("local_date_time")),
+                      _naive(says.get("file_created_at")))
+    return local is not None and created is not None and local != created
 
 
 def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | None:
@@ -774,7 +803,8 @@ def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | Non
         return None
 
 
-def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None:
+def _agrees_with_immich(exif: dict, says: dict, kind: str | None,
+                        taken_at: str | None = None) -> dict | None:
     """Having a date is not the same as having the right one.
 
     Two different comparisons, and swapping them is a five-hour error. A
@@ -795,10 +825,14 @@ def _agrees_with_immich(exif: dict, says: dict, kind: str | None) -> dict | None
         theirs = _instant(says.get("file_created_at"))
         label = "Immich's fileCreatedAt, the UTC instant"
     else:
-        a, b = _exif_dt(raw), _naive(says.get("local_date_time"))
+        # The corrected clock, not the raw field. Comparing a stamped file
+        # against Immich's unconverted localDateTime reports the correction
+        # itself as a disagreement.
+        a = _exif_dt(raw)
+        b, _, _ = wall_clock(says, exif, taken_at)
         mine = a.timestamp() if a else None
         theirs = b.timestamp() if b else None
-        label = "Immich's localDateTime, the wall clock where it was taken"
+        label = "when Immich says it was taken"
     if mine is None or theirs is None:
         return None
     if abs(mine - theirs) <= 120:
@@ -907,7 +941,8 @@ def _findings(rep: dict) -> list[dict]:
 
     # 2. And having a date is not the same as having the right one.
     if ref and "error" not in ref:
-        agree = _agrees_with_immich(ref, rep.get("says") or {}, kind)
+        agree = _agrees_with_immich(ref, rep.get("says") or {}, kind,
+                                    asset.get("taken_at"))
         if agree:
             out.append(agree)
 
@@ -996,15 +1031,29 @@ def _findings(rep: dict) -> list[dict]:
             changed = sorted({k for k in set(a_d) | set(b_d)
                               if a_d.get(k) != b_d.get(k)})
             cfg = settings.load()
-            why = ("date rewriting is on and this asset is flagged as corrected"
-                   if cfg.fix_dates and asset.get("date_mismatch")
-                   else "date rewriting is OFF for this asset, so nothing here "
-                        "should have altered it")
-            out.append({"level": "bad", "text":
-                        f"The outbox copy differs from Immich's original "
-                        f"({a.get('bytes')} vs {b.get('bytes')} bytes) — {why}."
-                        + (f" Tags that differ: {', '.join(changed)}."
-                           if changed else "")})
+            if asset.get("stamped_at"):
+                # Told apart from corruption by the ledger, because from here
+                # the two look identical -- which is the confusion this whole
+                # tool exists to end, and introducing a fresh instance of it
+                # while fixing one would be careless.
+                out.append({"level": "ok", "text":
+                            "The outbox copy differs from Immich's original "
+                            "because a missing capture date was written into "
+                            f"it here on {str(asset['stamped_at'])[:19]}: "
+                            f"{asset.get('stamped_note') or 'date tags'}. "
+                            "Immich's own file is untouched."})
+            else:
+                why = ("date rewriting is on and this asset is flagged as "
+                       "corrected"
+                       if cfg.fix_dates and asset.get("date_mismatch")
+                       else "date rewriting is OFF for this asset, so nothing "
+                            "here should have altered it")
+                out.append({"level": "bad", "text":
+                            f"The outbox copy differs from Immich's original "
+                            f"({a.get('bytes')} vs {b.get('bytes')} bytes) — "
+                            f"{why}."
+                            + (f" Tags that differ: {', '.join(changed)}."
+                               if changed else "")})
 
     # 7. Whatever exiftool wanted to complain about.
     for where, exif in (("Immich's copy", src), ("the outbox copy", dst)):
@@ -1176,6 +1225,143 @@ def propose(rep: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: applying one correction. The only place in this module that
+# writes, and it writes to the outbox copy and nothing else.
+# ---------------------------------------------------------------------------
+
+def _stamp(path: str, writes: list[dict]) -> tuple[bool, str]:
+    """Write the proposed tags into a copy, then move it over the original.
+
+    Never in place. The outbox is a Syncthing folder, so a file edited where
+    it lies is a file Syncthing may start transferring halfway through the
+    edit. The delivery path solved this already and this follows it exactly:
+    a `.partial-` dotfile inside the outbox -- inside, because `/mnt/user` is
+    a FUSE overlay and a rename across two of its directories fails with
+    EXDEV -- and `os.replace`, which within one directory is atomic.
+
+    `sweep_partials()` already knows both names this can leave behind, its
+    own and exiftool's, so a crash mid-write cleans up on the next cycle.
+    """
+    args = [f"-{w['tag']}={w['value']}" for w in writes]
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=config.OUTBOX_DIR,
+                                   prefix=".partial-", suffix=".part")
+        os.close(fd)
+        shutil.copy2(path, tmp)          # copy2: the mtime comes with it
+        r = subprocess.run(
+            ["exiftool", "-overwrite_original", "-P", *args, "-q", tmp],
+            capture_output=True, timeout=180, check=False)
+        if r.returncode != 0:
+            detail = (r.stderr or b"").decode(errors="replace").strip()[:200]
+            return False, f"exiftool refused the file: {detail}"
+        os.replace(tmp, path)
+        os.chmod(path, 0o664)
+        tmp = None
+        return True, ""
+    except FileNotFoundError:
+        return False, ("exiftool is not installed in this image, so nothing "
+                       "can be written. Everything else still works.")
+    except (subprocess.SubprocessError, OSError) as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+async def apply_correction(filename: str) -> dict:
+    """Write the proposal into the outbox copy of one file.
+
+    Everything is re-derived here rather than trusted from the page: the
+    trace runs again, the proposal is computed again, and the file is read
+    again afterwards to confirm the tag is in it. A proposal is a
+    description of a file as it was, and the file can have moved on.
+    """
+    rep = await trace(filename)
+    out: dict = {"filename": rep.get("filename"), "trace": rep}
+    if rep.get("problem"):
+        out["ok"] = False
+        out["text"] = rep["problem"]
+        return out
+
+    # Asked before the proposal, because it is the more useful answer and
+    # it holds whatever Immich had to say: with nothing in the outbox there
+    # is nothing this may write to, and why the proposal came out empty is
+    # a second-order question.
+    ob = rep.get("outbox") or {}
+    if not ob.get("present"):
+        out["ok"] = False
+        out["text"] = ("There is no outbox copy to correct. Send it first — "
+                       "the correction is applied to the file on its way to "
+                       "the phone, never to Immich's original.")
+        return out
+
+    prop = rep.get("proposal") or {}
+    if not prop.get("needed"):
+        out["ok"] = False
+        out["text"] = ("Nothing to write. " + (prop.get("why") or ""))
+        return out
+
+    # Re-read rather than trust the report: never overwrite a date that is
+    # already there. The check that matters is made against the file, at the
+    # moment of writing.
+    exif = read_exif(ob["path"])
+    if "error" in exif:
+        out["ok"] = False
+        out["text"] = f"Could not read the outbox copy: {exif['error']}"
+        return out
+    video = is_video(exif, (rep.get("asset") or {}).get("kind"))
+    state, raw, _ = date_state(exif, *(VIDEO_DATE if video else PHOTO_DATE))
+    if state == VALUE:
+        out["ok"] = False
+        out["text"] = (f"The outbox copy already carries a date "
+                       f"({str(raw).strip()}), and a date that is there is "
+                       "never overwritten. Whatever the report said, the "
+                       "file has moved on since.")
+        return out
+
+    ok, why = _stamp(ob["path"], prop["writes"])
+    if not ok:
+        out["ok"] = False
+        out["text"] = f"Nothing was written: {why}"
+        return out
+
+    # The mtime carries the date for anything that cannot read the tag, and
+    # exiftool's -P preserves whatever the copy had. Set it deliberately
+    # rather than relying on that.
+    feeder.stamp_capture_time(ob["path"], (rep.get("asset") or {}).get("taken_at"))
+
+    note = ", ".join(f"{w['tag']}={w['value']}" for w in prop["writes"])
+    c = db.connect()
+    with db._lock:  # noqa: SLF001
+        c.execute("UPDATE assets SET stamped_at = ?, stamped_note = ? "
+                  "WHERE id = ?", (db.now(), note, rep["asset"]["id"]))
+        c.commit()
+        db._bump()  # noqa: SLF001
+    db.log("info", f"{filename}: wrote a missing capture date into the "
+                   f"outbox copy — {note}")
+
+    # Read it back. A write nobody verified is a claim.
+    after = read_exif(ob["path"])
+    st2, raw2, _ = date_state(after, *(VIDEO_DATE if video else PHOTO_DATE))
+    out["ok"] = st2 == VALUE
+    out["text"] = (
+        f"Written, and read back: the outbox copy now carries "
+        f"{str(raw2).strip()}. Syncthing will take it to the phone. It is no "
+        "longer byte-for-byte identical to Immich's original, deliberately, "
+        "and the ledger records that so a later trace does not read it as "
+        "damage." if out["ok"] else
+        "exiftool reported success but the tag is not in the file when read "
+        "back. Nothing here can explain that; treat the file as untouched "
+        "and look at the log.")
+    out["written"] = prop["writes"]
+    return out
+
+
 async def trace(filename: str, send: bool = False) -> dict:
     """The whole report for one file."""
     rep: dict = {"filename": (filename or "").strip(), "asked_at": db.now()}
@@ -1198,7 +1384,8 @@ async def trace(filename: str, send: bool = False) -> dict:
     rep["asset"] = {k: row.get(k) for k in
                     ("id", "filename", "state", "kind", "size", "taken_at",
                      "exif_taken_at", "date_mismatch", "forced", "outbox_name",
-                     "attempts", "last_error", "missing_at")}
+                     "attempts", "last_error", "missing_at",
+                     "stamped_at", "stamped_note")}
 
     if send:
         rep["sent"] = await _send_now(row)
@@ -1287,6 +1474,14 @@ def _why_not_sendable(row: dict) -> str | None:
                 "Google Photos, so this one really would arrive as a "
                 "duplicate rather than being recognised. Turn that setting "
                 "off to send it untouched")
+    if state == "confirmed" and row.get("stamped_at"):
+        # The exception above rests on the bytes being unchanged. They are
+        # not: a date was written into this one, so Google Photos sees a file
+        # it has never held and adds it rather than recognising it.
+        return ("it is already confirmed and a capture date was written into "
+                "it here, so it is no longer the file Google Photos already "
+                "holds. Sending it again would add a second copy rather than "
+                "being recognised as the one it has")
     if row.get("missing_at"):
         return ("Immich no longer serves the original: the asset is in the "
                 "ledger but its file is offline or moved out of an external "

@@ -90,6 +90,13 @@ MIGRATIONS = (
     ("missing_at", "TEXT"),
     ("exif_taken_at", "TEXT"),
     ("date_mismatch", "INTEGER NOT NULL DEFAULT 0"),
+    # When a missing capture date was written into the outbox copy by hand.
+    # Recorded because the trace compares the two copies byte for byte and
+    # calls any difference an alarm -- deliberately correcting a file would
+    # otherwise be indistinguishable from something corrupting it, which is
+    # the one confusion this whole tool exists to end.
+    ("stamped_at", "TEXT"),
+    ("stamped_note", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be

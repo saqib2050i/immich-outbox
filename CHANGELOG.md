@@ -10,6 +10,47 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.10.0
+
+**Phase 3: one correction, written.** The proposal grows a second button —
+*Write this into the outbox copy* — and it is the only thing in the
+diagnostic path that writes. It touches the outbox copy and nothing else:
+Immich stays read-only, and the write goes through a `.partial-` dotfile
+inside the outbox followed by `os.replace`, so Syncthing never sees a
+partial edit. That is the delivery path's own pattern, and
+`sweep_partials()` already knows both names a crash can leave behind.
+
+Everything is re-derived at the moment of writing rather than trusted from
+the page: the trace runs again, the proposal is computed again, the file is
+re-read to check it does not already carry a date — **a date that is there
+is never overwritten** — and it is read back afterwards, because a write
+nobody verified is a claim.
+
+**A deliberate correction is recorded.** `stamped_at` and `stamped_note` go
+into the ledger, so a later trace says *this differs from Immich because a
+date was written into it here* rather than raising the invariant-2a alarm.
+Telling a corrected file from a corrupted one is the whole purpose of this
+tool; adding a fresh way to confuse the two while fixing one would have
+been careless. An unexplained difference is still an alarm, and a test
+holds both halves of that.
+
+It also narrows the re-send exception from 2.7.2, which rested on the bytes
+being unchanged. A stamped file's are not — Google Photos would see a file
+it has never held and add it — so a confirmed file carrying `stamped_at` is
+refused again.
+
+**And a bug the first real write turned up.** Immich's `localDateTime` is
+`fileCreatedAt` converted through its own `timeZone`, so where that was the
+UTC fallback the two are the same number and the wall clock is that plus
+the offset. That was keyed on where *we* found a zone rather than on
+whether *Immich* had one — so stamping a file gave it an offset tag, which
+flipped the derivation, and the next trace accused the file of being five
+hours from Immich: precisely the correction just applied on purpose.
+`_immich_knew_the_zone()` decides it now, and its last resort is the
+strongest — `localDateTime` and `fileCreatedAt` differing *is* Immich
+having applied a zone, and that cannot be out of step with the numbers
+beside it.
+
 ## 2.9.0
 
 **Phase 2: the trace can propose a correction, and writes nothing.** Where

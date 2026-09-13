@@ -426,6 +426,19 @@ async def diagnose_file(payload: dict | None = None):
                                 send=bool(d.get("send")))
 
 
+@app.post("/api/diagnose/apply")
+async def diagnose_apply(payload: dict | None = None):
+    """Write a missing capture date into one file's outbox copy.
+
+    The only write in the diagnostic path, and it touches the outbox copy
+    and nothing else — Immich stays read-only, and the ledger records that
+    the difference was deliberate so a later trace does not read it as
+    damage. Everything is re-derived here rather than trusted from the page.
+    """
+    d = payload or {}
+    return await diagnose.apply_correction(str(d.get("filename") or ""))
+
+
 @app.get("/api/date-mismatch")
 async def date_mismatch():
     """Files whose date was corrected in Immich but not in the file."""
