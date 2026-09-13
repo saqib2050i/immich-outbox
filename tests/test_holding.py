@@ -467,3 +467,126 @@ async def test_an_approved_correction_says_it_is_correcting(rig, monkeypatch):
     _, used = feeder.reconcile()
     await feeder.top_up(used)
     assert seen == ["correcting"]
+
+
+# ---- a held verdict must not go stale ------------------------------------
+#
+# A held file is never claimed a second time, so its stored answer is frozen
+# at whatever the build and the settings said that day. Forty-seven photos
+# from 2022 sat under "no zone, outside the rule in Settings" while the rule
+# covered every one of them -- they had been read before the rule outranked
+# a bare Immich zone, and nothing ever looked again.
+
+STALE = {"ok": True, "time_zone": "UTC+1", "latitude": None, "longitude": None,
+         "local_date_time": "2022-07-02T14:53:54.000Z",
+         "file_created_at": "2022-07-02T13:53:54.000Z"}
+
+
+async def test_a_rule_set_afterwards_reaches_a_file_already_held(rig):
+    """The whole complaint. The file is not fetched again; everything
+    needed to judge it was kept when it was."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    row = {"id": "a", "kind": "IMAGE", "taken_at": "2022-07-02T13:53:54.000Z",
+           "hold_kind": "unfixable", "hold_zone": "immich", "writes": [],
+           "says": STALE}
+    out = diagnose.rejudge(row)
+    assert out["hold_zone"] == "assumed"
+    assert out["hold_kind"] != "unfixable", "it is no longer the ceiling"
+    w = {x["tag"]: x["value"] for x in out["writes"]}
+    assert w["OffsetTimeOriginal"] == "+05:00"
+    assert w["DateTimeOriginal"] == "2022:07:02 18:53:54", \
+        "the instant plus the rule, not Immich's own default"
+
+
+async def test_a_reading_is_left_alone(rig):
+    """Coordinates and the file's own offset are readings. No setting
+    improves on them, so re-judging must not overwrite one with a rule."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    for kept in ("gps", "file"):
+        row = {"id": "a", "kind": "IMAGE", "hold_zone": kept,
+               "taken_at": "2022-07-02T13:53:54.000Z",
+               "hold_kind": "blank", "says": STALE,
+               "writes": [{"tag": "DateTimeOriginal", "value": "keep me",
+                           "from": "x"}]}
+        assert diagnose.rejudge(row)["writes"][0]["value"] == "keep me"
+
+
+async def test_a_row_with_nothing_kept_is_returned_unchanged(rig):
+    """Read by a build that kept no answer. Nothing can be worked out, so
+    nothing is invented -- it needs reading again instead."""
+    from app import diagnose
+    row = {"id": "a", "kind": "IMAGE", "hold_zone": "immich",
+           "hold_kind": "unfixable", "writes": [], "says": None}
+    assert diagnose.rejudge(row) == row
+
+
+async def test_reading_again_clears_what_was_decided(rig, monkeypatch):
+    """It goes back without an approval, so the next fetch classifies it
+    fresh rather than writing tags nobody has looked at since."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank", "zone": "immich",
+                "writes": [{"tag": "DateTimeOriginal", "value": "old",
+                            "from": "x"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    assert db.recheck([r["id"] for r in db.held()]) == 1
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "pending" and row["forced"] == 1
+    assert row["approved_at"] is None, "not an approval"
+    assert row["hold_writes"] is None and row["checked_at"] is None
+
+
+async def test_what_immich_said_is_kept_when_a_file_is_held(rig, monkeypatch):
+    """Without it there is nothing to judge again from."""
+    import json
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def detail(asset_id):
+        return dict(STALE)
+    monkeypatch.setattr(immich, "asset_detail", detail)
+    monkeypatch.setattr(diagnose, "read_exif",
+                        lambda p: {"EXIF:DateTimeOriginal": ""})
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["hold_says"], "nothing was kept"
+    assert json.loads(row["hold_says"])["time_zone"] == "UTC+1"
+
+
+async def test_the_poll_carries_the_held_count(rig, monkeypatch):
+    """The badge is written from it on every tick, so a file kept back is
+    visible without opening the tab it is kept on."""
+    from fastapi.testclient import TestClient
+    from app import auth, db, diagnose, feeder, immich, settings
+    from app.main import app
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+
+    async def fake(path, row):
+        return {"hold": True, "kind": "blank", "checked_at": db.now(),
+                "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    auth.set_password("a-good-password")
+    c = TestClient(app)
+    c.post("/api/login", json={"password": "a-good-password"})
+    assert c.get("/api/status").json()["counts"]["held"] == 1

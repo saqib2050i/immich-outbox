@@ -10,6 +10,77 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.16.0
+
+**A refresh threw away everything the reader had chosen.** The Dates tab
+came back grouped by whatever the markup listed first, and Library re-opened
+the newest year on top of whichever one was being read. That is the same
+fault as the redraw bug this page was already careful about — *a redraw must
+never throw away what the reader was doing* — arriving by a slower route.
+
+Kept across a reload now: which years, months and file lists are open, the
+Dates grouping and sort, and which Dates groups are expanded. Storage is
+wrapped, because a private window or a browser told to block site data
+throws on the first read rather than returning nothing, and none of this is
+worth taking the page down for.
+
+Two defaults now yield to a choice made on an earlier visit rather than only
+to one made in this session:
+
+- Library opens the newest year holding something only for somebody who has
+  never opened one.
+- The Dates tab opens its first group only for somebody who has never opened
+  one. It used to open on **every render** — and that list redraws after
+  every sign-off, so a group collapsed by hand came back the moment a file
+  was signed off out of it.
+
+A remembered grouping is only restored if this build still offers it: a
+renamed key would select nothing and silently group everything as one, which
+looks like the data is wrong rather than the memory.
+
+
+**Forty-seven photos from 2022 sat under "outside the rule in Settings"
+while the rule covered every one of them.** Their verdicts were written when
+the file was read, and a held file is never claimed a second time — so the
+answer was frozen at whatever the build and the settings said that day.
+Those had been judged before the rule outranked a bare Immich zone, and
+nothing ever looked again.
+
+What Immich said about a file is kept now, so a verdict can be worked out
+again without fetching anything: the fault came from the file and does not
+change, and the zone comes from Immich and the rule, both of which are in
+hand. The Dates tab re-judges every row as it draws it, so **a rule changed
+in Settings reaches files that were read before it**. Readings are left
+alone — coordinates and the file's own offset are not improved on by a
+setting.
+
+**And nothing said files were being held unless you went looking.** The
+Dates badge was written by the Dates tab's own render, which runs when the
+tab is opened — so until somebody thought to look there, a held file left no
+mark anywhere, which is the one thing a badge is for. It is written on every
+tick now, from the counts the poll already carries, and the tab's render no
+longer writes it: two writers disagreeing on every tick is how the Queue tab
+came to flicker between "Queue" and "Queue (N)".
+
+Rows read by a build that kept nothing get a **"Read N again"** button
+instead. They go back without an approval, so the next fetch classifies them
+fresh rather than writing tags nobody has reviewed.
+
+**And the clock has to follow the zone that was chosen.** `localDateTime` is
+`fileCreatedAt` converted through Immich's *own* `timeZone`, so it is the
+wall clock only while that zone is the one being used. Two cases where it is
+not, and both were wrong:
+
+- the rule wins **against** Immich's zone, so taking Immich's converted
+  value applies the zone that just lost — a 2022 Karachi photo came out at
+  14:53:54 instead of 18:53:54
+- the offset is in the file but Immich never saw it, because we wrote it
+  into the outbox copy after the import
+
+It was keyed on whether Immich knew *a* zone, which was the same question
+only while the rule could not outrank one. It asks whether Immich's zone is
+the one winning. Four cases, each with a test.
+
 ## 2.15.1
 
 **Forty-two files were called unfixable while Immich was holding their zone

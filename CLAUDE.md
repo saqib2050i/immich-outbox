@@ -231,6 +231,15 @@ anywhere to share one from. Three things in it are load-bearing:
   item, so a figure sitting underneath shoved the year label into the middle
   of the row.
 
+**Nor must a refresh.** Which years, months and file lists are open, the
+Dates grouping and sort, and which Dates groups are expanded all live in
+`localStorage` through `remember()` / `recall()`, both wrapped because a
+private window throws on the first read rather than returning nothing. Two
+"open something useful" defaults yield to a choice made on an earlier visit,
+not only to one made in this session -- and the Dates one used to reapply on
+*every* render, so a group collapsed by hand reopened the moment a file was
+signed off out of it.
+
 **A redraw must never throw away what the reader was doing.** Every ledger
 write pushes an SSE event, so the dashboard redraws several times a second
 while anything is moving. Rebuilding a list or a tree on each of those
@@ -335,6 +344,24 @@ Pakistan-era photo five hours early. It is called `exif_original_utc` in
 `exifInfo.make` and `.model` come back as `""` rather than null on a file
 whose EXIF was blanked — the same blank-versus-missing distinction, one
 layer up, and `or None` is what handles it.
+
+**A held file's verdict must not go stale.** It is never claimed a second
+time, so whatever was decided when it was read is what it keeps -- and a
+rule changed in Settings afterwards never reaches it. `hold_says` keeps what
+Immich said, `diagnose.rejudge()` works the answer out again from that as
+the Dates tab draws each row, and rows kept by a build that stored nothing
+get a "Read N again" that sends them back *without* an approval. Readings --
+coordinates, the file's own offset -- are left alone, because no setting
+improves on them.
+
+**The wall clock follows the zone that was chosen, not the one Immich
+chose.** `localDateTime` is `fileCreatedAt` converted through Immich's own
+`timeZone`, so it is the wall clock only while that zone is the one in use.
+Two cases where it is not: the rule wins *against* Immich's zone, so its
+conversion applies the zone that just lost; and an offset in the file that
+Immich never saw, because it was written into the outbox copy after import.
+Both were wrong while this was keyed on whether Immich knew *a* zone -- the
+same question only for as long as the rule could not outrank one.
 
 **Immich's `localDateTime` is the wall clock only where Immich knew a
 zone.** It is `fileCreatedAt` converted through `exifInfo.timeZone`, so

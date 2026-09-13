@@ -283,8 +283,13 @@ def test_the_default_open_year_yields_to_a_deliberate_one():
     """Opening a useful year on first draw is a convenience; overriding what
     the user has chosen on every poll would be a bug."""
     assert "tlTouched" in HTML
-    guard = re.search(r"if \(!tlOpenYears\.size && !tlTouched\)", HTML)
+    guard = re.search(r"if \(!tlOpenYears\.size && !tlTouched([^)]*)\)", HTML)
     assert guard, "the default is not guarded by the user's own choice"
+    # And by a choice made on an earlier visit: a year restored from the
+    # last session is a deliberate one too, and the default used to open
+    # the newest year on top of it.
+    assert "tlRestored" in guard.group(1), \
+        "the default ignores what the last visit left open"
     toggle = HTML[HTML.index('yd.addEventListener("toggle"'):]
     assert "tlTouched = true" in toggle[:200], \
         "opening a year by hand does not disable the default"
@@ -515,3 +520,64 @@ def test_a_send_control_repaints_with_the_figures():
     paint = HTML[HTML.index("function paintFigures("):]
     paint = paint[:paint.index("function monthNode(")]
     assert paint.count("repaint(") == 2, "months and years both"
+
+
+def test_the_dates_badge_is_written_on_every_tick():
+    """It was written only by renderDates(), which runs when the tab is
+    opened -- so until somebody thought to look there was nothing anywhere
+    saying files were being kept back, which is the one thing a badge is
+    for."""
+    render = HTML[HTML.index("async function renderDates("):]
+    render = render[:render.index("async function renderOwed(")]
+    assert "badgeDates" not in render, \
+        "two writers disagreeing on every tick is how Queue came to flicker"
+    assert "badgeDates.hidden = !c.held" in HTML, \
+        "and the tick must write it from the counts the poll already carries"
+
+
+# ---- what the reader was doing, across a reload --------------------------
+#
+# A redraw already keeps open sections and scroll position. A refresh threw
+# all of it away: the Dates tab came back grouped by whatever the markup
+# listed first, and Library re-opened the newest year on top of whichever
+# one was being read. The same fault as the redraw bug, by a slower route.
+
+def test_storage_is_wrapped_because_it_is_not_always_there():
+    """A private window, or a browser told to block site data, throws on
+    the first read rather than returning nothing."""
+    for fn in ("function remember(", "function recall("):
+        src = HTML[HTML.index(fn):]
+        src = src[:src.index("\n}")]
+        assert "catch" in src, f"{fn} can throw and take the page with it"
+
+
+@pytest.mark.parametrize("key", ["openYears", "openMonths", "openFiles",
+                                 "dGroup", "dSort", "dOpen"])
+def test_each_choice_is_both_kept_and_restored(key):
+    """Written and never read is the same as not written at all."""
+    assert f'remember("{key}"' in HTML, f"{key} is never written"
+    # dGroup and dSort are restored by a loop over their ids, so the literal
+    # never appears inside recall(). What matters is that something reads
+    # them back, not how it spells it.
+    restored = (f'recall("{key}"' in HTML
+                or re.search(r'\["dGroup", "dSort"\]\.forEach[\s\S]{0,400}'
+                             r'recall\(id', HTML) and key in ("dGroup", "dSort"))
+    assert restored, f"{key} is written and never read"
+
+
+def test_the_dates_groups_do_not_reopen_on_every_render():
+    """That list redraws after every sign-off, so a group collapsed by hand
+    came back the moment a file was signed off out of it."""
+    src = HTML[HTML.index("async function renderDates("):]
+    src = src[:src.index("async function renderOwed(")]
+    assert "if (i === 0) det.open = true;" not in src
+    assert "dOpen === null ? i === 0" in src, \
+        "the first-group default must be for somebody who has never chosen"
+
+
+def test_a_grouping_this_build_no_longer_offers_is_not_restored():
+    """A renamed key would select nothing and silently group everything as
+    one, which looks like the data is wrong rather than the memory."""
+    src = HTML[HTML.index('["dGroup", "dSort"].forEach'):]
+    src = src[:src.index("window.addEventListener")]
+    assert "o.value === kept" in src

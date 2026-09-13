@@ -121,6 +121,13 @@ MIGRATIONS = (
     # again -- so signing off released a file into a loop and the
     # correction was never written.
     ("approved_at", "TEXT"),
+    # What Immich said about the file at the moment it was read. Kept so a
+    # verdict can be worked out again without fetching the file: a held file
+    # is never claimed a second time, so without this its answer is frozen
+    # at whatever the build and the settings said that day -- and 47 photos
+    # from 2022 sat under "outside the rule in Settings" while the rule
+    # covered every one of them.
+    ("hold_says", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -1330,7 +1337,7 @@ def record_check(asset_id: str, seen: dict) -> None:
     with _lock:
         c.execute(
             "UPDATE assets SET checked_at = ?, checked_sum = ?, hold_kind = ?,"
-            "                  hold_zone = ?, hold_writes = ?"
+            "                  hold_zone = ?, hold_writes = ?, hold_says = ?"
             # The name is reserved before the download, so a held file
             # carries one for a file that was never written. Cleared with
             # the state: a row naming a file that is not there is the shape
@@ -1340,7 +1347,8 @@ def record_check(asset_id: str, seen: dict) -> None:
             + " WHERE id = ?",
             ([seen.get("checked_at") or now(), seen.get("checked_sum"),
               seen.get("kind"), seen.get("zone"),
-              json.dumps(writes) if writes else None]
+              json.dumps(writes) if writes else None,
+              json.dumps(seen["says"]) if seen.get("says") else None]
              + ([state] if state else []) + [asset_id]))
         c.commit()
         _bump()
@@ -1387,7 +1395,8 @@ def held(limit: int = 5000) -> list[dict]:
     """
     rows = connect().execute(
         """SELECT id, filename, taken_at, kind, size, hold_kind, hold_zone,
-                  hold_writes, checked_at, state, confirmed_at, stamped_at
+                  hold_writes, hold_says, checked_at, state, confirmed_at,
+                  stamped_at
              FROM assets
             WHERE state = 'held'
             ORDER BY taken_at DESC, filename ASC
@@ -1399,6 +1408,10 @@ def held(limit: int = 5000) -> list[dict]:
             d["writes"] = json.loads(d.pop("hold_writes") or "[]")
         except ValueError:
             d["writes"] = []
+        try:
+            d["says"] = json.loads(d.pop("hold_says") or "null")
+        except ValueError:
+            d["says"] = None
         # Already in Google Photos wearing the wrong date. Split out hard
         # rather than offered as a grouping: correcting one of these means
         # clearing the old copy from Google Photos first, which is a
@@ -1406,6 +1419,31 @@ def held(limit: int = 5000) -> list[dict]:
         d["already_sent"] = bool(d.pop("confirmed_at"))
         out.append(d)
     return out
+
+
+def recheck(ids: list[str]) -> int:
+    """Read these files again rather than trusting what was decided before.
+
+    For rows whose stored verdict predates whatever changed -- a rule in
+    Settings, or the code that reads one. They go back to pending *without*
+    an approval, so the next fetch classifies them fresh instead of writing
+    tags nobody has looked at since.
+    """
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"""UPDATE assets SET state='pending', forced=1, attempts=0,
+                                  last_error=NULL, approved_at=NULL,
+                                  checked_at=NULL, checked_sum=NULL,
+                                  hold_kind=NULL, hold_zone=NULL,
+                                  hold_writes=NULL, hold_says=NULL
+                 WHERE id IN ({marks}) AND state='held'""", ids)
+        c.commit()
+        _bump()
+    return cur.rowcount
 
 
 def pending_to_immich(limit: int = 5000) -> list[dict]:
