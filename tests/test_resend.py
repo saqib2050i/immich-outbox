@@ -298,3 +298,59 @@ async def test_the_month_file_list_hides_what_immich_no_longer_has(rig):
     d = db.list_in_month("2026-09")
     assert d["total"] == 2
     assert {f["id"] for f in d["items"]} == {"asset-0", "asset-1"}
+
+
+# ---- a year is a period like any other -----------------------------------
+
+async def test_a_whole_year_can_be_sent(rig):
+    """Library offered nothing at the year level, so sending 2023 meant
+    opening it and pressing twelve months one at a time."""
+    from app import db
+    from conftest import asset
+    db.upsert_assets([asset(i, taken=f"2023-{(i % 12) + 1:02d}-05") for i in range(24)]
+                     + [asset(100 + i, taken="2024-06-05") for i in range(5)])
+    assert db.force_send_month("2023") == 24
+    rows = db.connect().execute(
+        "SELECT COUNT(*) c FROM assets WHERE forced = 1").fetchone()
+    assert rows["c"] == 24, "and nothing from 2024"
+
+
+async def test_a_year_and_a_month_use_the_same_query(rig):
+    """Matched by the length of what it was given, so the two controls
+    cannot drift apart."""
+    from app import db
+    from conftest import asset
+    db.upsert_assets([asset(1, taken="2023-03-05"), asset(2, taken="2023-04-05")])
+    assert db.force_send_month("2023-03") == 1
+    assert db.force_send_month("2023") == 2
+
+
+async def test_a_year_can_be_sent_again(rig):
+    from app import db
+    from conftest import asset
+    db.upsert_assets([asset(i, taken="2023-05-05") for i in range(4)])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='confirmed'")
+    c.commit()
+    assert db.force_send_month("2023") == 0, "invariant 4 unless asked"
+    assert db.force_send_month("2023", resend=True) == 4
+
+
+async def test_a_prefix_that_is_neither_is_refused(rig):
+    """"20" is a prefix of every date this library holds, and substr would
+    have matched the lot."""
+    from fastapi.testclient import TestClient
+    from app import auth, db
+    from app.main import app
+    from conftest import asset
+    db.upsert_assets([asset(1, taken="2023-03-05")])
+    auth.set_password("a-good-password")
+    c = TestClient(app)
+    c.post("/api/login", json={"password": "a-good-password"})
+
+    for bad in ("20", "2023-0", "", "2023-03-05"):
+        out = c.post("/api/month/send", json={"month": bad}).json()
+        assert out["ok"] is False, bad
+        assert out["queued"] == 0
+    assert db.connect().execute(
+        "SELECT COUNT(*) c FROM assets WHERE forced = 1").fetchone()["c"] == 0

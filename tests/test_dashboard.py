@@ -288,3 +288,61 @@ def test_the_default_open_year_yields_to_a_deliberate_one():
     toggle = HTML[HTML.index('yd.addEventListener("toggle"'):]
     assert "tlTouched = true" in toggle[:200], \
         "opening a year by hand does not disable the default"
+
+
+# ---- sending says the same thing at every level --------------------------
+
+def test_one_builder_draws_every_send_control():
+    """Year, month and category each rolled their own: a year offered
+    nothing, a month's control was inside its own expanded body, and a
+    category could send what was left but never send again. Three levels,
+    three vocabularies, drifting apart one edit at a time."""
+    assert "function sendControls(" in HTML
+    # Used at all four places that can send.
+    assert HTML.count("sendControls(") >= 5, \
+        "the builder exists but the levels are still drawing their own"
+
+
+def test_the_library_asks_in_the_button_not_in_a_browser_dialog():
+    """confirm() is a different window, with buttons you did not style,
+    asking about a page you can no longer see."""
+    start = HTML.index("function paintMonthBody(")
+    body = HTML[start:HTML.index("function ", start + 40)]
+    assert "confirm(" not in body, "Library still opens a browser dialog"
+    assert "armed(" in body, "and nothing replaced it"
+
+
+def test_an_armed_button_disarms_itself():
+    """A stray first press must not leave a loaded button on the page."""
+    src = HTML[HTML.index("function armed("):]
+    src = src[:src.index("\nasync function sendPeriod")]
+    assert "setTimeout(disarm" in src
+
+
+def test_the_send_control_does_not_toggle_the_row_it_sits_in():
+    """It lives inside a <summary>, where any click opens or closes the
+    thing it is attached to."""
+    src = HTML[HTML.index("function sendControls("):]
+    src = src[:src.index("\nfunction monthFigureText")]
+    assert "stopPropagation" in src
+
+
+def test_a_period_send_only_drops_its_own_months_from_the_cache():
+    """The cache stops a reopened month flashing "Loading…". A year's send
+    clearing all of it would be that bug, arriving by a new route."""
+    src = HTML[HTML.index("async function sendPeriod("):]
+    src = src[:src.index("\n// `period` is")]
+    assert "monthCache.clear()" not in src
+    assert "monthCache.delete(key)" in src
+
+
+def test_both_summaries_count_their_caret_as_a_column():
+    """summary::before is itself the first grid item, so adding a control
+    without widening the track list pushes the last child onto a second row
+    and into column one. Documented, and walked into twice."""
+    year = HTML[HTML.index(".tl-yr > summary{"):][:220]
+    month = HTML[HTML.index(".tl-mo > summary{"):][:260]
+    # caret + name + figures + controls
+    assert "grid-template-columns:auto 1fr auto auto" in year
+    # caret + name + counts + figures + tags + controls
+    assert "minmax(66px,auto) 1fr auto auto" in month
