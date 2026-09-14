@@ -460,14 +460,34 @@ async def dates_held():
 
 @app.post("/api/dates/release")
 async def dates_release(payload: dict | None = None):
-    """Sign held files off. They go next, carrying the correction recorded
-    for them."""
+    """Sign held files off. They go next, carrying the correction worked out
+    for them now -- the one the page was showing.
+
+    Judged again here, by the same function that drew the page, and stored
+    with the approval. The row on its own holds whatever the build that read
+    the file decided; the page re-judged it and this used not to, so a file
+    could be signed off beside one time and written with another.
+
+    A file with nothing to write is refused rather than released. The feeder
+    would otherwise send it on uncorrected, which is the fault the sign-off
+    was meant to fix, delivered to Google Photos for good.
+    """
     ids = [str(i) for i in ((payload or {}).get("ids") or []) if i]
-    n = db.release_held(ids)
+    decided = {}
+    for row in db.held(ids=ids):
+        row = diagnose.rejudge(row)
+        if row.get("writes"):
+            decided[row["id"]] = row
+    n = db.release_held(list(decided), decided)
+    refused = len(ids) - n
     if n:
-        db.log("send", f"{n} held file(s) signed off — queued with their "
-                       "recorded date correction")
-    return {"ok": True, "released": n}
+        db.log("send", f"{n} held file(s) signed off — queued with the date "
+                       "correction shown for them")
+    if refused:
+        db.log("info", f"{refused} held file(s) not signed off — nothing can "
+                       "be written to them as things stand, or they were no "
+                       "longer held")
+    return {"ok": True, "released": n, "refused": refused}
 
 
 @app.post("/api/dates/recheck")
