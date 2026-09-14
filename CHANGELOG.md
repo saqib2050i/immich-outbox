@@ -10,6 +10,39 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.16.2
+
+**A sign-off wrote what was stored, not what was shown.** The Dates tab
+re-judged every row as it drew it, and the sign-off did not: it approved the
+row as stored, and the feeder writes what is stored. So a file drawn at one
+time was released carrying another, and a file that had been unfixable when
+it was read — and was fixable by the time it was drawn — was released with
+nothing recorded to write and delivered uncorrected, which is the fault the
+sign-off exists to prevent. The sign-off now works the answer out again with
+the same function and stores it with the approval. A file with nothing to
+write is refused rather than released, and the feeder fails an approval
+that has nothing recorded instead of sending the file on.
+
+**2.16.0 could not re-judge anything read before it.** It worked a verdict
+out again from what Immich had said about the file, which only 2.16.0 keeps
+— so on a library read earlier, every held row was drawn exactly as read.
+47 photos from 2022 and 2023 stayed under "outside the rule in Settings"
+with the rule covering every one, and every group offered to download all
+of its files again. Under the rule nothing needs downloading: the wall clock
+is the capture instant plus the rule's offset, and the ledger's `taken_at`
+is that instant. Those rows are re-judged from the ledger now, and only a
+row outside the rule with nothing kept is offered a second read.
+
+That also reaches proposals the build before 2.16.0 got wrong. It ranked the
+rule above Immich's zone but still took Immich's clock, so for a file Immich
+had filed at UTC+1 it proposed the rule's +05:00 beside a time converted
+through UTC+1 — four hours early. Those rows are worked out again, say what
+they used to propose, and the tab counts them.
+
+**The fault is kept when nothing can be written.** "Unfixable" was stored
+in place of blank or absent, so a row the rule later reached could not say
+which its tag had been. Rows from before this say "Fault not recorded".
+
 ## 2.16.1
 
 **The app is rebuilt only when the app has changed.** Since the version

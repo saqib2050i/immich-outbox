@@ -348,11 +348,35 @@ layer up, and `or None` is what handles it.
 **A held file's verdict must not go stale.** It is never claimed a second
 time, so whatever was decided when it was read is what it keeps -- and a
 rule changed in Settings afterwards never reaches it. `hold_says` keeps what
-Immich said, `diagnose.rejudge()` works the answer out again from that as
-the Dates tab draws each row, and rows kept by a build that stored nothing
-get a "Read N again" that sends them back *without* an approval. Readings --
-coordinates, the file's own offset -- are left alone, because no setting
-improves on them.
+Immich said, and `diagnose.rejudge()` works the answer out again from that.
+Readings -- coordinates, the file's own offset -- are left alone, because
+no setting improves on them.
+
+**What a sign-off writes is what the page showed.** `rejudge()` is called
+twice: as the Dates tab draws each row, and again by `/api/dates/release`,
+which stores its answer *with* the approval, because the feeder writes
+whatever `hold_writes` holds. Until 2.16.2 only the first happened, so a
+row re-judged on screen was signed off carrying the stored answer the
+screen had just corrected -- and one that had been unfixable was released
+with nothing to write and delivered uncorrected. A release with nothing to
+write is refused now, and the feeder fails an approval that somehow has
+none rather than sending the file on.
+
+**A rule verdict needs nothing but the ledger.** Under the rule the wall
+clock is the capture instant plus the rule's offset, and `taken_at` *is*
+Immich's `fileCreatedAt` -- so a row read before `hold_says` existed is
+re-judged from the ledger alone (`_from_the_ledger`). Only a row outside
+the rule with nothing kept is marked `stale`, and only those are offered
+"Read N again". It used to key on the missing `hold_says`, which on a
+library read before 2.16.0 was every held row there was. Keep that
+distinction: a zone that needs Immich's answer cannot be invented from the
+ledger, and one that does not need it should not cost a download.
+
+**The fault is not the ceiling.** `hold_kind` is what is wrong with the
+file (blank, absent); whether anything can be written is `hold_writes`
+being empty. They were one field, `unfixable` overwrote the fault, and a
+row a later rule reached could no longer say whether its tag had been empty
+or missing -- those surface as `unrecorded`.
 
 **The wall clock follows the zone that was chosen, not the one Immich
 chose.** `localDateTime` is `fileCreatedAt` converted through Immich's own
@@ -417,6 +441,14 @@ specification, so it takes `fileCreatedAt` and no offset belongs beside it.
 Where the zone cannot be established at all, nothing is proposed and the
 report says why -- the instant is known and the wall clock is not, and
 there is no honest value for a tag defined as local time.
+
+**A GIF cannot carry EXIF, and nothing here accounts for that yet.** Given
+the four tags a still is proposed, exiftool 13.25 writes
+`XMP-exif:DateTimeOriginal` and `XMP-xmp:CreateDate`, drops both offsets
+without a word, and exits 0 -- so the correction reports four tags written
+and the ledger records four, over a file holding two, with no zone.
+Whether Google Photos reads XMP in a GIF at all has not been measured.
+Measured on a 1x1 GIF; a PNG takes all four, as an eXIf chunk.
 
 **A zone Immich reports is not always a zone Immich knows.** It derives one
 from GPS when the file carries no offset tag, and reports UTC when it has

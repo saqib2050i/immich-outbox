@@ -1249,9 +1249,9 @@ def propose(rep: dict) -> dict:
     }[zkind]
     clock = ("Immich's localDateTime, the wall clock, with its Z discarded"
              if zkind != "assumed" else
-             f"Immich's localDateTime plus {zone}; Immich reports UTC for "
-             "this file because it has nothing to go on, so what it shows is "
-             "the instant and the wall clock is that plus the offset")
+             f"Immich's fileCreatedAt, the capture instant, plus {zone}. "
+             "Under the rule Immich's own zone is set aside, and so is the "
+             "localDateTime it converted through that zone")
     stamp = offset_text(off)
 
     out["needed"] = True
@@ -1292,6 +1292,9 @@ def propose(rep: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 BLANK_FAULT, ABSENT_FAULT, UNFIXABLE, FINE = "blank", "absent", "unfixable", "ok"
+# A fault nobody kept. Builds before 2.16.2 stored "unfixable" *instead of*
+# blank or absent, so a row that has since become fixable cannot say which.
+UNRECORDED = "unrecorded"
 
 
 async def classify(path: str, row: dict) -> dict:
@@ -1339,9 +1342,14 @@ async def classify(path: str, row: dict) -> dict:
         if not prop.get("needed"):
             # Nothing can be written: no zone to be had, or Immich holds no
             # date either. Held all the same, because it is going to land
-            # wrong and saying so is the point -- but marked as the ceiling
-            # rather than as work waiting to be signed off.
-            out["kind"] = UNFIXABLE
+            # wrong and saying so is the point -- and with no writes, which
+            # is what marks it as the ceiling rather than as work waiting to
+            # be signed off.
+            #
+            # The fault is kept regardless. It used to be overwritten with
+            # "unfixable", which is a statement about the settings rather
+            # than the file -- so once a rule reached the file, nothing could
+            # say any more whether its tag had been empty or missing.
             out["hold"] = True
             out["why"] = prop.get("why", "")
             return out
@@ -1366,12 +1374,29 @@ def rejudge(row: dict) -> dict:
 
     `file` and `gps` are left alone. Those are readings, and no setting
     improves on them.
+
+    What comes back is what a sign-off writes, not only what the page draws:
+    `/api/dates/release` calls this again at the moment of signing and
+    stores the result. It used to redraw the page and leave the row alone,
+    so a file re-judged on screen was signed off carrying the answer the
+    screen had just corrected.
+
+    `stale` marks the one case nothing here can redo -- read before Immich's
+    answer was kept, and outside the rule -- where only reading the file
+    again can say. `revised_from` is the value the earlier answer proposed,
+    when this one differs from it.
     """
-    says, zone_was = row.get("says"), row.get("hold_zone")
-    if not says or zone_was in ("file", "gps"):
-        return row
-    exif = ({"EXIF:DateTimeOriginal": ""} if row.get("hold_kind") == BLANK_FAULT
-            else {})
+    out = dict(row)
+    out["stale"] = False
+    if row.get("hold_zone") in ("file", "gps"):
+        return out
+    says = row.get("says") or _from_the_ledger(row)
+    if not says:
+        out["stale"] = True
+        return out
+
+    kind_was = row.get("hold_kind")
+    exif = {"EXIF:DateTimeOriginal": ""} if kind_was == BLANK_FAULT else {}
     if (row.get("kind") or "").upper() == "VIDEO":
         exif["File:MIMEType"] = "video/mp4"
     prop = propose({
@@ -1382,16 +1407,50 @@ def rejudge(row: dict) -> dict:
                    "verdict": verdict(exif, row.get("kind"), says=says,
                                       taken_at=row.get("taken_at"))},
     })
-    out = dict(row)
     out["hold_zone"] = zone_source(exif, says, row.get("taken_at"))[0]
     out["writes"] = prop.get("writes") or []
     if not out["writes"]:
-        out["hold_kind"] = UNFIXABLE
         out["why"] = prop.get("why", "")
-    elif row.get("hold_kind") == UNFIXABLE:
-        # It was the ceiling and is not any more.
-        out["hold_kind"] = BLANK_FAULT if exif else ABSENT_FAULT
+    elif kind_was in (UNFIXABLE, None):
+        # It was the ceiling and is not any more -- and the build that said
+        # so kept only that, not whether the tag was empty or missing. The
+        # correction is the same either way; the label is not known.
+        out["hold_kind"] = UNRECORDED
+
+    was = row.get("writes") or []
+    if was and _headline(was) != _headline(out["writes"]):
+        out["revised_from"] = _headline(was)
     return out
+
+
+def _from_the_ledger(row: dict) -> dict | None:
+    """What a rule verdict needs, for a row held before Immich's answer was
+    kept.
+
+    Under the rule the wall clock is the capture instant plus the rule's
+    offset, and nothing else -- Immich's zone and the `localDateTime` it
+    converted through that zone are exactly what the rule sets aside. The
+    ledger already holds the instant: `taken_at` is Immich's `fileCreatedAt`,
+    copied at scan time. So nothing needs fetching.
+
+    A coordinate or an offset in the file would have outranked the rule,
+    but either would have filed the row under `gps` or `file` when it was
+    read, and those never reach here. Outside the rule the zone is Immich's
+    own, which only a fresh read supplies -- so this declines, and the row
+    is marked stale instead of being given an answer it has no basis for.
+    """
+    taken = row.get("taken_at")
+    if not taken or not _assumed(taken):
+        return None
+    return {"ok": True, "file_created_at": taken, "local_date_time": taken}
+
+
+def _headline(writes: list[dict]) -> str | None:
+    """The one value in a correction that decides where the photo lands."""
+    for w in writes or []:
+        if w.get("tag") in ("DateTimeOriginal", "QuickTime:CreateDate"):
+            return w.get("value")
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -515,13 +515,192 @@ async def test_a_reading_is_left_alone(rig):
         assert diagnose.rejudge(row)["writes"][0]["value"] == "keep me"
 
 
-async def test_a_row_with_nothing_kept_is_returned_unchanged(rig):
-    """Read by a build that kept no answer. Nothing can be worked out, so
-    nothing is invented -- it needs reading again instead."""
-    from app import diagnose
+async def test_a_row_with_nothing_kept_outside_the_rule_is_stale(rig):
+    """Read by a build that kept no answer, and the rule does not reach it,
+    so the zone it needs is Immich's own. Nothing is invented -- it is
+    marked as needing a fresh read instead."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2022-01-01",
+                   "assume_zone_offset": "+05:00"})
     row = {"id": "a", "kind": "IMAGE", "hold_zone": "immich",
+           "taken_at": "2022-07-02T13:53:54.000Z",
            "hold_kind": "unfixable", "writes": [], "says": None}
-    assert diagnose.rejudge(row) == row
+    out = diagnose.rejudge(row)
+    assert out["stale"] is True
+    assert out["writes"] == [] and out["hold_zone"] == "immich"
+
+
+# ---- the rows 2.16.0 could not reach --------------------------------------
+#
+# 2.16.0 re-judged a held row from what Immich had said about it, which only
+# 2.16.0 kept. Every row read before that -- all 506 on the library this was
+# built for -- was drawn exactly as read: 47 photos from 2022 under "outside
+# the rule in Settings", with the rule covering every one. And the build in
+# between had ranked the rule above Immich's zone without yet taking the
+# rule's clock, so its proposals for a file Immich filed at UTC+1 were four
+# hours early.
+
+async def test_a_rule_verdict_needs_nothing_but_the_ledger(rig):
+    """The 47. Under the rule the wall clock is the capture instant plus the
+    rule's offset, and the ledger holds the instant -- so no fetch."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    row = {"id": "a", "kind": "IMAGE", "hold_zone": "immich",
+           "taken_at": "2022-07-02T13:53:54.000Z",
+           "hold_kind": "unfixable", "writes": [], "says": None}
+    out = diagnose.rejudge(row)
+    assert out["stale"] is False
+    assert out["hold_zone"] == "assumed"
+    w = {x["tag"]: x["value"] for x in out["writes"]}
+    assert w["DateTimeOriginal"] == "2022:07:02 18:53:54"
+    assert w["OffsetTimeOriginal"] == "+05:00"
+    assert out["hold_kind"] == "unrecorded", \
+        "the build that read it kept no fault, and this does not guess one"
+
+
+async def test_a_proposal_four_hours_early_is_worked_out_again(rig):
+    """What the build between #63 and 2.16.0 stored for a file Immich had
+    filed at UTC+1: Immich's converted clock beside the rule's offset."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    row = {"id": "a", "kind": "IMAGE", "hold_zone": "assumed",
+           "taken_at": "2022-07-02T13:53:54.000Z", "hold_kind": "blank",
+           "says": None,
+           "writes": [{"tag": "DateTimeOriginal", "value": "2022:07:02 14:53:54"},
+                      {"tag": "OffsetTimeOriginal", "value": "+05:00"}]}
+    out = diagnose.rejudge(row)
+    w = {x["tag"]: x["value"] for x in out["writes"]}
+    assert w["DateTimeOriginal"] == "2022:07:02 18:53:54"
+    assert out["revised_from"] == "2022:07:02 14:53:54", "and it says so"
+    assert out["hold_kind"] == "blank", "a fault that was kept is kept"
+
+
+async def test_a_proposal_that_was_right_is_not_called_revised(rig):
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    row = {"id": "a", "kind": "IMAGE", "hold_zone": "assumed",
+           "taken_at": "2022-07-02T13:53:54.000Z", "hold_kind": "blank",
+           "says": None,
+           "writes": [{"tag": "DateTimeOriginal", "value": "2022:07:02 18:53:54"}]}
+    assert "revised_from" not in diagnose.rejudge(row)
+
+
+async def test_a_reading_is_never_stale(rig):
+    """Coordinates and the file's own offset do not depend on any setting,
+    so a row holding one needs no second read however old its build."""
+    from app import diagnose
+    for kept in ("gps", "file"):
+        row = {"id": "a", "kind": "IMAGE", "hold_zone": kept, "says": None,
+               "hold_kind": "blank",
+               "writes": [{"tag": "DateTimeOriginal", "value": "keep me"}]}
+        out = diagnose.rejudge(row)
+        assert out["stale"] is False
+        assert out["writes"][0]["value"] == "keep me"
+
+
+def _client():
+    from fastapi.testclient import TestClient
+    from app import auth
+    from app.main import app
+    auth.set_password("a-good-password")
+    c = TestClient(app)
+    c.post("/api/login", json={"password": "a-good-password"})
+    return c
+
+
+async def test_a_sign_off_writes_what_the_page_showed(rig, monkeypatch):
+    """The page re-judged the row and the sign-off did not, so a file drawn
+    at 18:53:54 was released carrying the 14:53:54 stored when it was read,
+    and that is what the feeder would have written."""
+    import json
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True, "assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    db.upsert_assets([asset(0, taken="2022-07-02T13:53:54.000Z")])
+    db.record_check("asset-0", {
+        "hold": True, "kind": "blank", "zone": "assumed",
+        "writes": [{"tag": "DateTimeOriginal", "value": "2022:07:02 14:53:54"},
+                   {"tag": "OffsetTimeOriginal", "value": "+05:00"}],
+        "checked_at": db.now(), "checked_sum": "sum0"})
+
+    c = _client()
+    shown = c.get("/api/dates/held").json()["held"][0]
+    r = c.post("/api/dates/release", json={"ids": ["asset-0"]}).json()
+    assert r["released"] == 1 and r["refused"] == 0
+    stored = json.loads(dict(db.connect().execute(
+        "SELECT hold_writes FROM assets").fetchone())["hold_writes"])
+    assert stored == shown["writes"], "what was signed is what was shown"
+
+    wrote = []
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    monkeypatch.setattr(diagnose, "write_tags",
+                        lambda p, w: (wrote.append(w), (True, ""))[1])
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    got = {x["tag"]: x["value"] for x in wrote[0]}
+    assert got["DateTimeOriginal"] == "2022:07:02 18:53:54"
+
+
+async def test_a_file_with_nothing_to_write_cannot_be_signed_off(rig):
+    """Released, it would be delivered uncorrected -- the fault the sign-off
+    was for, in Google Photos for good."""
+    from app import db, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0, taken="2022-07-02T13:53:54.000Z")])
+    db.record_check("asset-0", {
+        "hold": True, "kind": "blank", "zone": "none", "writes": [],
+        "says": {"ok": True, "time_zone": None,
+                 "local_date_time": "2022-07-02T13:53:54.000Z",
+                 "file_created_at": "2022-07-02T13:53:54.000Z"},
+        "checked_at": db.now(), "checked_sum": "sum0"})
+    r = _client().post("/api/dates/release", json={"ids": ["asset-0"]}).json()
+    assert r["released"] == 0 and r["refused"] == 1
+    assert dict(db.connect().execute(
+        "SELECT state FROM assets").fetchone())["state"] == "held"
+
+
+async def test_an_approval_with_nothing_recorded_is_not_sent(rig, monkeypatch):
+    """However it came to be approved. A failure can be retried; a photo in
+    Google Photos wearing the wrong date cannot be taken back."""
+    import os
+    from app import config, db, feeder, immich, settings
+    settings.save({"check_dates": True})
+    db.upsert_assets([asset(0)])
+    db.record_check("asset-0", {"hold": True, "kind": "blank", "writes": [],
+                                "checked_at": db.now(), "checked_sum": "sum0"})
+    assert db.release_held(["asset-0"]) == 1
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "failed"
+    assert "not sent uncorrected" in (row["last_error"] or "")
+    assert [n for n in os.listdir(config.OUTBOX_DIR)
+            if not n.startswith(".")] == []
+
+
+async def test_the_fault_is_kept_when_nothing_can_be_written(rig, monkeypatch):
+    """"Unfixable" is the settings talking, not the file. Stored in place of
+    the fault, it left a row that a later rule reached unable to say whether
+    its tag had been empty or missing."""
+    from app import diagnose, immich, settings
+    settings.save({"assume_zone_before": "", "assume_zone_offset": ""})
+
+    async def detail(asset_id):
+        return {"ok": True, "time_zone": None, "latitude": None,
+                "longitude": None,
+                "local_date_time": "2022-07-02T13:53:54.000Z",
+                "file_created_at": "2022-07-02T13:53:54.000Z"}
+    monkeypatch.setattr(immich, "asset_detail", detail)
+    monkeypatch.setattr(diagnose, "read_exif",
+                        lambda p: {"EXIF:DateTimeOriginal": ""})
+    out = await diagnose.classify("/nowhere", {
+        "id": "a", "kind": "IMAGE", "taken_at": "2022-07-02T13:53:54.000Z"})
+    assert out["hold"] is True and out["writes"] == []
+    assert out["kind"] == "blank"
 
 
 async def test_reading_again_clears_what_was_decided(rig, monkeypatch):
