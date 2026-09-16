@@ -238,6 +238,16 @@ def test_the_cache_is_written_only_after_a_successful_build():
         "an empty dist/ must never be cached as though it were a build"
 
 
+def test_the_cache_is_saved_under_the_key_the_restore_asked_for():
+    """Evaluated again after the build, `hashFiles('companion/**')` takes in
+    companion/app/build/ -- which differs every run, so the APK was stored
+    under a key no restore would ever ask for and the cache never hit."""
+    wf = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    save = wf[wf.index("actions/cache/save@"):][:300]
+    assert "steps.apk.outputs.cache-primary-key" in save
+    assert "hashFiles" not in save, "the sources are no longer what is in that tree"
+
+
 def test_the_android_sdk_step_names_what_it_installs():
     """Its default is "tools platform-tools", and `tools` is gone from
     Google's repository -- sdkmanager exits 1 and takes the app build with

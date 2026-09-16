@@ -43,6 +43,14 @@ they used to propose, and the tab counts them.
 in place of blank or absent, so a row the rule later reached could not say
 which its tag had been. Rows from before this say "Fault not recorded".
 
+**The APK cache never hit once.** 2.16.1 saved it under a key worked out
+*after* the build, from the same `companion/**` pattern — by which point
+Gradle has written `companion/app/build/` into that tree, so the key took in
+the build's own output and came out different every run. Every run stored an
+APK under a key no run would ever ask for, and every run rebuilt. The save
+uses the key the restore resolved now, which is the sources and nothing
+else.
+
 ## 2.16.2
 
 **The image shipped with no app in it.** The job that builds the APK failed

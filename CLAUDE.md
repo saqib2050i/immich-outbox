@@ -698,6 +698,20 @@ writes from a post step that runs even when the job failed, which would
 store an empty `dist/` under those sources' key and leave every later run
 hitting it, shipping no app, and saying nothing.
 
+**The save takes the key the restore resolved** —
+`steps.apk.outputs.cache-primary-key` — and must never call `hashFiles`
+again. By the time it runs, Gradle has written `companion/app/build/` and
+`companion/.gradle/` into the very tree that pattern matches, so a second
+evaluation hashes the build's own output: a key that differs on every run,
+an APK stored where nothing will look for it, and a restore that goes on
+missing while the cache list fills up. Three runs did exactly that, and the
+only symptom was the thing the cache was added to prevent.
+
+Also: `android-actions/setup-android` installs `tools platform-tools` unless
+told otherwise, and `tools` is gone from Google's repository — `sdkmanager`
+exits 1 and the app build dies in thirteen seconds. The step names
+`platform-tools`. An inherited default is a dependency nobody can see.
+
 CI builds the APK and bundles it into the image at `dist/companion.apk`, so
 the phone updates itself from `/app` rather than from a cable. Two things
 follow. **The app keeps its own version in `companion/VERSION`**, separate
