@@ -10,6 +10,23 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.16.2
+
+**The image shipped with no app in it.** The job that builds the APK failed
+in thirteen seconds, at the step that installs the Android SDK: its default
+package list asks for `tools`, which is no longer in Google's repository, so
+`sdkmanager` exits 1. Nothing here had asked for that package — it came with
+a default, which is how a build comes to depend on something it never
+mentions. The step now names `platform-tools`, which is what it actually
+needs; Gradle fetches the rest itself.
+
+The relay published anyway, by design: the image ships even when the app
+build fails, so a phone app cannot hold a server release hostage. The cost
+is that 2.16.1 carries no APK, and its install page says so. This one does.
+
+Nothing was cached from the failed run either, which is the restore/save
+split doing its job: a build that did not work leaves no cache behind.
+
 ## 2.16.1
 
 **The app is rebuilt only when the app has changed.** Since the version
