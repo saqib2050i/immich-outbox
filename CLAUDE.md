@@ -529,6 +529,27 @@ a prediction from two data points, not a measurement. Until somebody looks
 up an absent-tag Karachi file in Google Photos, "no tag is fine" is only
 established for UTC.
 
+**A written correction lands, zone and all. Measured.** The first one to be
+looked up in Google Photos afterwards: `20211010_155825-COLLAGE.jpg` left
+here carrying `DateTimeOriginal 2023:06:15 18:28:01` and
+`OffsetTimeOriginal +05:00`, and Google Photos shows *Jun 15, 2023 — Thu,
+6:28 PM GMT+05:00*. Both tags were read. The offset especially: a zone
+appears on that screen only because one was written into the file, and
+`+05:00` is not where the server, the phone or Google is.
+
+It also settles which carrier wins. That file's modification time is the
+capture instant, `17:28:01Z`, which Google Photos would have displayed as
+5:28 PM GMT+00:00 — the reading it gives every undated file here. It shows
+6:28 PM instead, so the tag beat the mtime.
+
+The value itself was wrong, and that is the other half of the lesson: it
+was written by a build that ranked the owner's rule above Immich's zone but
+still took Immich's clock, so the photo sits in Google Photos four hours
+early, wearing a correction this service is proud of. A wrong date written
+deliberately is indistinguishable, from the outside, from a wrong date that
+arrived — except that this one carries an offset nothing in the original
+had. Hence 2.16.2, and hence `revised_from`.
+
 **A modification time is a real carrier, and the verdict has to count it.**
 `feeder.stamp_capture_time()` sets every delivered file's mtime to Immich's
 capture instant, Syncthing preserves it to the phone, and Google Photos
