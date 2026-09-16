@@ -238,6 +238,16 @@ def test_the_cache_is_written_only_after_a_successful_build():
         "an empty dist/ must never be cached as though it were a build"
 
 
+def test_the_android_sdk_step_names_what_it_installs():
+    """Its default is "tools platform-tools", and `tools` is gone from
+    Google's repository -- sdkmanager exits 1 and takes the app build with
+    it, which is how one image shipped with no APK in it at all."""
+    wf = (ROOT / ".github" / "workflows" / "publish.yml").read_text()
+    step = wf[wf.index("android-actions/setup-android@"):][:400]
+    assert "packages:" in step, "an unnamed default is a dependency nobody sees"
+    assert "packages: tools" not in step
+
+
 def test_debug_and_release_do_not_share_a_cache_key():
     """The same sources signed two different ways are two different files,
     and which one a run produces depends on whether the secret is there."""
