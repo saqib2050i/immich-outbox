@@ -1474,6 +1474,45 @@ def recheck(ids: list[str]) -> int:
     return cur.rowcount
 
 
+def take_back(ids: list[str]) -> int:
+    """Send these again, and work the correction out again on the way.
+
+    For a file that has already gone: the date written into it came from
+    whatever the rules said that day, and the copy in Google Photos keeps
+    it. Clearing the delivery record puts the asset back at the front of the
+    queue, and clearing what was decided about it means the next fetch reads
+    the bytes afresh rather than writing the old answer a second time.
+
+    Invariant 4 stands: this is one person pressing one button, never a
+    cycle, a window or a sweep. It is the same exception `force_send_month`
+    makes for a month deleted out of Google Photos, aimed at named files.
+
+    `stamped_at` is deliberately kept. It is the record that the copy on the
+    phone differs from Immich because a date was written into it here, and
+    until a new one lands that is still true -- clearing it would leave a
+    trace of that file reading as damage.
+    """
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    c = connect()
+    with _lock:
+        cur = c.execute(
+            f"""UPDATE assets SET state='pending', forced=1, attempts=0,
+                                  last_error=NULL, confirmed_at=NULL,
+                                  sent_at=NULL, outbox_name=NULL,
+                                  seen_on_phone=0, approved_at=NULL,
+                                  checked_at=NULL, checked_sum=NULL,
+                                  hold_kind=NULL, hold_zone=NULL,
+                                  hold_writes=NULL, hold_says=NULL
+                 WHERE id IN ({marks})
+                   AND missing_at IS NULL
+                   AND id NOT IN (SELECT id FROM motion_parts)""", ids)
+        c.commit()
+        _bump()
+    return cur.rowcount
+
+
 def pending_to_immich(limit: int = 5000) -> list[dict]:
     """Corrections written into a delivered file that Immich still lacks.
 

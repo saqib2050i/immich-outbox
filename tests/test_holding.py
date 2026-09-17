@@ -251,6 +251,121 @@ async def test_nothing_uncorrected_is_listed_as_owed(rig, monkeypatch):
     assert db.pending_to_immich() == []
 
 
+# ---- taking a correction back --------------------------------------------
+#
+# A correction is written on the way past, so the value in a delivered file
+# is whatever the rules said the day it went -- and the copy in Google Photos
+# keeps it. When a rule changes, or the code that applies one does, the only
+# way to change that copy is to send a fresh file. Nothing here can reach
+# into Google Photos, and nothing here should be able to.
+
+async def _corrected(rig, *, ident=1, name="IMG_0001.jpg"):
+    """A row that has been corrected, delivered and confirmed."""
+    from app import db
+    db.upsert_assets([asset(ident, name=name)])
+    aid = f"asset-{ident}"
+    db.record_check(aid, {"hold": True, "kind": "blank", "zone": "assumed",
+                          "writes": [{"tag": "DateTimeOriginal",
+                                      "value": "2022:07:02 14:53:54"}],
+                          "checked_at": db.now(), "checked_sum": f"sum{ident}"})
+    db.release_held([aid])
+    db.mark_stamped(aid, [{"tag": "DateTimeOriginal",
+                           "value": "2022:07:02 14:53:54"}])
+    c = db.connect()
+    c.execute("UPDATE assets SET state='confirmed', confirmed_at=?, sent_at=?, "
+              "outbox_name=?, seen_on_phone=1 WHERE id=?",
+              (db.now(), db.now(), name, aid))
+    c.commit()
+    return aid
+
+
+def _no_fill(monkeypatch):
+    """The endpoint kicks a cycle. These tests are about the ledger."""
+    from app import feeder
+
+    async def nothing(*a, **k):
+        return []
+    monkeypatch.setattr(feeder, "top_up", nothing)
+
+
+async def test_a_corrected_file_can_be_taken_back(rig, monkeypatch):
+    from app import db
+    _no_fill(monkeypatch)
+    aid = await _corrected(rig)
+    r = _client().post("/api/dates/take-back", json={"ids": [aid]}).json()
+    assert r["taken_back"] == 1
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "pending" and row["forced"] == 1
+    assert row["confirmed_at"] is None and row["outbox_name"] is None, \
+        "a row that says pending while still claiming a delivery is a lie"
+    assert row["approved_at"] is None, "the new verdict has not been signed"
+    assert row["hold_writes"] is None and row["checked_at"] is None, \
+        "it is read afresh rather than writing the old answer again"
+
+
+async def test_what_was_written_is_still_recorded_while_it_goes_again(rig, monkeypatch):
+    """`stamped_at` says the delivered copy differs from Immich because a
+    date was written into it here. Until a new one lands that is still
+    true, and clearing it would leave a trace of that file reading as
+    damage."""
+    from app import db
+    _no_fill(monkeypatch)
+    aid = await _corrected(rig)
+    _client().post("/api/dates/take-back", json={"ids": [aid]})
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["stamped_at"] and row["stamped_note"]
+
+
+async def test_taking_back_everything_corrected_leaves_the_rest_alone(rig, monkeypatch):
+    from app import db
+    _no_fill(monkeypatch)
+    aid = await _corrected(rig)
+    db.upsert_assets([asset(2)])
+    db.connect().execute("UPDATE assets SET state='confirmed', confirmed_at=? "
+                         "WHERE id='asset-2'", (db.now(),)).connection.commit()
+    r = _client().post("/api/dates/take-back",
+                       json={"all_corrected": True}).json()
+    assert r["taken_back"] == 1, "only the ones carrying a correction"
+    rows = {x["id"]: x["state"] for x in db.connect().execute(
+        "SELECT id, state FROM assets")}
+    assert rows[aid] == "pending" and rows["asset-2"] == "confirmed"
+
+
+async def test_a_file_taken_back_is_read_again_before_it_goes(rig, monkeypatch):
+    """The point of it: a fresh verdict, not the stored one written twice."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True})
+    aid = await _corrected(rig)
+    assert db.take_back([aid]) == 1
+
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    looked = []
+
+    async def fake(path, row):
+        looked.append(row["id"])
+        return {"hold": True, "kind": "blank", "zone": "assumed",
+                "writes": [{"tag": "DateTimeOriginal",
+                            "value": "2022:07:02 18:53:54"}],
+                "checked_at": db.now(), "checked_sum": row.get("checksum")}
+    monkeypatch.setattr(diagnose, "classify", fake)
+    _, used = feeder.reconcile()
+    await feeder.top_up(used)
+
+    assert looked == [aid], "it was not read again"
+    held = db.held()
+    assert held and held[0]["writes"][0]["value"] == "2022:07:02 18:53:54"
+
+
+async def test_an_asset_immich_no_longer_serves_is_not_taken_back(rig):
+    """It would sit forced at the front of a queue that can never move it."""
+    from app import db
+    aid = await _corrected(rig)
+    c = db.connect()
+    c.execute("UPDATE assets SET missing_at=? WHERE id=?", (db.now(), aid))
+    c.commit()
+    assert db.take_back([aid]) == 0
+
+
 async def test_pushing_to_immich_is_not_offered(rig):
     """Invariant 3: three read scopes and no write. That is what makes "it
     cannot alter your library" a fact rather than a promise, so the button
