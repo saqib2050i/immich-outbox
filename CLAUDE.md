@@ -266,6 +266,18 @@ are written into the existing nodes by `paintFigures`. Anything that redraws
 on a revision bump needs the same split, or at least a signature guard that
 leaves the DOM alone when the payload is identical.
 
+**A filename is a link into Immich**, drawn by `assetLink()` and nothing
+else — `/photos/<id>`, which is where Immich opens a single asset. Every
+list here has the id beside the name already, so a new list drawing a bare
+name is the odd one out and a test says so. Three things it handles that a
+plain anchor would not: the address is read from the status the page polls,
+so it is right on a tab nobody has opened Settings on; with no address it
+renders a `<span>`, because a dead link that looks live is worse than plain
+text; and it stops the click, since rows and `<summary>` elements carry
+handlers that would collapse what you are reading as the photo opens. The
+address is the one *this browser* needs, which is not necessarily the one
+the server uses to reach Immich.
+
 Sans for prose, mono for values: sizes, counts, times, filenames, paths.
 The page was mono throughout and read like a log file. And no glyph outside
 ASCII is load-bearing — the carets were U+25B8, which the old mono stack had

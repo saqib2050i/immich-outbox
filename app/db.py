@@ -608,7 +608,7 @@ def date_mismatch_breakdown() -> dict:
     months = [dict(r) for r in rows]
 
     sample = connect().execute("""
-        SELECT filename, taken_at, exif_taken_at FROM assets
+        SELECT id, filename, taken_at, exif_taken_at FROM assets
          WHERE date_mismatch = 1 AND state IN ('pending','failed')
            AND missing_at IS NULL
          ORDER BY taken_at DESC LIMIT 5
