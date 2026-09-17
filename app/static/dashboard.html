@@ -691,6 +691,16 @@
   /* Proposals worked out again since the file was read. Informational: the
      new value is the correction, so it is ruled like a note and not an
      alarm. */
+  /* A filename that opens the photo in Immich. Deliberately quiet: these
+     lists are dense and every row has one, so an ordinary link colour would
+     turn a page of names into a page of blue. The underline appears on
+     hover, which is where a cursor already is when somebody wonders which
+     photo a name belongs to. Inherits the font it sits in -- these are mono
+     in some lists and sans in others. */
+  a.flink{color:inherit;text-decoration:none;font:inherit;
+          border-bottom:1px dotted var(--rule-2);cursor:pointer}
+  a.flink:hover,a.flink:focus-visible{text-decoration:underline;
+                                      border-bottom-color:transparent}
   .drevised{border:1px solid var(--rule-2);border-radius:var(--r-sm);
             padding:11px 13px;margin:12px 0;font-size:12.5px;color:var(--dim);
             line-height:1.6}
@@ -1696,6 +1706,10 @@ async function render(){
   renderQueue();
   renderDateMismatch();
 
+  // Kept for every filename on the page to link with. Read from the status
+  // rather than the settings form, so it is right on a tab nobody has opened
+  // the settings on, and follows the address being changed.
+  IMMICH_URL = d.immich.url || "";
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
   iInc.textContent   = ago(d.immich.last_incremental_scan);
@@ -2004,7 +2018,7 @@ function fileRow(f, bucket, host, btn){
 
   const nm = document.createElement("span");
   nm.className = "fname";
-  nm.textContent = f.filename;
+  nm.appendChild(assetLink(f.id, f.filename));
   const when = document.createElement("small");
   when.textContent = f.taken_at ? "  " + f.taken_at.slice(0, 10) : "";
   nm.appendChild(when);
@@ -2045,6 +2059,39 @@ function fileRow(f, bucket, host, btn){
 
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
                      "Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// ---- a filename is a way back to the photo -------------------------------
+//
+// Every list here names files, and the question a name raises is almost
+// always "which photo is that?" -- which this service cannot answer, having
+// no thumbnails and no wish for any. Immich can: it opens one asset at
+// /photos/<id>, and the ledger has the id beside every name on this page.
+//
+// The address comes from the status rather than the settings form, so it is
+// right on a tab nobody has opened Settings on. It is the address *this
+// browser* must use, which is the same one a person types to reach Immich;
+// where the server reaches Immich by some other route, the link is wrong and
+// the name still reads exactly as it did. Hence no link at all when the
+// address is unset: a dead link that looks live is worse than plain text.
+let IMMICH_URL = "";
+
+function assetLink(id, name, title){
+  const text = name == null ? "" : String(name);
+  const el = document.createElement(IMMICH_URL && id ? "a" : "span");
+  el.className = "flink";
+  el.textContent = text;
+  el.title = title || text;
+  if (el.tagName === "A"){
+    el.href = IMMICH_URL.replace(/\/+$/, "") + "/photos/" + encodeURIComponent(id);
+    el.target = "_blank";
+    el.rel = "noopener noreferrer";
+    // Rows and disclosure summaries carry click handlers of their own, and
+    // a link inside one would open the photo *and* collapse what you were
+    // reading.
+    el.addEventListener("click", e => e.stopPropagation());
+  }
+  return el;
+}
 
 // What the user has open. Held here rather than read back out of the DOM:
 // renderTimeline is async and was called without await, so two runs could
@@ -2388,7 +2435,7 @@ function dateRow(r){
   mark.textContent = r.already_sent ? "!" : "";
   const name = document.createElement("span");
   name.className = "dname";
-  name.textContent = r.filename;
+  name.appendChild(assetLink(r.id, r.filename));
   const w = document.createElement("small");
   w.className = "dwrites";
   // Short. The group heading above already says why a whole group is where
@@ -2693,7 +2740,7 @@ async function renderOwed(){
       el.className = "drow";
       const name = document.createElement("span");
       name.className = "dname";
-      name.textContent = r.filename;
+      name.appendChild(assetLink(r.id, r.filename));
       const w = document.createElement("small");
       w.className = "dwrites";
       w.textContent = (r.writes || []).map(x => x.tag + " " + x.value)
@@ -3172,7 +3219,8 @@ async function loadMonthFiles(month, host){
     row.className = "frow";
 
     const nm = document.createElement("span");
-    nm.className = "fname"; nm.textContent = f.filename; nm.title = f.filename;
+    nm.className = "fname";
+    nm.appendChild(assetLink(f.id, f.filename));
 
     const meta = document.createElement("span");
     meta.className = "fmeta";
@@ -3417,7 +3465,8 @@ async function renderQueue(){
 
     const name = document.createElement("span");
     name.className = "qname";
-    name.textContent = item.outbox_name || item.filename;
+    name.appendChild(assetLink(item.id, item.outbox_name || item.filename,
+                               item.filename));
     name.title = item.filename;
 
     const meta = document.createElement("span");
@@ -3586,7 +3635,8 @@ function paintTransfer(state){
     const kind = document.createElement("span");
     kind.className = "qpkind"; kind.textContent = t.kind === "VIDEO" ? "video" : "photo";
     const name = document.createElement("span");
-    name.className = "qpname"; name.textContent = t.filename; name.title = t.filename;
+    name.className = "qpname";
+    name.appendChild(assetLink(t.asset_id, t.filename));
     const rate = document.createElement("span");
     rate.className = "qprate";
 
@@ -3720,7 +3770,7 @@ async function renderDateMismatch(){
     const li = document.createElement("li");
     const name = document.createElement("span");
     name.className = "blmonth"; name.style.flexBasis = "14rem";
-    name.textContent = ex.filename;
+    name.appendChild(assetLink(ex.id, ex.filename));
     const detail = document.createElement("span");
     detail.className = "blcount";
     detail.textContent = "file says " + (ex.exif_taken_at || "").slice(0, 10)
@@ -3806,6 +3856,16 @@ function renderTrace(d){
       traceOut.appendChild(traceLine("Did you mean: " + d.suggestions.join(" · ")));
     }
     return;
+  }
+
+  // The file that was traced, as a way into Immich. This is the one screen
+  // where somebody is already asking which photo they are looking at.
+  if (d.filename && (d.asset || {}).id){
+    const line = document.createElement("p");
+    line.className = "hint";
+    line.appendChild(assetLink(d.asset.id, d.filename));
+    line.appendChild(document.createTextNode(" — open in Immich"));
+    traceOut.appendChild(line);
   }
 
   const checks = document.createElement("div");
@@ -4476,7 +4536,8 @@ function renderAttention(d){
       const el = document.createElement("div");
       el.className = "item";
       const nm = document.createElement("span");
-      nm.className = "name"; nm.textContent = a.filename;
+      nm.className = "name";
+      nm.appendChild(assetLink(a.id, a.filename));
       const wy = document.createElement("span");
       wy.className = "why"; wy.textContent = g.why(a);
       wy.title = a.last_error || "";

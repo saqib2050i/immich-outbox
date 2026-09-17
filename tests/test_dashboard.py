@@ -446,6 +446,38 @@ def test_a_proposal_worked_out_again_says_what_it_was():
     assert "r.revised_from" in src
 
 
+def test_every_filename_on_the_page_opens_the_photo():
+    """A name raises one question -- which photo is that? -- and this
+    service cannot answer it, having no thumbnails and no wish for any.
+    Immich can, at /photos/<id>, and the ledger has the id beside every
+    name here. A list that draws a bare name is one somebody has to go and
+    search Immich by hand from."""
+    src = HTML[HTML.index("function assetLink("):]
+    assert "/photos/" in src[:800], "Immich opens one asset there"
+    # Nothing draws a filename straight into a node any more.
+    for bad in ("textContent = f.filename", "textContent = r.filename",
+                "textContent = t.filename", "textContent = a.filename",
+                "textContent = ex.filename", "textContent = item.filename"):
+        assert bad not in HTML, bad
+    assert HTML.count("assetLink(") >= 9, "every list, not some of them"
+
+
+def test_a_filename_link_does_not_collapse_what_it_sits_in():
+    """Rows and disclosure summaries carry click handlers of their own, so
+    a link inside one would open the photo and close what you were
+    reading."""
+    src = HTML[HTML.index("function assetLink("):HTML.index("function remember(")]
+    assert "stopPropagation" in src
+    assert 'rel = "noopener noreferrer"' in src and 'target = "_blank"' in src
+
+
+def test_a_filename_is_plain_text_when_immich_has_no_address():
+    """A dead link that looks live is worse than the name on its own."""
+    src = HTML[HTML.index("function assetLink("):HTML.index("function remember(")]
+    assert 'IMMICH_URL && id ? "a" : "span"' in src
+    assert "IMMICH_URL = d.immich.url" in HTML, "and it follows the setting"
+
+
 def test_the_whole_held_list_can_be_read_again():
     """The group control offers this only where nothing can be judged again.
     A verdict still comes from bytes read once, so a file replaced in Immich

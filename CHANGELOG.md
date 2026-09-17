@@ -10,6 +10,23 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.18.0
+
+**Every filename opens the photo.** A name raises one question — which
+photo is that? — and this service cannot answer it, having no thumbnails and
+no wish for any. Immich can: it opens a single asset at `/photos/<id>`, and
+the ledger holds that id beside every name on this page. So every name in
+Dates, in the corrections already written, in Library's month and category
+lists, in the queue, in a transfer in flight, in Problems and on a trace is
+now a link into Immich.
+
+The address comes from the status the page already polls, so it is right on
+a tab nobody has opened Settings on and it follows the address being
+changed. With no address configured the name stays plain text: a dead link
+that looks live is worse than no link. Links open in a new tab and stop the
+click from reaching the row underneath, which would otherwise collapse the
+thing you were reading as it opened.
+
 ## 2.17.0
 
 **A correction can be taken back.** The date written into a delivered file
