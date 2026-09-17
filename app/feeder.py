@@ -520,6 +520,14 @@ async def _fetch_batch(rows, budget: int) -> tuple[int, dict]:
                         writes = _json.loads(row["hold_writes"] or "[]")
                     except ValueError:
                         writes = []
+                    if not writes:
+                        # Signed off with nothing recorded to write. Sending
+                        # it on would deliver the very fault the sign-off was
+                        # for, and a date is kept in Google Photos for good.
+                        # A failure can be retried. The endpoint refuses such
+                        # a sign-off now; this is for one it did not.
+                        raise IOError("signed off, but no date correction is "
+                                      "recorded for it — not sent uncorrected")
                     ok, why = diagnose.write_tags(tmp, writes)
                     if ok and writes:
                         size = os.path.getsize(tmp)

@@ -106,7 +106,10 @@ MIGRATIONS = (
     # The checksum it was checked at, so a file replaced in Immich is
     # checked again instead of trusting an answer about different bytes.
     ("checked_sum", "TEXT"),
-    # 'blank' | 'absent' | 'unfixable' | 'ok'
+    # The fault in the file: 'blank' | 'absent' | 'ok'. Whether anything can
+    # be written is `hold_writes` being empty, not a value here -- that is
+    # the settings talking, and storing it in place of the fault lost the
+    # fault. Rows from before 2.16.2 can still say 'unfixable'.
     ("hold_kind", "TEXT"),
     # Where a zone could be had: 'file' | 'gps' | 'immich' | 'assumed' | 'none'.
     # The trust axis -- the first two are readings and the fourth is a
@@ -1366,41 +1369,66 @@ def checked_count() -> int:
     ).fetchone()["n"]
 
 
-def release_held(ids: list[str]) -> int:
+def release_held(ids: list[str], decided: dict | None = None) -> int:
     """Sign held files off: back to pending, and forced so they go next.
 
-    They keep their recorded proposal -- the feeder reads it on the way past
-    to know what to write, and it is the record of what was decided.
+    `decided` is the verdict worked out at the moment of signing, keyed by
+    id, and it replaces the one stored when the file was read -- in the same
+    statement as the approval, so no fill can see one without the other.
+    The feeder writes whatever is recorded here, which is why it matters:
+    the page re-judged rows as it drew them and this left them alone, so a
+    sign-off wrote the answer the page had just corrected.
+
+    Without `decided` a row keeps its recorded proposal unchanged.
     """
     if not ids:
         return 0
-    marks = ",".join("?" * len(ids))
+    stamp, n = now(), 0
     c = connect()
     with _lock:
-        cur = c.execute(
-            f"""UPDATE assets SET state='pending', forced=1, attempts=0,
-                                  last_error=NULL, approved_at=?
-                 WHERE id IN ({marks}) AND state='held'""", [now()] + ids)
+        for i in ids:
+            d = (decided or {}).get(i)
+            if d is None:
+                cur = c.execute(
+                    """UPDATE assets SET state='pending', forced=1, attempts=0,
+                                         last_error=NULL, approved_at=?
+                        WHERE id=? AND state='held'""", (stamp, i))
+            else:
+                cur = c.execute(
+                    """UPDATE assets SET state='pending', forced=1, attempts=0,
+                                         last_error=NULL, approved_at=?,
+                                         hold_writes=?, hold_zone=?, hold_kind=?
+                        WHERE id=? AND state='held'""",
+                    (stamp, json.dumps(d.get("writes") or []),
+                     d.get("hold_zone"), d.get("hold_kind"), i))
+            n += cur.rowcount
         c.commit()
         _bump()
-    return cur.rowcount
+    return n
 
 
-def held(limit: int = 5000) -> list[dict]:
+def held(limit: int = 5000, ids: list[str] | None = None) -> list[dict]:
     """Everything read and kept back, with what would be written to it.
 
     The whole set at once and grouped in the browser: a few thousand rows is
     a few hundred KB, and paging it server-side would make every regroup a
     round trip to answer a question the page already has the data for.
+    `ids` narrows it to the rows a sign-off names.
     """
+    only, args = "", [limit]
+    if ids is not None:
+        if not ids:
+            return []
+        only = f" AND id IN ({','.join('?' * len(ids))})"
+        args = list(ids) + [limit]
     rows = connect().execute(
-        """SELECT id, filename, taken_at, kind, size, hold_kind, hold_zone,
-                  hold_writes, hold_says, checked_at, state, confirmed_at,
-                  stamped_at
-             FROM assets
-            WHERE state = 'held'
-            ORDER BY taken_at DESC, filename ASC
-            LIMIT ?""", (limit,)).fetchall()
+        f"""SELECT id, filename, taken_at, kind, size, hold_kind, hold_zone,
+                   hold_writes, hold_says, checked_at, state, confirmed_at,
+                   stamped_at
+              FROM assets
+             WHERE state = 'held'{only}
+             ORDER BY taken_at DESC, filename ASC
+             LIMIT ?""", args).fetchall()
     out = []
     for r in rows:
         d = dict(r)

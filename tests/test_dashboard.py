@@ -411,6 +411,41 @@ def test_a_file_with_nothing_to_write_is_not_offered_a_sign_off():
     assert "nothing can be written" in src
 
 
+def test_reading_again_is_offered_only_where_nothing_else_can_judge():
+    """It was offered for every row lacking Immich's answer -- which, on a
+    library read before 2.16.0 kept one, was every row there was: a button
+    on every group offering to download files whose verdict needed nothing
+    downloaded. The server says which rows it could not judge."""
+    src = HTML[HTML.index("async function renderDates("):HTML.index("async function renderOwed(")]
+    assert "r => r.stale" in src
+    assert "!r.says" not in src
+
+
+def test_the_ceiling_is_read_off_the_writes_not_a_stored_label():
+    """The label is decided when the file is read, and the settings can move
+    after that. Nothing to write is what makes a file the ceiling."""
+    src = HTML[HTML.index("function groupDates("):HTML.index("function sortDates(")]
+    fault = src[src.index("fault:"):src.index("zone:")]
+    assert "r.writes" in fault and '"unfixable"' in fault
+
+
+def test_every_fault_the_server_can_name_has_a_heading():
+    """A key missing from FAULT still groups -- under its raw name, with no
+    explanation, which is how a new state arrives looking like a bug."""
+    from app import diagnose
+    block = HTML[HTML.index("const FAULT = {"):HTML.index("const ZONE = {")]
+    for key in (diagnose.BLANK_FAULT, diagnose.ABSENT_FAULT,
+                diagnose.UNFIXABLE, diagnose.UNRECORDED):
+        assert f"{key}:" in block, key
+
+
+def test_a_proposal_worked_out_again_says_what_it_was():
+    """Otherwise the only record that a stored time was wrong is a number
+    quietly changing on screen."""
+    src = HTML[HTML.index("function dateRow("):HTML.index("async function renderDates(")]
+    assert "r.revised_from" in src
+
+
 def test_bulk_sign_off_is_armed_like_every_other_irreversible_control():
     src = HTML[HTML.index("async function renderDates("):HTML.index("async function renderOwed(")]
     assert "armed(b," in src

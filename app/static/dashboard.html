@@ -688,6 +688,12 @@
   .dsent{border:1px solid var(--alarm);border-radius:var(--r-sm);padding:11px 13px;
          margin:12px 0;font-size:12.5px;color:var(--dim);line-height:1.6}
   .dsent b{color:var(--ink)}
+  /* Proposals worked out again since the file was read. Informational: the
+     new value is the correction, so it is ruled like a note and not an
+     alarm. */
+  .drevised{border:1px solid var(--rule-2);border-radius:var(--r-sm);
+            padding:11px 13px;margin:12px 0;font-size:12.5px;color:var(--dim);
+            line-height:1.6}
   .dsoon{border:1px dashed var(--rule-2);border-radius:var(--r-sm);
          padding:11px 13px;margin-top:10px;font-size:12.5px;color:var(--dim);
          line-height:1.6}
@@ -2275,6 +2281,10 @@ const FAULT = {
               "No zone in the file, no coordinates, and outside the rule in "
               + "Settings. DateTimeOriginal is local time, so without a zone "
               + "there is no honest value to write. This is the ceiling."],
+  unrecorded: ["Fault not recorded",
+               "Read by an earlier build that noted only that nothing could be "
+               + "written, not whether the tag was empty or missing. A rule "
+               + "reaches it now. The correction is the same either way."],
 };
 
 const ZONE = {
@@ -2313,7 +2323,11 @@ function dateShiftHours(r){
 
 function groupDates(rows, by){
   const keyOf = {
-    fault:  r => r.hold_kind || "unfixable",
+    // Nothing to write is what makes a file the ceiling, whatever its fault.
+    // Read off the writes rather than a stored label: the label is decided
+    // when the file is read, and the settings can move after that.
+    fault:  r => (r.writes || []).length ? (r.hold_kind || "unrecorded")
+                                         : "unfixable",
     zone:   r => r.hold_zone || "none",
     family: r => dateFamily(r.filename),
     year:   r => (r.taken_at || "").slice(0, 4) || "undated",
@@ -2376,10 +2390,30 @@ function dateRow(r){
   name.textContent = r.filename;
   const w = document.createElement("small");
   w.className = "dwrites";
+  // Short. The group heading above already says why a whole group is where
+  // it is, and repeating it on every row printed one paragraph forty-seven
+  // times -- a paragraph that was, for those rows, no longer true.
   w.textContent = (r.writes || []).length
     ? (r.writes || []).map(x => x.tag + " " + x.value).join("  ·  ")
-    : "nothing can be written — " + (ZONE[r.hold_zone] || ["", ""])[1];
+    : "nothing can be written";
   name.appendChild(w);
+
+  // Dim, not red. Neither is a fault in the file: one is a proposal that
+  // was corrected, and nothing was written from the old value -- a red
+  // line under a hundred fixed rows reads as a hundred faults.
+  const aside = r.stale
+    ? "judged by an earlier build, which kept too little to judge it again "
+      + "— reading it again would check this"
+    : r.revised_from
+      ? "worked out again — the build that read it proposed " + r.revised_from
+      : "";
+  if (aside){
+    const a = document.createElement("small");
+    a.className = "dwrites";
+    a.style.color = "var(--dim)";
+    a.textContent = aside;
+    name.appendChild(a);
+  }
 
   const when = document.createElement("span");
   when.className = "dwhen";
@@ -2464,6 +2498,21 @@ async function renderDates(){
     host.appendChild(box);
   }
 
+  // Proposals worked out again since the file was read, and now different.
+  // The row carries its old value; this says what the difference means,
+  // once, because it is the same for all of them.
+  const revised = datesRows.filter(r => r.revised_from);
+  if (revised.length){
+    const note = document.createElement("div");
+    note.className = "drevised";
+    note.textContent = fmtNum(revised.length) + " of these now propose a "
+      + "different time from the one worked out when they were read: the "
+      + "rule in Settings, or the code that applies it, has changed since. "
+      + "The times shown are the ones a sign-off writes. Nothing was written "
+      + "from the old ones.";
+    host.appendChild(note);
+  }
+
   const by = document.getElementById("dGroup").value;
   const how = document.getElementById("dSort").value;
   remember("dGroup", by);
@@ -2507,10 +2556,13 @@ async function renderDates(){
            + " with nothing to write" : "");
     sum.append(nm, fig);
 
-    // Read again. For rows kept before their answer was worth keeping, so
-    // nothing here can work out a fresh one: a held file is never fetched
-    // twice, and a rule changed in Settings cannot reach it.
-    const stale = rows.filter(r => !r.says);
+    // Read again. Only for rows the server could not judge again -- kept
+    // before Immich's answer was, and outside the rule, which can be worked
+    // out from the ledger alone. It used to be every row without that
+    // answer, which on a library read before 2.16.0 was every row there
+    // was: a button on each group, offering to download files whose verdict
+    // needed nothing downloaded.
+    const stale = rows.filter(r => r.stale);
     if (stale.length){
       const ctl = document.createElement("span");
       ctl.className = "sendctl";

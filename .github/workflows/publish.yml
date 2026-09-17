@@ -197,11 +197,18 @@ jobs:
             echo "::error::no APK to cache"; exit 1; }
           test -s dist/companion.json || {
             echo "::error::no build metadata to cache"; exit 1; }
+      # The key the restore *resolved*, never hashFiles again. By now Gradle
+      # has written companion/app/build/ and companion/.gradle/ into the very
+      # tree the pattern matches, so evaluating it a second time hashes the
+      # build outputs too -- which differ on every run, so every run stored
+      # its APK under a key no restore would ever ask for. Three runs did
+      # that before anyone noticed: the cache list filled up and the restore
+      # went on missing.
       - if: success() && steps.apk.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: dist
-          key: apk-${{ steps.want.outputs.kind }}-${{ hashFiles('companion/**') }}
+          key: ${{ steps.apk.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
