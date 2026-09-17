@@ -71,39 +71,86 @@ EXIF_TAGS = [
 NAME_TIME = re.compile(
     r"(?:^|[^0-9])(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})")
 
+# A millisecond epoch in the name -- what an app writes when it saves a file
+# it did not take: `1671553587634-<uuid>.jpg`, `FB_IMG_1656770033857.jpg`.
+# It is an instant, and it is the same instant a Takeout sidecar carries, so
+# it agrees with Immich by construction and reveals no zone.
+NAME_EPOCH = re.compile(r"(?:^|[^0-9])(1[0-9]{12})(?:[^0-9]|$)")
+
 # The Pixel camera names files in UTC and records the zone separately, so
 # `PXL_20230101_025759` with an offset of +05:00 is a photo taken at 07:57
 # local -- and the name being five hours off is the file being *right*.
 # Older Google Camera builds, Samsung and most everything else wrote the
 # local wall clock into the name instead.
 UTC_NAMED = ("pxl_",)
-LOCAL_NAMED = ("img_", "vid_", "mvimg_", "dsc_")
+LOCAL_NAMED = ("img_", "vid_", "mvimg_", "dsc_", "screenshot_", "lv_0_",
+               "photogrid_")
+# Samsung's `20221225_103124.jpg`, and the `2022-12-25-10-31-24-541.jpg` an
+# Android gallery writes when it saves an edit: both the local wall clock.
+LOCAL_SHAPED = (re.compile(r"^\d{8}_\d{6}"),
+                re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}"))
+
+# A name Google Photos gave something it *made*. The name is one of the
+# source photos' -- `20211010_155825-COLLAGE.jpg` was built in June 2023 out
+# of a photo taken in October 2021, and `20211010_155825.jpg` is in the same
+# library. So the time in the name is a fact about a different file, and
+# reading it as this one's is how a correct creation comes to look years
+# wrong. 580 of the 603 creations in the library this was built for name a
+# file that is also in it, which is the second, mechanical test below.
+CREATION = re.compile(
+    r"-(COLLAGE|ANIMATION|EFFECTS|CINEMATIC|CINEMATIC_MOMENT_VIDEO|MIX|SMILE|"
+    r"PHOTO_FRAME|COLOR_POP|PORTRAIT_BLUR)|_exported_|^MOVIE\.", re.I)
 
 
 def filename_time(name: str) -> datetime | None:
-    m = NAME_TIME.search(name)
-    if not m:
-        return None
-    try:
-        return datetime(*(int(g) for g in m.groups()))
-    except ValueError:
-        return None
+    """The time written into the name, naive, in whatever clock it is."""
+    m = NAME_TIME.search(name or "")
+    if m:
+        try:
+            return datetime(*(int(g) for g in m.groups()))
+        except ValueError:
+            return None
+    m = NAME_EPOCH.search(name or "")
+    if m:
+        try:
+            return datetime.fromtimestamp(int(m.group(1)) / 1000, timezone.utc
+                                          ).replace(tzinfo=None)
+        except (ValueError, OSError, OverflowError):
+            return None
+    return None
 
 
 def filename_clock(name: str) -> str:
-    """Which clock the camera was reading when it named the file.
+    """Which clock was being read when the file was named.
 
-    Only ever used to explain a reading, never to decide one. Both
-    conventions are checked against the file regardless -- a name that fits
-    either is not evidence of anything being wrong, and asserting a
+    "unknown" is the honest and common answer, and it is load-bearing: a
+    name whose convention is not known is never used to decide anything.
+    Both conventions are checked against the file regardless -- a name that
+    fits either is not evidence of anything being wrong, and asserting a
     convention would manufacture faults out of correct files.
     """
     base = os.path.basename(name or "").lower()
-    if base.startswith(UTC_NAMED):
+    if base.startswith(UTC_NAMED) or NAME_EPOCH.search(base):
         return "utc"
-    if base.startswith(LOCAL_NAMED):
+    if base.startswith(LOCAL_NAMED) or any(r.match(base) for r in LOCAL_SHAPED):
         return "local"
     return "unknown"
+
+
+def _made_here(name: str) -> bool:
+    """Is this a file Google Photos made, named after one of its sources?"""
+    base = os.path.basename(name or "")
+    if CREATION.search(base):
+        return True
+    # The general form: whatever suffix it carries, if the library holds a
+    # file whose name is the front of this one, the time belongs to that
+    # file. Catches the creation types nobody here has seen yet.
+    stem = os.path.splitext(base)[0]
+    for cut in ("-", "~"):
+        head = stem.split(cut)[0]
+        if len(head) >= 12 and head != stem and db.another_asset_named(head):
+            return True
+    return False
 
 
 def _sha(path: str) -> str:
@@ -501,7 +548,8 @@ def _instant(value: object) -> float | None:
 
 def verdict(exif: dict, kind: str | None = None, *,
             mtime: float | None = None, taken_at: str | None = None,
-            says: dict | None = None, downloaded: bool = False) -> dict:
+            says: dict | None = None, downloaded: bool = False,
+            name: str | None = None) -> dict:
     """Will Google Photos date this file, or file it under the upload?
 
     The only question that matters about a file on its way to the phone,
@@ -600,7 +648,7 @@ def verdict(exif: dict, kind: str | None = None, *,
         # moment is right and the clock on screen is the capture zone's
         # offset out -- which is nothing at UTC and five hours across most of
         # this library.
-        kindz, zone = zone_source(exif, says or {}, taken_at)
+        kindz, zone = zone_source(exif, says or {}, taken_at, name)
         off = zone_hours(kindz, zone, taken_at)
         if off is None:
             return {"dated": True, "level": "warn", "tag": tag, "state": state,
@@ -708,8 +756,99 @@ def _assumed(taken_at: str | None) -> tuple[str, str] | None:
     return offset, before
 
 
-def zone_source(exif: dict, says: dict,
-                taken_at: str | None = None) -> tuple[str, str | None]:
+# How far the name may sit from Immich's instant and still be the same
+# moment. A video is named when recording started and dated when the file
+# was written, which is seconds to minutes later.
+NAME_SLACK_H = 3 / 60
+VIDEO_SLACK_H = 8 / 60
+
+
+def name_reading(name: str | None, taken_at: str | None,
+                 video: bool = False) -> dict:
+    """What the file's name says about when it was taken, if anything.
+
+    Four answers, and telling them apart is the whole of it:
+
+      zone        a name written in local time, a whole quarter-hour from
+                  Immich's instant: that gap *is* the offset it was taken
+                  at, evidence about this one file rather than a rule about
+                  a whole library
+      agrees      a name written in UTC that matches the instant. True of a
+                  Pixel, and of the millisecond epoch an app writes into a
+                  file it saved. Consistent, and no zone in it
+      disagrees   neither reading fits. One of the two is about something
+                  else: a sidecar date from an import, or a camera whose
+                  clock was wrong
+      made        Google Photos built this file and named it after a source
+      none        no time in the name, or a convention nobody here knows --
+                  Snapchat's numbers, `images (25).jpeg`
+
+    Nothing is asserted from a name alone. "unknown" stays unknown, because
+    guessing a convention is how an entirely correct library came to look
+    five hours broken.
+    """
+    out: dict = {"verdict": "none", "when": None, "clock": "unknown",
+                 "gap": None, "offset": None}
+    when = filename_time(name or "")
+    if when is None:
+        return out
+    out["when"], out["clock"] = when, filename_clock(name or "")
+    if _made_here(name or ""):
+        out["verdict"] = "made"
+        return out
+    instant = db.capture_time(taken_at)
+    if instant is None or out["clock"] == "unknown":
+        return out
+
+    gap = (when - datetime.fromtimestamp(instant, timezone.utc)
+           .replace(tzinfo=None)).total_seconds() / 3600
+    out["gap"] = gap
+    slack = VIDEO_SLACK_H if video else NAME_SLACK_H
+    if out["clock"] == "utc":
+        out["verdict"] = "agrees" if abs(gap) <= slack else "disagrees"
+        return out
+
+    off = _zone_from_gap(gap, slack)
+    if off is None:
+        out["verdict"] = "disagrees"
+    else:
+        out["verdict"], out["offset"] = "zone", off
+    return out
+
+
+# Every offset the world actually keeps. Whole hours, plus the ones that are
+# not: Newfoundland, the Marquesas, Iran, Afghanistan, India, Nepal, Myanmar,
+# Eucla, central Australia, Lord Howe, the Chathams.
+#
+# The list is the check. Any quarter-hour would do as arithmetic, and reading
+# a save delay of 25 minutes as "+04:45" is how seven edited screenshots from
+# one sitting in Lahore came out in three different zones, none of them a
+# place. An offset nobody keeps is not a zone; it is a gap.
+REAL_OFFSETS = tuple(sorted(
+    set(range(-12, 15))
+    | {-9.5, -3.5, 3.5, 4.5, 5.5, 6.5, 9.5, 10.5, 5.75, 8.75, 12.75}))
+
+def _zone_from_gap(gap: float, slack: float) -> float | None:
+    """The offset a local-clock name implies, or None if it implies none.
+
+    `gap` is the name minus Immich's instant, and only an *exact* fit counts
+    -- a real offset, within the slack a file's write takes.
+
+    It briefly also took the next offset above the gap, on the reasoning
+    that a file written a while after the shutter shows the offset minus
+    that delay. The reasoning holds and the inference does not: a gap of
+    4h26m is +04:30 with no delay, or +05:00 with a 34-minute one, and
+    nothing in the two numbers says which. Seven edited screenshots from one
+    sitting came out at +04:30, +04:45 and +05:00 -- three zones for one
+    afternoon in Lahore. A gap that is not an offset is not evidence of one;
+    it is reported as a disagreement instead, which is what it is.
+    """
+    near = min(REAL_OFFSETS, key=lambda o: abs(gap - o))
+    return near if abs(gap - near) <= slack else None
+
+
+def zone_source(exif: dict, says: dict, taken_at: str | None = None,
+                name: str | None = None) -> tuple[str, str | None]:
     """Where the time zone came from, and what it was.
 
     Three provenances with three different weights. The file's own
@@ -726,6 +865,18 @@ def zone_source(exif: dict, says: dict,
     if says.get("latitude") is not None and says.get("longitude") is not None:
         return "gps", zone
 
+    # The name, where the camera wrote a local clock into it: the gap
+    # between that and Immich's instant is the offset this one file was
+    # taken at. It outranks the rule because the rule is a sentence about a
+    # whole library and this is evidence about this photo -- it is what puts
+    # a journey in the right zone, and a trip home during a year spent
+    # elsewhere. It does not outrank coordinates or the file's own offset,
+    # which are recorded at the shutter rather than inferred from two
+    # numbers that might both be wrong.
+    told = name_reading(name, taken_at, is_video(exif))
+    if told["verdict"] == "zone":
+        return "name", offset_text(told["offset"])
+
     # The owner's rule outranks a bare Immich zone, and that order matters.
     # With no offset tag and no coordinates Immich has nothing to derive a
     # zone from, so what it reports is its own default -- in practice the
@@ -741,8 +892,8 @@ def zone_source(exif: dict, says: dict,
     return "none", zone
 
 
-def wall_clock(says: dict, exif: dict,
-               taken_at: str | None) -> tuple[datetime | None, float | None, str]:
+def wall_clock(says: dict, exif: dict, taken_at: str | None,
+               name: str | None = None) -> tuple[datetime | None, float | None, str]:
     """When the shutter actually fired, local, with the correction applied.
 
     Immich's `localDateTime` is the wall clock only where Immich knows the
@@ -752,8 +903,18 @@ def wall_clock(says: dict, exif: dict,
     rule that contradicts it is how this report came to state two different
     times for one photo, two lines apart.
     """
-    kind, zone = zone_source(exif, says, taken_at)
+    kind, zone = zone_source(exif, says, taken_at, name)
     off = zone_hours(kind, zone, taken_at)
+
+    # The name *is* the wall clock where it decided the zone: the camera
+    # wrote down the local time, and Immich supplies the moment it belongs
+    # to. Nothing else has to be derived, and Immich's own conversion is not
+    # consulted -- it converted through a zone that has just been outranked.
+    if kind == "name":
+        told = name_reading(name, taken_at, is_video(exif))
+        if told["when"] is not None:
+            return told["when"], off, kind
+
     base = _naive(says.get("local_date_time"))
     if base is None:
         return None, off, kind
@@ -838,7 +999,8 @@ def zone_hours(kind: str, zone: str | None, taken_at: str | None) -> float | Non
 
 
 def _agrees_with_immich(exif: dict, says: dict, kind: str | None,
-                        taken_at: str | None = None) -> dict | None:
+                        taken_at: str | None = None,
+                        name: str | None = None) -> dict | None:
     """Having a date is not the same as having the right one.
 
     Two different comparisons, and swapping them is a five-hour error. A
@@ -863,7 +1025,7 @@ def _agrees_with_immich(exif: dict, says: dict, kind: str | None,
         # against Immich's unconverted localDateTime reports the correction
         # itself as a disagreement.
         a = _exif_dt(raw)
-        b, _, _ = wall_clock(says, exif, taken_at)
+        b, _, _ = wall_clock(says, exif, taken_at, name)
         mine = a.timestamp() if a else None
         theirs = b.timestamp() if b else None
         label = "when Immich says it was taken"
@@ -975,7 +1137,7 @@ def _findings(rep: dict) -> list[dict]:
         exif = block.get("exif")
         if not isinstance(exif, dict) or "error" in exif:
             continue
-        v = block.get("verdict") or verdict(exif, kind)
+        v = block.get("verdict") or verdict(exif, kind, name=name)
         # Tagged, because the dashboard draws these as their own cards and
         # a reader should not be told the same thing twice. The line stays
         # in the findings list: that list is the machine-readable answer and
@@ -994,7 +1156,7 @@ def _findings(rep: dict) -> list[dict]:
     # 2. And having a date is not the same as having the right one.
     if ref and "error" not in ref:
         agree = _agrees_with_immich(ref, rep.get("says") or {}, kind,
-                                    asset.get("taken_at"))
+                                    asset.get("taken_at"), name)
         if agree:
             out.append(agree)
 
@@ -1007,12 +1169,13 @@ def _findings(rep: dict) -> list[dict]:
         video = is_video(ref, kind)
         state, _, _ = date_state(ref, *(VIDEO_DATE if video else PHOTO_DATE))
         if state in (BLANK, MISSING, UNREADABLE) and says.get("local_date_time"):
-            local, off, zkind = wall_clock(says, ref, asset.get("taken_at"))
+            local, off, zkind = wall_clock(says, ref, asset.get("taken_at"),
+                                           name)
             when = (local.strftime("%Y-%m-%d %H:%M:%S") if local else
                     str(says["local_date_time"]).replace("T", " ")[:19])
             zone = says.get("time_zone")
             label = (f" in {zone}" if zkind != "assumed" and zone
-                     else f", reading it at {zone_source(ref, says, asset.get('taken_at'))[1]} "
+                     else f", reading it at {zone_source(ref, says, asset.get('taken_at'), name)[1]} "
                           "by this library's rule" if zkind == "assumed"
                      else ", with no zone recorded")
             out.append({"level": "warn", "text":
@@ -1026,10 +1189,38 @@ def _findings(rep: dict) -> list[dict]:
                         "same sidecar, so they agree, and a library of "
                         "undated files reads as zero."})
 
+    # 3b. What the name says about the moment. Independent of every tag in
+    #     the file and of Immich's zone, which is what makes it worth
+    #     saying out loud even when nothing here acts on it.
+    told = name_reading(name, asset.get("taken_at"), is_video(ref or {}, kind))
+    if told["verdict"] == "zone":
+        out.append({"level": "ok", "text":
+                    f"The time in the name is {offset_text(told['offset'])} "
+                    f"from the moment Immich holds, which is a real zone — so "
+                    f"the camera wrote the local clock into the name, and that "
+                    f"gap is the offset this was taken at."})
+    elif told["verdict"] == "made":
+        out.append({"level": "note", "text":
+                    "Google Photos made this file and named it after one of "
+                    "its sources, so the date in the name belongs to a "
+                    "different photo and nothing here reads it."})
+    elif told["verdict"] == "disagrees":
+        gap = told["gap"] or 0
+        span = (f"{abs(gap) / 24:.0f} days" if abs(gap) >= 36
+                else f"{abs(gap):.2g} hours")
+        out.append({"level": "warn", "text":
+                    f"The name says {told['when']:%Y-%m-%d %H:%M:%S} and "
+                    f"Immich says {str(asset.get('taken_at'))[:19].replace('T', ' ')} "
+                    f"— {span} apart, which is no zone. One of the two is "
+                    "about something else: a date read from a sidecar at "
+                    "import, or a camera whose clock was wrong. Nothing here "
+                    "chooses between them."})
+
     # 4. Whether the zone is known at all. A wall clock with no zone behind
     #    it is a number, not a time, and this library spans a move.
     if ref and "error" not in ref and (rep.get("says") or {}).get("ok"):
-        src_kind, zone = zone_source(ref, rep["says"], asset.get("taken_at"))
+        src_kind, zone = zone_source(ref, rep["says"], asset.get("taken_at"),
+                                     name)
         place = (rep["says"] or {}).get("place")
         if src_kind == "file":
             out.append({"level": "ok", "text":
@@ -1203,8 +1394,9 @@ def propose(rep: dict) -> dict:
     ref = (ob.get("exif") if isinstance(ob.get("exif"), dict) else None) or \
         ((rep.get("immich") or {}).get("exif") or {})
     taken_at = asset.get("taken_at")
-    local, off, zkind = wall_clock(says, ref, taken_at)
-    zone = zone_source(ref, says, taken_at)[1]
+    name = rep.get("filename") or asset.get("name")
+    local, off, zkind = wall_clock(says, ref, taken_at, name)
+    zone = zone_source(ref, says, taken_at, name)[1]
 
     if is_video(ref, asset.get("kind")):
         # QuickTime's CreateDate is UTC by specification -- the opposite of
@@ -1246,12 +1438,19 @@ def propose(rep: dict) -> dict:
         "immich": f"Immich's timeZone ({says.get('time_zone')})",
         "assumed": f"this library's rule — taken before "
                    f"{settings.load().assume_zone_before}, so {zone}",
+        "name": f"the filename, which is {zone} from Immich's instant — the "
+                f"camera wrote the local clock into the name, so the gap "
+                f"between the two is the zone it was taken at",
     }[zkind]
-    clock = ("Immich's localDateTime, the wall clock, with its Z discarded"
-             if zkind != "assumed" else
-             f"Immich's fileCreatedAt, the capture instant, plus {zone}. "
-             "Under the rule Immich's own zone is set aside, and so is the "
-             "localDateTime it converted through that zone")
+    clock = {
+        "assumed": f"Immich's fileCreatedAt, the capture instant, plus {zone}. "
+                   "Under the rule Immich's own zone is set aside, and so is "
+                   "the localDateTime it converted through that zone",
+        "name": "the time in the filename, which is the local clock the "
+                "camera was reading. Immich's own conversion is not used: "
+                "it converted through a zone this outranks",
+    }.get(zkind,
+          "Immich's localDateTime, the wall clock, with its Z discarded")
     stamp = offset_text(off)
 
     out["needed"] = True
@@ -1327,17 +1526,19 @@ async def classify(path: str, row: dict) -> dict:
         if says.get("ok"):
             out["says"] = says          # kept, so a verdict can be redone
         zkind, zone = zone_source(exif, says if says.get("ok") else {},
-                                  row.get("taken_at"))
+                                  row.get("taken_at"), row.get("filename"))
         out["zone"] = zkind
         out["kind"] = BLANK_FAULT if state == BLANK else ABSENT_FAULT
 
         prop = propose({
+            "filename": row.get("filename"),
             "asset": {"id": row.get("id"), "kind": kind,
                       "taken_at": row.get("taken_at")},
             "says": says,
             "outbox": {"present": True, "exif": exif,
                        "verdict": verdict(exif, kind, says=says,
-                                          taken_at=row.get("taken_at"))},
+                                          taken_at=row.get("taken_at"),
+                                          name=row.get("filename"))},
         })
         if not prop.get("needed"):
             # Nothing can be written: no zone to be had, or Immich holds no
@@ -1388,6 +1589,17 @@ def rejudge(row: dict) -> dict:
     """
     out = dict(row)
     out["stale"] = False
+    # Independent of every tag, of Immich's zone and of the rule, so it is
+    # worked out for every row including the ones judged no further.
+    told = name_reading(row.get("filename"), row.get("taken_at"),
+                        (row.get("kind") or "").upper() == "VIDEO")
+    if told["verdict"] != "none":
+        out["name_says"] = {
+            "verdict": told["verdict"],
+            "when": told["when"].strftime("%Y-%m-%d %H:%M:%S") if told["when"]
+                    else None,
+            "gap": None if told["gap"] is None else round(told["gap"], 2),
+            "offset": told["offset"]}
     if row.get("hold_zone") in ("file", "gps"):
         return out
     says = row.get("says") or _from_the_ledger(row)
@@ -1400,14 +1612,17 @@ def rejudge(row: dict) -> dict:
     if (row.get("kind") or "").upper() == "VIDEO":
         exif["File:MIMEType"] = "video/mp4"
     prop = propose({
+        "filename": row.get("filename"),
         "asset": {"id": row.get("id"), "kind": row.get("kind"),
                   "taken_at": row.get("taken_at")},
         "says": says,
         "outbox": {"present": True, "exif": exif,
                    "verdict": verdict(exif, row.get("kind"), says=says,
-                                      taken_at=row.get("taken_at"))},
+                                      taken_at=row.get("taken_at"),
+                                      name=row.get("filename"))},
     })
-    out["hold_zone"] = zone_source(exif, says, row.get("taken_at"))[0]
+    out["hold_zone"] = zone_source(exif, says, row.get("taken_at"),
+                                   row.get("filename"))[0]
     out["writes"] = prop.get("writes") or []
     if not out["writes"]:
         out["why"] = prop.get("why", "")
@@ -1673,7 +1888,8 @@ async def trace(filename: str, send: bool = False) -> dict:
                                           mtime=rep[key].get("mtime"),
                                           taken_at=row.get("taken_at"),
                                           says=rep.get("says"),
-                                          downloaded=got)
+                                          downloaded=got,
+                                          name=row.get("filename"))
     # One corrected wall clock, computed once and handed to the page, so it
     # cannot print a different time from the findings beneath it.
     if (rep.get("says") or {}).get("ok"):
@@ -1683,11 +1899,13 @@ async def trace(filename: str, send: bool = False) -> dict:
             rep["outbox"].get("exif"), dict) else None) or {}
         if not ref or "error" in ref:
             ref = (rep["immich"].get("exif") or {})
-        local, off, zkind = wall_clock(rep["says"], ref, row.get("taken_at"))
+        local, off, zkind = wall_clock(rep["says"], ref, row.get("taken_at"),
+                                       row.get("filename"))
         rep["says"]["wall_clock"] = (
             local.strftime("%Y-%m-%d %H:%M:%S") if local else None)
         rep["says"]["zone_used"] = zone_source(ref, rep["says"],
-                                               row.get("taken_at"))[1]
+                                               row.get("taken_at"),
+                                               row.get("filename"))[1]
         rep["says"]["zone_from"] = zkind
 
     rep["findings"] = _findings(rep)

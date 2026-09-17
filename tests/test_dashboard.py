@@ -393,6 +393,21 @@ def test_every_grouping_offered_has_a_key():
         assert f"{key}:" in src, f"group '{key}' is offered but not implemented"
 
 
+def test_every_grouping_offered_has_headings():
+    """A key with no heading draws its raw name and no explanation, which is
+    how a new state arrives on screen looking like a bug."""
+    from app import diagnose
+    block = HTML[HTML.index("const NAMED = {"):HTML.index("const ZONE = {")]
+    for key in ("zone", "agrees", "disagrees", "made", "none"):
+        assert f"{key}:" in block, key
+    zones = HTML[HTML.index("const ZONE = {"):HTML.index("let datesRows")]
+    assert "name:" in zones, "the filename is a zone source now"
+    # The server's word for it and the page's have to be the same word.
+    told = diagnose.name_reading("VID_20220101_160928.mp4",
+                                 "2022-01-08T17:20:01.000Z", True)
+    assert f'{told["verdict"]}:' in block
+
+
 def test_every_sort_offered_has_a_comparator():
     start = HTML.index('id="dSort"')
     opts = set(re.findall(r'<option value="(\w+)">',

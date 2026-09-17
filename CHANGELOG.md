@@ -10,6 +10,33 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.19.0
+
+**The filename is read as evidence, and says which zone.** A name written in
+local time and a moment held by Immich are two halves of the same fact: the
+gap between them is the offset the photo was taken at. That is evidence
+about one file, so it outranks the rule in Settings, which is a sentence
+about a whole library — files from a journey now come out in the zone they
+were taken in rather than the country left behind, and a trip home during a
+year spent elsewhere does too. It does not outrank coordinates or an offset
+in the file, both of which are recorded at the shutter.
+
+Where the two disagree by more than any zone explains, that is said and
+nothing is written from it: one of the two is about something else, and
+picking a winner is not this service's to do.
+
+Three things stop it inventing faults. An offset nobody keeps is not a zone
+— reading a save delay as "+04:45" put seven screenshots from one afternoon
+into three zones, none of them a place. A creation's name belongs to another
+photo: a collage built in June 2023 out of a photo from October 2021 is
+named for the 2021 one, and the library holding that source is how it is
+recognised. And a naming convention nobody here knows stays unknown, because
+guessing one turns correct files into faults — which it has done before, to
+an entire library, for five hours.
+
+The Dates tab groups by what the name says, and a row whose name disagrees
+carries both dates.
+
 ## 2.18.0
 
 **Every filename opens the photo.** A name raises one question — which
