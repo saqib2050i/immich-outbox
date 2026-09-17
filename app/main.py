@@ -509,6 +509,36 @@ async def dates_recheck(payload: dict | None = None):
     return {"ok": True, "rechecking": n}
 
 
+@app.post("/api/dates/take-back")
+async def dates_take_back(payload: dict | None = None):
+    """Send named files again, working the correction out again on the way.
+
+    For files already delivered carrying a date this service wrote. The
+    value came from whatever the rules said that day, and the copy in Google
+    Photos keeps it, so the only way to change it is to send a fresh one --
+    after clearing the old copy over there, which is the caller's to do and
+    is what the control says before it arms.
+
+    `all_corrected` takes every file with a correction written into it,
+    which is the set that a rule changed since is most likely to have got
+    wrong. Named ids otherwise.
+    """
+    d = payload or {}
+    if d.get("all_corrected"):
+        ids = [r["id"] for r in db.pending_to_immich()]
+    else:
+        ids = [str(i) for i in (d.get("ids") or []) if i]
+    n = db.take_back(ids)
+    if n:
+        db.log("send", f"{n} file(s) taken back to be corrected and sent "
+                       "again — the copy already in Google Photos is not "
+                       "replaced by this and has to be cleared there")
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
+    return {"ok": True, "taken_back": n}
+
+
 @app.get("/api/dates/to-immich")
 async def dates_to_immich():
     """Corrections written into delivered files that Immich still lacks.

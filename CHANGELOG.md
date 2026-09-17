@@ -10,6 +10,34 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.17.0
+
+**A correction can be taken back.** The date written into a delivered file
+is whatever the rules said the day it went, and the copy in Google Photos
+keeps it — so when a rule changes, or the code that applies one does, every
+file already corrected may be carrying the old answer. There was no way to
+revisit one: a signed-off file leaves the Dates list and joins the record of
+what was written, and nothing there could be pressed.
+
+Each file in "Corrections Immich does not have" now has **Send again**, and
+the list has **Correct and send all N again**. Either one clears the
+delivery record and everything decided about the file, so the next fetch
+reads its bytes afresh, works the date out under today's rules, and holds it
+for sign-off like any other. Immich is not touched, and neither is the copy
+already in Google Photos: that one has to be cleared over there first, which
+is what both controls say before they arm.
+
+`stamped_at` is kept while the file goes round again. It is the record that
+the delivered copy differs from Immich because a date was written into it
+here, and until a new one lands that is still true — clearing it would make
+a trace of that file read as damage.
+
+**The whole held list can be read again.** The group control offers a second
+read only for rows nothing here can re-judge; this is for the other reason,
+which is the file itself. A verdict comes from bytes read once, so a file
+replaced in Immich, or a doubt about what was read, had no way to be asked
+again short of signing it off.
+
 ## 2.16.3
 
 **A sign-off wrote what was stored, not what was shown.** The Dates tab

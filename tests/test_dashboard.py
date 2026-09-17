@@ -446,6 +446,26 @@ def test_a_proposal_worked_out_again_says_what_it_was():
     assert "r.revised_from" in src
 
 
+def test_the_whole_held_list_can_be_read_again():
+    """The group control offers this only where nothing can be judged again.
+    A verdict still comes from bytes read once, so a file replaced in Immich
+    -- or a doubt about what was read -- has no other answer."""
+    src = HTML[HTML.index("async function renderDates("):HTML.index("async function renderOwed(")]
+    assert "dReadAll" in src and "Read all " in src
+    assert 'id="dReadAll"' in HTML, "and somewhere to put it"
+
+
+def test_a_correction_can_be_taken_back_and_done_again():
+    """The date in a delivered file is whatever the rules said that day, and
+    the copy in Google Photos keeps it. Sending a fresh one is the only way
+    to change it, and the control says so before it arms."""
+    src = HTML[HTML.index("async function takeBack("):HTML.index("// ---- sending, one control")]
+    assert "/api/dates/take-back" in src
+    assert "all_corrected" in src, "the whole set, for a rule that has moved"
+    assert src.count("armed(") >= 2, "per file and in bulk, both armed"
+    assert "Google Photos" in src, "it must say the old copy stays there"
+
+
 def test_bulk_sign_off_is_armed_like_every_other_irreversible_control():
     src = HTML[HTML.index("async function renderDates("):HTML.index("async function renderOwed(")]
     assert "armed(b," in src

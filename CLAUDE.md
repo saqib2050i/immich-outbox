@@ -68,7 +68,21 @@ careless. An unexplained difference is still an alarm.
 
 It also narrows the re-send exception under invariant 4: that rests on the
 bytes being unchanged, and a stamped file's are not, so a confirmed file
-carrying `stamped_at` is refused again.
+carrying `stamped_at` is refused again by `diagnose._send_now()`.
+
+`db.take_back()` is the deliberate way past that, and it is deliberate in
+both senses: one person, one button, named files -- never a cycle, a window
+or a sweep. It exists because a correction is written *on the way past*, so
+the value in a delivered file is whatever the rules said that day and the
+copy in Google Photos keeps it; when a rule moves, the only way to change
+that copy is to send a fresh one, and nothing here can reach into Google
+Photos to remove the old. So the control says so before it arms, and the
+duplicate is the caller's to clear. It clears the delivery record *and*
+everything decided about the file -- `checked_at`, `hold_*`, `approved_at`
+-- because the point is a fresh verdict rather than the stored one written
+twice. `stamped_at` is the exception it keeps: the delivered copy still
+differs from Immich until a new one lands, and a trace reading that
+difference with no explanation is the alarm above.
 
 **2b. The companion presses a button; it never deletes.** `companion.py`
 and the phone app exist to make files leave the outbox *sooner*, by tapping

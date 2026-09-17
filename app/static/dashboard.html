@@ -1443,6 +1443,7 @@
     </select>
     <span class="spacer"></span>
     <span class="hint" id="dCount"></span>
+    <span class="sendctl" id="dReadAll"></span>
   </div>
 
   <div id="datesOut"></div>
@@ -2457,6 +2458,29 @@ async function renderDates(){
       : "not checking — files go to the phone unread");
   tally.style.color = d.checking ? "" : "var(--alarm)";
 
+  // Read the whole list again. The group-level control only offers this for
+  // rows nothing here can judge again; this one is for the other reason --
+  // the file itself. A verdict comes from bytes read once, so a file
+  // replaced in Immich, or a doubt about what was read, has no other answer.
+  const readAll = document.getElementById("dReadAll");
+  readAll.innerHTML = "";
+  if (datesRows.length){
+    const rb = document.createElement("button");
+    rb.className = "ghost";
+    rb.textContent = "Read all " + fmtNum(datesRows.length) + " again";
+    rb.title = "Fetches every held file again and reads its bytes afresh. "
+             + "Nothing is sent: they come back here with a new verdict.";
+    armed(rb, "Sure? Read all " + fmtNum(datesRows.length) + " again",
+          async () => {
+            await fetch("/api/dates/recheck", {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({ids: datesRows.map(r => r.id)})});
+            await renderDates();
+            await tick();
+          });
+    readAll.appendChild(rb);
+  }
+
   host.innerHTML = "";
   if (!datesRows.length){
     // "Nothing held" has two causes with opposite meanings, and the server
@@ -2605,6 +2629,22 @@ async function renderDates(){
   renderOwed();
 }
 
+async function takeBack(what, btn){
+  // A correction is written on the way past, so changing one means sending
+  // the file again -- there is nothing here that can reach into Google
+  // Photos, and nothing here that should be able to.
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "Queuing";
+  try {
+    await fetch("/api/dates/take-back", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(what)});
+    await renderDates();
+    await tick();
+  } finally { btn.textContent = was; btn.disabled = false; }
+}
+
 async function renderOwed(){
   const host = document.getElementById("datesOwed");
   if (!host) return;
@@ -2629,6 +2669,24 @@ async function renderOwed(){
     fig.className = "gfig";
     fig.textContent = "Immich still holds none of these";
     sum.append(nm, fig);
+
+    // Take the whole set back. The date in each of these came from whatever
+    // the rules said the day it went, and the copy in Google Photos keeps
+    // it -- so when a rule changes, this is the set most likely to be wrong,
+    // and the only way to change one is to send a fresh copy.
+    const ctl = document.createElement("span");
+    ctl.className = "sendctl";
+    ctl.addEventListener("click", e => e.stopPropagation());
+    const all = document.createElement("button");
+    all.className = "ghost";
+    all.textContent = "Correct and send all " + fmtNum(rows.length) + " again";
+    all.title = "Reads each file again, works its date out under today's "
+              + "rules and sends a fresh copy. Clear the old copies from "
+              + "Google Photos first or you will have both.";
+    armed(all, "Sure? Old copies stay in Google Photos",
+          () => takeBack({all_corrected: true}, all));
+    ctl.appendChild(all);
+    sum.appendChild(ctl);
     det.appendChild(sum);
     rows.slice(0, 500).forEach(r => {
       const el = document.createElement("div");
@@ -2644,8 +2702,17 @@ async function renderOwed(){
       const when = document.createElement("span");
       when.className = "dwhen";
       when.textContent = (r.stamped_at || "").slice(0, 10);
-      el.append(document.createElement("span"), name, when,
-                document.createElement("span"));
+
+      const again = document.createElement("button");
+      again.className = "ghost";
+      again.textContent = "Send again";
+      again.title = "Reads this file again, works its date out under today's "
+                  + "rules and sends a fresh copy. The copy already in "
+                  + "Google Photos is not replaced — clear it there first.";
+      armed(again, "Sure? Clear the old copy first",
+            () => takeBack({ids: [r.id]}, again));
+
+      el.append(document.createElement("span"), name, when, again);
       det.appendChild(el);
     });
     host.appendChild(det);
