@@ -10,6 +10,23 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.19.1
+
+**What is moving is visible from every tab.** The panel with the progress
+bars lives on Queue, and a sign-off happens on Dates — so eight files were
+fetched, read, corrected and landed behind a screen that said nothing
+whatever about it. A strip along the bottom now names the file being worked
+on, what is being done to it — reading its date, writing the correction,
+moving into the outbox — and how far through the fill is. It appears only
+while something is moving, and it is a shortcut to the full panel.
+
+**Signing a file off starts the fill.** It went back to the queue and then
+waited for the next cycle, up to ten minutes away — so the file left the
+Dates list, no transfer appeared, nothing moved, and the only honest reading
+available from the screen was that the sign-off had not worked. "Read again"
+and "Send again" both already started a cycle on the spot; this now does
+too.
+
 ## 2.19.0
 
 **The filename is read as evidence, and says which zone.** A name written in

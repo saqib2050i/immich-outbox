@@ -487,6 +487,16 @@ async def dates_release(payload: dict | None = None):
         db.log("info", f"{refused} held file(s) not signed off — nothing can "
                        "be written to them as things stand, or they were no "
                        "longer held")
+    if n:
+        # Start now rather than at the next cycle. Signing a file off is
+        # somebody saying "send this", and a fill up to ten minutes away
+        # answers that with a page on which nothing whatever happens --
+        # the file leaves the Dates list, no transfer appears, and the only
+        # honest reading available from the screen is that it did not work.
+        # "Read again" and "Send again" both already do this.
+        async with feeder.CYCLE_LOCK:
+            _, used = feeder.reconcile()
+            await feeder.top_up(used)
     return {"ok": True, "released": n, "refused": refused}
 
 

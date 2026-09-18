@@ -254,6 +254,19 @@ not only to one made in this session -- and the Dates one used to reapply on
 *every* render, so a group collapsed by hand reopened the moment a file was
 signed off out of it.
 
+**Work has to be visible from wherever it was started.** The transfer panel
+lives on the Queue tab, and the controls that start work do not: signing
+eight files off on Dates fetched, read, corrected and landed all eight
+behind a screen that said nothing about any of it, which reads exactly like
+a button that did not work. `#moving` is a strip along the bottom of every
+tab, painted by the same 700ms poll as the panel, naming the file and the
+*phase* -- bytes alone are not the whole of a transfer, since a file has its
+date read and a correction written with the bar already at 100%. It is
+outside every `[data-tab]` section on purpose; inside one, it would be
+hidden by the tab switch that hides everything else. And the endpoints that
+start work (`release`, `recheck`, `take-back`) all run a cycle rather than
+waiting up to ten minutes for the next one.
+
 **A redraw must never throw away what the reader was doing.** Every ledger
 write pushes an SSE event, so the dashboard redraws several times a second
 while anything is moving. Rebuilding a list or a tree on each of those
