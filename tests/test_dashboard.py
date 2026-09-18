@@ -426,6 +426,31 @@ def test_a_file_with_nothing_to_write_is_not_offered_a_sign_off():
     assert "nothing can be written" in src
 
 
+def test_what_is_moving_is_visible_from_every_tab():
+    """The panel with the bars lives on Queue. A sign-off happens on Dates,
+    so the work it starts had nowhere to show itself on the page that
+    started it: eight files went out behind a screen that said nothing."""
+    strip = HTML[HTML.index('id="moving"'):HTML.index('id="moving"') + 400]
+    assert 'class="moving"' in HTML
+    for part in ("movingWhat", "movingFig", "movingBar"):
+        assert part in strip, part
+    # Outside every tab panel, or it would be hidden with whichever one owns
+    # it -- which is the bug, arriving by a different door.
+    before = HTML[:HTML.index('id="moving"')]
+    assert before.count("<section") == before.count("</section>"), \
+        "the strip sits inside a section, so a tab switch can hide it"
+    src = HTML[HTML.index("function paintMoving("):HTML.index("function paintTransfer(")]
+    assert "moving.hidden = true" in src, "idle, it must get out of the way"
+    assert "files_done" in src and "files_total" in src, "how far through"
+    assert "PHASE[" in src, "and what is being done to the file right now"
+
+
+def test_the_phases_are_named_once():
+    """Two copies of this vocabulary drift, and the one that drifts is the
+    one nobody is looking at."""
+    assert HTML.count("correcting: \"writing the correction\"") == 1
+
+
 def test_reading_again_is_offered_only_where_nothing_else_can_judge():
     """It was offered for every row lacking Immich's answer -- which, on a
     library read before 2.16.0 kept one, was every row there was: a button

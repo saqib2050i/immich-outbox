@@ -441,6 +441,25 @@
         letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
         padding:5px 6px;user-select:none;font-weight:600;color:var(--dim)}
   .qsummary{color:var(--dim);font-size:13px;margin-left:auto}
+  /* What is moving, wherever you are. The panel with the bars lives on the
+     Queue tab, and a sign-off happens on Dates -- so the work it starts had
+     nowhere to show itself on the page that started it, and eight files
+     went out behind a screen that said nothing at all. Fixed to the bottom
+     rather than sticky under the nav, whose height changes with the width. */
+  .moving{position:fixed;left:0;right:0;bottom:0;z-index:30;cursor:pointer;
+          display:flex;gap:10px;align-items:center;padding:9px 16px;
+          font-size:12.5px;border-top:1px solid var(--rule);
+          background:color-mix(in srgb,var(--paper) 93%,transparent);
+          backdrop-filter:blur(12px)}
+  .moving .mvwhat{font-family:var(--mono);color:var(--transit);
+                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .moving .mvfig{color:var(--dim);white-space:nowrap}
+  .moving i{position:absolute;left:0;bottom:0;height:2px;
+            background:var(--transit);transition:width .25s linear}
+  /* On a narrow screen the filename gives way, not the count: "3 of 8 this
+     cycle" is the answer to what somebody who just signed eight files off
+     is actually asking. */
+  .moving .mvwhat{flex:0 1 auto;min-width:0}
   .qpaused{border-left:3px solid var(--alarm);padding:10px 14px;margin:14px 0;
            color:var(--dim);font-size:13.5px;background:var(--panel);
            border-radius:0 var(--r-sm) var(--r-sm) 0}
@@ -967,6 +986,15 @@
 </div>
 
 <div class="alertbox" id="alertBox" hidden></div>
+
+<div class="moving" id="moving" hidden role="status"
+     title="What is moving right now — opens the queue">
+  <span class="spin"></span>
+  <span class="mvwhat" id="movingWhat"></span>
+  <span class="spacer"></span>
+  <span class="mvfig" id="movingFig"></span>
+  <i id="movingBar" style="width:0%"></i>
+</div>
 
 <section aria-label="Pipeline" data-tab="overview">
   <div class="belt" id="belt">
@@ -3636,6 +3664,38 @@ const fmtEta = s => {
   return (s / 3600).toFixed(1) + " h left";
 };
 
+// Bytes are not the whole of a transfer: a file has its date read after the
+// download and an approved correction written into it, both of which take
+// real time with the bar already full.
+const PHASE = {
+  fetching:   "",
+  checking:   "reading its date",
+  correcting: "writing the correction",
+  landing:    "moving into the outbox",
+};
+
+function paintMoving(state){
+  const list = state.transfers || [];
+  const batch = state.batch;
+  if (!list.length && !batch){ moving.hidden = true; return; }
+  moving.hidden = false;
+
+  const t = list[0];
+  const pct = t && t.size ? Math.min(100, (t.bytes / t.size) * 100) : 0;
+  const doing = t ? (PHASE[t.phase || "fetching"]
+                     || (t.size ? Math.round(pct) + "%" : "fetching")) : "";
+  movingWhat.textContent = t
+    ? doing + " · " + t.filename
+      + (list.length > 1 ? "  +" + fmtNum(list.length - 1) + " more" : "")
+    : "starting";
+  movingFig.textContent = batch
+    ? fmtNum(batch.files_done) + " of " + fmtNum(batch.files_total)
+      + " this cycle"
+    : "";
+  movingBar.style.width = (batch && batch.bytes_total
+    ? Math.min(100, (batch.bytes_done / batch.bytes_total) * 100) : pct) + "%";
+}
+
 function paintTransfer(state){
   const list = state.transfers || [];
   const batch = state.batch;
@@ -3684,12 +3744,6 @@ function paintTransfer(state){
     // after the download and an approved correction written into it, both
     // of which take real time with the bar already full -- so a file being
     // worked on looked stuck, and the only figure on screen said 100%.
-    const PHASE = {
-      fetching:   "",
-      checking:   "reading its date",
-      correcting: "writing the correction",
-      landing:    "moving into the outbox",
-    };
     const pct = t.size ? Math.min(100, (t.bytes / t.size) * 100) : 0;
     const bits = [];
     const doing = PHASE[t.phase || "fetching"];
@@ -3745,6 +3799,7 @@ async function pollTransfer(){
 
   const busy = (d.transfers && d.transfers.length) || d.batch;
   paintTransfer(d);
+  paintMoving(d);
   if (busy){
     lastTransfer = d;
   } else if (lastTransfer){
@@ -3753,6 +3808,12 @@ async function pollTransfer(){
     tick();
   }
 }
+
+// The strip is a shortcut to the panel it summarises.
+moving.addEventListener("click", () => {
+  setTab("queue");
+  window.scrollTo({top: 0, behavior: "smooth"});
+});
 
 // Fast enough to look live, cheap enough to ignore: the endpoint reads one
 // dictionary and touches no database.
