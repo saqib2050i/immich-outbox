@@ -759,6 +759,28 @@ async def test_a_sign_off_writes_what_the_page_showed(rig, monkeypatch):
     assert got["DateTimeOriginal"] == "2022:07:02 18:53:54"
 
 
+async def test_signing_off_starts_the_fill_rather_than_waiting_for_one(rig, monkeypatch):
+    """A cycle up to ten minutes away answers a sign-off with a screen on
+    which nothing happens: the file leaves the list, no transfer appears,
+    and the only reading available is that it did not work."""
+    from app import db, diagnose, feeder, immich, settings
+    settings.save({"check_dates": True,
+                   "assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    db.upsert_assets([asset(0, taken="2022-07-02T13:53:54.000Z")])
+    db.record_check("asset-0", {
+        "hold": True, "kind": "blank", "zone": "assumed",
+        "writes": [{"tag": "DateTimeOriginal", "value": "2022:07:02 18:53:54"}],
+        "checked_at": db.now(), "checked_sum": "sum0"})
+    monkeypatch.setattr(immich, "stream_original", fake_download())
+    monkeypatch.setattr(diagnose, "write_tags", lambda p, w: (True, ""))
+
+    _client().post("/api/dates/release", json={"ids": ["asset-0"]})
+    row = dict(db.connect().execute("SELECT * FROM assets").fetchone())
+    assert row["state"] == "queued", "it went on the spot"
+    assert row["outbox_name"] and row["stamped_at"]
+
+
 async def test_a_file_with_nothing_to_write_cannot_be_signed_off(rig):
     """Released, it would be delivered uncorrected -- the fault the sign-off
     was for, in Google Photos for good."""

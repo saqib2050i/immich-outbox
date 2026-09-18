@@ -10,6 +10,15 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.19.1
+
+**Signing a file off starts the fill.** It went back to the queue and then
+waited for the next cycle, up to ten minutes away — so the file left the
+Dates list, no transfer appeared, nothing moved, and the only honest reading
+available from the screen was that the sign-off had not worked. "Read again"
+and "Send again" both already started a cycle on the spot; this now does
+too.
+
 ## 2.19.0
 
 **The filename is read as evidence, and says which zone.** A name written in
