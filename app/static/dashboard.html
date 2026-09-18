@@ -1436,6 +1436,7 @@
     <select id="dGroup">
       <option value="fault">What is wrong</option>
       <option value="zone">Where the zone comes from</option>
+      <option value="named">What the filename says</option>
       <option value="family">Filename family</option>
       <option value="year">Year</option>
       <option value="month">Month</option>
@@ -2335,8 +2336,37 @@ const FAULT = {
                + "reaches it now. The correction is the same either way."],
 };
 
+// What the filename says about the moment, which no tag in the file and
+// nothing Immich holds can contradict on its own.
+const NAMED = {
+  zone:      ["The name gives the zone",
+              "The name is the local clock and Immich holds the moment, so "
+              + "the gap between them is the offset it was taken at."],
+  agrees:    ["The name agrees with Immich",
+              "A name written in UTC — a Pixel, or the millisecond stamp an "
+              + "app writes — matching the moment Immich holds."],
+  disagrees: ["The name disagrees with Immich",
+              "The two are further apart than any zone explains, so one of "
+              + "them is about something else: a date read from a sidecar at "
+              + "import, or a clock that was wrong. Nothing here picks a "
+              + "winner."],
+  made:      ["Named after another photo",
+              "Google Photos made this file and named it after one of its "
+              + "sources — the collage built in 2023 out of a photo from "
+              + "2021 is named for the 2021 one. The date in the name "
+              + "belongs to that file, so nothing here reads it."],
+  none:      ["No time in the name",
+              "Either no date in it at all, or a naming convention nobody "
+              + "here knows. Guessing one manufactures faults."],
+};
+
 const ZONE = {
   file: ["The file says so", "It carries its own offset. Certain."],
+  name: ["The name says so",
+         "The camera wrote the local clock into the filename, and the gap "
+         + "between that and Immich's instant is an offset somewhere keeps. "
+         + "Evidence about this one file, so it outranks a rule about the "
+         + "whole library — it is what puts a journey in the right zone."],
   gps:  ["Its coordinates say so",
          "Immich derived the zone from where the shutter was pressed. Certain."],
   assumed: ["This library's rule",
@@ -2376,6 +2406,7 @@ function groupDates(rows, by){
     // when the file is read, and the settings can move after that.
     fault:  r => (r.writes || []).length ? (r.hold_kind || "unrecorded")
                                          : "unfixable",
+    named:  r => (r.name_says || {}).verdict || "none",
     zone:   r => r.hold_zone || "none",
     family: r => dateFamily(r.filename),
     year:   r => (r.taken_at || "").slice(0, 4) || "undated",
@@ -2408,6 +2439,7 @@ function sortDates(rows, how){
 function groupHeading(by, key){
   if (by === "fault") return FAULT[key] || [key, ""];
   if (by === "zone") return ZONE[key] || [key, ""];
+  if (by === "named") return NAMED[key] || [key, ""];
   if (by === "month" && /^\d{4}-\d{2}$/.test(key))
     return [MONTH_NAMES[+key.slice(5, 7) - 1] + " " + key.slice(0, 4), ""];
   return [key, ""];
@@ -2446,15 +2478,23 @@ function dateRow(r){
     : "nothing can be written";
   name.appendChild(w);
 
-  // Dim, not red. Neither is a fault in the file: one is a proposal that
-  // was corrected, and nothing was written from the old value -- a red
-  // line under a hundred fixed rows reads as a hundred faults.
+  // Dim, not red. None of these is a fault in the file: one is a proposal
+  // that was corrected and nothing was written from the old value; another
+  // is two records disagreeing, with no claim about which is wrong. A red
+  // line under a hundred rows reads as a hundred faults.
+  const told = r.name_says || {};
   const aside = r.stale
     ? "judged by an earlier build, which kept too little to judge it again "
       + "— reading it again would check this"
-    : r.revised_from
-      ? "worked out again — the build that read it proposed " + r.revised_from
-      : "";
+    : told.verdict === "disagrees"
+      ? "the name says " + told.when + " — "
+        + (Math.abs(told.gap) >= 36
+             ? Math.round(Math.abs(told.gap) / 24) + " days"
+             : Math.abs(told.gap).toFixed(2).replace(/\.?0+$/, "") + " hours")
+        + " from Immich's, which is no zone"
+      : r.revised_from
+        ? "worked out again — the build that read it proposed " + r.revised_from
+        : "";
   if (aside){
     const a = document.createElement("small");
     a.className = "dwrites";

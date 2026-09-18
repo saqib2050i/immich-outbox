@@ -108,10 +108,23 @@ def test_a_name_written_in_the_local_clock_is_not_a_fault_either(rig):
 @pytest.mark.parametrize("name,clock", [
     ("PXL_20230101_025759225.jpg", "utc"),
     ("IMG_20230101_025759.jpg", "local"),
-    ("20230101_025759.jpg", "unknown"),
+    # Samsung's shape. Held as "unknown" until the library said otherwise:
+    # 7,310 of 7,447 of these sit exactly five hours from Immich's instant,
+    # and Pixel names sit on it — 7,235 of 7,239 — which is the two
+    # conventions showing up in one measurement.
+    ("20230101_025759.jpg", "local"),
+    ("2023-01-01-02-57-59-123.jpg", "local"),
+    ("Screenshot_20230101-025759.png", "local"),
+    # A millisecond epoch is an instant, and it is the same instant a
+    # Takeout sidecar carries.
+    ("FB_IMG_1656770033857.jpg", "utc"),
+    ("1671553587634-cbacef63.jpg", "utc"),
+    # The ones that must stay unknown: a convention nobody here knows is
+    # never guessed at, because asserting one manufactures faults.
+    ("Snapchat-1521494117.jpg", "unknown"),
+    ("images (25).jpeg", "unknown"),
 ])
 def test_which_clock_the_camera_named_it_by(name, clock):
-    """Only ever used to explain a reading, never to decide one."""
     from app import diagnose
     assert diagnose.filename_clock(name) == clock
 

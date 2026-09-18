@@ -316,6 +316,39 @@ The ledger itself is safe either way (confirmation needs `state='queued'`
 **and** `seen_on_phone=1`), but a report that says "Sent" over an empty
 outbox is the failure this tool exists to catch, wearing its own uniform.
 
+**The filename is a witness, and `name_reading()` is what it is allowed to
+say.** Five answers, and the distinctions are the whole of it:
+
+    zone       a local-clock name a real offset away from Immich's instant.
+               That gap *is* the offset it was taken at, and it outranks the
+               rule -- evidence about one file against a sentence about a
+               library. It is what puts a journey in the right zone: the
+               files from 4-5 March 2025 come out at +03:00, which is where
+               the owner was that day and neither zone the rule knows.
+    agrees     a UTC-clock name matching the instant. A Pixel, or the
+               millisecond epoch an app writes into a file it saved. No zone
+               in it -- both numbers are the same moment.
+    disagrees  further apart than any offset explains. One of the two is
+               about something else. Nothing is written from this.
+    made       Google Photos built the file and named it after a source.
+    none       no time in the name, or a convention nobody here knows.
+
+Three things keep it honest. **An offset nobody keeps is not a zone**:
+`REAL_OFFSETS` is the list of offsets places actually use, and reading a
+25-minute save delay as "+04:45" put seven screenshots from one afternoon in
+Lahore into three different zones. **A creation's name is a fact about
+another file**: `20211010_155825-COLLAGE.jpg` was built in June 2023 from a
+photo taken in October 2021, and `20211010_155825.jpg` is in the same
+library -- which is the mechanical test, since 580 of 603 creations there
+name a file the library holds, and it catches creation types nobody has seen
+yet. And **an unknown convention stays unknown**, because guessing one
+manufactures faults.
+
+The one case it cannot settle: a save delay that lands exactly on a real
+offset is indistinguishable from that offset. The wall clock it then writes
+is still the one in the name, so the time on screen is right and the zone
+label beside it is half an hour out.
+
 **Never assume which clock a filename was written by.** The Pixel camera
 names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
 with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a

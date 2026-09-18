@@ -141,6 +141,9 @@ INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_assets_state  ON assets(state);
 CREATE INDEX IF NOT EXISTS idx_assets_taken  ON assets(taken_at);
 CREATE INDEX IF NOT EXISTS idx_assets_outbox ON assets(outbox_name);
+-- Looked up by name: the trace resolves one, and a creation is recognised by
+-- the library holding the file it was named after.
+CREATE INDEX IF NOT EXISTS idx_assets_name   ON assets(filename);
 """
 
 
@@ -1472,6 +1475,26 @@ def recheck(ids: list[str]) -> int:
         c.commit()
         _bump()
     return cur.rowcount
+
+
+def another_asset_named(stem: str) -> bool:
+    """Does the library hold a file whose name is exactly this, plus a
+    suffix?
+
+    How a Google Photos creation is recognised without knowing what it is
+    called: `20211010_155825-COLLAGE.jpg` names `20211010_155825.jpg`, which
+    is here, taken two years before the collage was made. So the time in
+    that name is a fact about a different file.
+
+    A range rather than LIKE, because a range uses the index whatever the
+    LIKE settings are, and this is asked once per file being judged.
+    """
+    if not stem or len(stem) < 8:
+        return False
+    row = connect().execute(
+        "SELECT 1 FROM assets WHERE filename >= ? AND filename < ? LIMIT 1",
+        (stem + ".", stem + "/")).fetchone()      # '/' is '.' + 1
+    return row is not None
 
 
 def take_back(ids: list[str]) -> int:
