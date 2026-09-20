@@ -10,6 +10,27 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.21.0
+
+**Whether the phone actually has the files.** The Syncthing panel said "3
+device(s) connected", which answers a question nobody has. A file leaves the
+outbox only when Google Photos takes it off the phone, and Photos can only
+do that if the phone has it — so "9 files, 70 hours" reads exactly the same
+whether the phone is holding them and Photos will not upload, or the phone
+went offline on Tuesday and never received them. Those need opposite fixes,
+and nothing here could tell them apart.
+
+The Outbox card now carries a line per device the outbox folder is shared
+with, by name: connected or not, when it was last seen, how much of the
+folder it holds, and how many files it is still missing. A device that is
+disconnected or behind is marked, because that is the pipeline stopped; a
+paused one is not, because that was somebody's decision.
+
+This machine is not listed — it is the one holding the outbox, and
+reporting it as a peer that might be behind is how a panel about the phone
+comes to have two rows. Syncthing stays entirely optional: unreachable, it
+costs this panel and nothing else.
+
 ## 2.20.0
 
 **A held file says what Google Photos will show, not what will be written

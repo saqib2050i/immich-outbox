@@ -1046,7 +1046,12 @@
     <div class="row"><span>Last cycle</span><span id="oCycle">—</span></div>
     <div class="row"><span>Folder</span><span id="oPath">—</span></div>
     <div class="row bad" id="rowProblem" hidden><span>Outbox</span><span id="oProblem">—</span></div>
-    <div class="row" id="rowSync" hidden><span>Synced to phone</span><span id="oSync">—</span></div>
+    <div class="row" id="rowSync" hidden><span>Syncthing folder</span><span id="oSync">—</span></div>
+    <!-- One line per device the outbox folder is shared with. "9 files, 70
+         hours" reads the same whether the phone is holding them and Google
+         Photos will not upload, or the phone went offline and never got
+         them -- and those need opposite fixes. -->
+    <div id="syncDevices"></div>
   </div>
 
   <div class="card" id="cardPhone" hidden>
@@ -4457,14 +4462,49 @@ async function renderSyncthing(){
   syncAt = Date.now();
   let d;
   try { d = await (await fetch("/api/syncthing")).json(); } catch { return; }
-  if (!d.configured){ rowSync.hidden = true; return; }
+  if (!d.configured){ rowSync.hidden = true; syncDevices.innerHTML = ""; return; }
   rowSync.hidden = false;
   oSync.textContent = d.error ? d.error
     : (d.in_sync_pct != null
-        ? d.in_sync_pct + "% · " + (d.state || "") +
-          (d.need_bytes ? " · " + fmtBytes(d.need_bytes) + " to go" : "")
-        : (d.devices_connected || 0) + " device(s) connected");
+        ? (d.state || "") + " · " + d.in_sync_pct + "% of this folder here" +
+          (d.need_bytes ? " · " + fmtBytes(d.need_bytes) + " still to write" : "")
+        : "reachable");
   rowSync.classList.toggle("bad", !!d.error);
+
+  // The hop this service cannot otherwise see. A file leaves the outbox only
+  // when Google Photos has taken it off the phone, and it can only do that
+  // if the phone has it -- so "is it on the phone" is a different question
+  // from "how many devices are connected", which is what this used to say.
+  syncDevices.innerHTML = "";
+  (d.devices || []).forEach(dev => {
+    const row = document.createElement("div");
+    row.className = "row";
+    const who = document.createElement("span");
+    who.textContent = dev.name;
+    who.title = dev.id || "";
+    const what = document.createElement("span");
+
+    const behind = dev.need_items || dev.need_bytes;
+    const has = dev.completion == null ? null : Math.round(dev.completion);
+    const bits = [];
+    bits.push(dev.paused ? "paused"
+              : dev.connected ? "connected" : "not connected");
+    if (!dev.connected && dev.last_seen) bits.push("last seen " + ago(dev.last_seen));
+    if (has != null){
+      bits.push(behind ? has + "% of the folder"
+                       : "has everything in the folder");
+    }
+    if (dev.need_items) bits.push(fmtNum(dev.need_items) + " file(s) still to go");
+    else if (dev.need_bytes) bits.push(fmtBytes(dev.need_bytes) + " still to go");
+    what.textContent = bits.join(" · ");
+
+    // Red only where it stops the pipeline: a phone that is not connected,
+    // or one that is connected and still missing files, is why the outbox
+    // is not draining. A paused device is somebody's decision.
+    row.classList.toggle("bad", !dev.paused && (!dev.connected || !!behind));
+    row.append(who, what);
+    syncDevices.appendChild(row);
+  });
 }
 
 const agoWords = mins =>

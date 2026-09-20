@@ -153,6 +153,22 @@ timeline splits `sending` from `resting` for exactly this reason, and
 presenting the whole ledger as a backlog is a mistake this dashboard has
 made more than once.
 
+**The hop this service cannot see is the one that matters.** The outbox
+empties only when Google Photos takes a file off the phone, which it can
+only do if the phone has it -- so an outbox that will not drain has two
+completely different causes with one appearance. `syncthing.status()` asks
+the question that separates them: for each device the outbox folder is
+shared with, is it connected, when was it last seen, and what does
+`/rest/db/completion` say it still needs *of this folder*. A count of
+connected devices answers neither half.
+
+Everything in there is best-effort and individually wrapped: Syncthing is
+optional, its config API changed shape (`/rest/config/folders/<id>` on
+anything recent, the whole of `/rest/system/config` before that), and a
+Syncthing that answers three of five questions is worth more than a panel
+that vanishes because it could not answer the fourth. The local device is
+filtered out by `myID` -- it is the one holding the outbox.
+
 ## Hard-won details
 
 - **Immich v3** changed search semantics: omitting `visibility` used to mean
