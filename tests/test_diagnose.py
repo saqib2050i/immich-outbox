@@ -17,7 +17,7 @@ def test_a_name_that_matches_nothing_says_so(rig):
     from app import db, diagnose
     db.upsert_assets([asset(1, name="PXL_20230101_025759225.jpg")])
 
-    row, near = diagnose.find("nope.jpg")
+    row, near, _ = diagnose.find("nope.jpg")
     assert row is None
 
 
@@ -25,7 +25,7 @@ def test_a_near_miss_is_offered(rig):
     from app import db, diagnose
     db.upsert_assets([asset(1, name="PXL_20230101_025759225.jpg")])
 
-    row, near = diagnose.find("PXL_20230101_025759225.JPEG")
+    row, near, _ = diagnose.find("PXL_20230101_025759225.JPEG")
     assert row is None
     assert "PXL_20230101_025759225.jpg" in near
 
@@ -35,7 +35,7 @@ def test_a_pasted_path_still_finds_the_file(rig):
     from app import db, diagnose
     db.upsert_assets([asset(1, name="PXL_20230101_025759225.jpg")])
 
-    row, near = diagnose.find("/mnt/user/photos/PXL_20230101_025759225.jpg")
+    row, near, _ = diagnose.find("/mnt/user/photos/PXL_20230101_025759225.jpg")
     assert row is None
     assert near == ["PXL_20230101_025759225.jpg"]
 
@@ -43,7 +43,7 @@ def test_a_pasted_path_still_finds_the_file(rig):
 def test_the_case_of_the_name_does_not_matter(rig):
     from app import db, diagnose
     db.upsert_assets([asset(1, name="PXL_20230101_025759225.jpg")])
-    row, _ = diagnose.find("pxl_20230101_025759225.JPG")
+    row, _, _ = diagnose.find("pxl_20230101_025759225.JPG")
     assert row and row["filename"] == "PXL_20230101_025759225.jpg"
 
 
@@ -1814,3 +1814,64 @@ def test_a_zone_immich_derived_is_one_immich_converted_through(rig):
         says, {"EXIF:OffsetTimeOriginal": "+05:00"}, "2024-01-05T03:47:33Z")
     assert kind == "file"
     assert local.strftime("%H:%M:%S") == "08:47:33", "not shifted twice"
+
+
+# ---- a name is not an identity -------------------------------------------
+#
+# A camera restarts its counter. DSC_0464.JPG is six different photographs in
+# the library this was built for, taken between 2015 and 2017, and 3,589
+# names there belong to more than one asset -- MOVIE.mp4 to 117 of them.
+# `find()` took whichever SQLite handed back first, and the report then spoke
+# with complete confidence about a photo nobody had asked about.
+
+async def test_one_name_several_photos_is_a_question_not_a_guess(rig):
+    from app import db, diagnose
+    from conftest import asset
+    db.upsert_assets([
+        asset(1, name="DSC_0464.JPG", taken="2016-02-13T07:15:17.000Z"),
+        asset(2, name="DSC_0464.JPG", taken="2017-05-14T05:37:45.000Z"),
+    ])
+    row, near, namesakes = diagnose.find("DSC_0464.JPG")
+    assert row is None, "picking one of them silently is the bug"
+    assert [n["taken_at"][:10] for n in namesakes] == ["2016-02-13", "2017-05-14"], \
+        "oldest first, so the list reads as a timeline"
+
+    rep = await diagnose.trace("DSC_0464.JPG")
+    assert "choices" in rep and len(rep["choices"]) == 2
+    assert "which one" in rep["problem"].lower()
+
+
+async def test_an_id_settles_which_one(rig):
+    from app import db, diagnose
+    from conftest import asset
+    db.upsert_assets([
+        asset(1, name="DSC_0464.JPG", taken="2016-02-13T07:15:17.000Z"),
+        asset(2, name="DSC_0464.JPG", taken="2017-05-14T05:37:45.000Z"),
+    ])
+    rep = await diagnose.trace("DSC_0464.JPG", asset_id="asset-1")
+    assert "choices" not in rep
+    assert rep["asset"]["taken_at"].startswith("2016-02-13")
+
+
+async def test_a_local_date_is_not_read_as_utc_against_the_ledger(rig):
+    """The file says 10:37:45 and Immich holds 05:37:45Z, which at +05:00 is
+    the same moment. Reading the file's local clock as UTC made every
+    correctly dated photo in a GMT+5 library disagree by five hours -- and
+    said so in the same report that had just found the two agreed."""
+    from app import diagnose, settings
+    settings.save({"assume_zone_before": "2025-03-04",
+                   "assume_zone_offset": "+05:00"})
+    out = diagnose._findings({
+        "filename": "DSC_0464.JPG",
+        "asset": {"id": "a", "kind": "IMAGE",
+                  "taken_at": "2017-05-14T05:37:45.000Z",
+                  "exif_taken_at": "2017-05-14T05:37:45+00:00"},
+        "says": {"ok": True, "time_zone": None,
+                 "local_date_time": "2017-05-14T05:37:45.000Z",
+                 "file_created_at": "2017-05-14T05:37:45.000Z"},
+        "immich": {"ok": True, "exif": {
+            "EXIF:DateTimeOriginal": "2017:05:14 10:37:45",
+            "EXIF:Make": "NIKON CORPORATION"}},
+        "outbox": {"present": False},
+    })
+    assert not [f for f in out if "not the one Immich read" in f["text"]], out

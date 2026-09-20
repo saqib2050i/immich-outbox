@@ -254,6 +254,20 @@ not only to one made in this session -- and the Dates one used to reapply on
 *every* render, so a group collapsed by hand reopened the moment a file was
 signed off out of it.
 
+**A row states the outcome; the instruction is one press away.** A held
+file's row carried the tags it would write, which is the one thing the
+person signing it off does not have to decide -- what they want is the two
+times it lies between, Immich's moment and what Google Photos will show.
+`wouldShow()` and `willShow()` are both measured behaviour, not inference:
+blank lands on the upload date, absent falls through to the stamped mtime
+which Google Photos displays as UTC. The tags, with `from` and `why` for
+each, live in `whyBox()` behind the disclosure -- a correction written into
+somebody's photo has to be answerable for.
+
+`readable()` reads every one of these as the wall clock it is, through
+`getUTC*` and never the browser's zone. They are local times in another
+country, and converting them would be the exact mistake this tab is for.
+
 **Work has to be visible from wherever it was started.** The transfer panel
 lives on the Queue tab, and the controls that start work do not: signing
 eight files off on Dates fetched, read, corrected and landed all eight
@@ -361,6 +375,15 @@ The one case it cannot settle: a save delay that lands exactly on a real
 offset is indistinguishable from that offset. The wall clock it then writes
 is still the one in the name, so the time on screen is right and the zone
 label beside it is half an hour out.
+
+**A filename is not an identity.** A camera restarts its counter:
+`DSC_0464.JPG` is six photographs in this library, `MOVIE.mp4` is 117, and
+3,589 names belong to more than one asset. `find()` used `fetchone()`, so
+the trace answered about whichever row came back first -- with total
+confidence, under the name of the photo that had been asked about. It
+returns the namesakes now and the caller picks by id; every report names the
+file it read, with its date and state. Anything else that resolves a name to
+a row has the same trap in it.
 
 **Never assume which clock a filename was written by.** The Pixel camera
 names files in **UTC** and records the zone separately, so `PXL_20230101_025759`

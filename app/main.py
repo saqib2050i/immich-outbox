@@ -422,8 +422,11 @@ async def diagnose_file(payload: dict | None = None):
     file that has never been sent has nothing to be traced through.
     """
     d = payload or {}
+    # `asset_id` settles which one, for a name several files share: a camera
+    # restarts its counter, and the page offers the list when it has to.
     return await diagnose.trace(str(d.get("filename") or ""),
-                                send=bool(d.get("send")))
+                                send=bool(d.get("send")),
+                                asset_id=str(d.get("asset_id") or "") or None)
 
 
 @app.post("/api/diagnose/apply")

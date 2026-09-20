@@ -692,9 +692,35 @@
                 margin-top:2px}
   .dgroup .gfig{color:var(--dim);font-size:12.5px;white-space:nowrap;
                 text-align:right}
+  /* A file is a disclosure now: the outcome on the row, the reasoning one
+     press away. Same caret column as the group above it, and the column
+     count includes it -- summary::before is a grid item. */
+  .dfile{border-top:1px solid var(--rule)}
+  .dfile > summary{list-style:none;cursor:pointer}
+  .dfile > summary::-webkit-details-marker{display:none}
   .drow{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;
-        align-items:center;padding:9px 13px;border-top:1px solid var(--rule);
-        font-size:12.5px}
+        align-items:center;padding:9px 13px;font-size:12.5px}
+  .dfile > summary > .drow{border-top:none}
+  .dfile > summary .drow::before{content:"";width:0;height:0;flex:none;
+    border-left:5px solid var(--rule-2);border-top:4px solid transparent;
+    border-bottom:4px solid transparent;transition:transform .15s}
+  .dfile[open] > summary .drow::before{transform:rotate(90deg)}
+  /* The outcome, which is the question a sign-off actually asks: what will
+     Google Photos show. An arrow between two times reads at a glance where
+     "DateTimeOriginal=2023:06:14 08:39:21" never did. */
+  .dshow{display:block;font-size:11.5px;margin-top:3px;overflow-wrap:anywhere}
+  .dshow .was{color:var(--dim)}
+  .dshow .arrow{color:var(--rule-2);margin:0 6px}
+  .dshow .will{color:var(--transit)}
+  .dwhy{padding:2px 13px 14px 30px;font-size:11.5px;color:var(--dim);
+        line-height:1.65;background:var(--panel-2)}
+  .dwhy h4{margin:10px 0 4px;font-size:11px;letter-spacing:.06em;
+           text-transform:uppercase;color:var(--dim);font-weight:650}
+  .dwhy .tag{display:grid;grid-template-columns:auto 1fr;gap:10px;
+             padding:3px 0}
+  .dwhy .tag b{font-family:var(--mono);font-weight:500;color:var(--ink);
+               white-space:nowrap}
+  .dwhy .tag span{color:var(--dim)}
   .drow .dname{overflow-wrap:anywhere}
   .drow .dwrites{display:block;font-size:11.5px;color:var(--transit);
                  margin-top:2px;overflow-wrap:anywhere}
@@ -2410,6 +2436,9 @@ const ZONE = {
 };
 
 let datesRows = [];
+// Which files are expanded. Kept like the grouping and the open years: a
+// refresh must not throw away what the reader was looking at.
+const dOpenFiles = new Set(recall("dFiles", []) || []);
 
 function dateFamily(name){
   for (const [re, label] of FAMILY) if (re.test(name || "")) return label;
@@ -2487,24 +2516,197 @@ async function signOff(ids, btn){
   } finally { btn.textContent = was; btn.disabled = false; }
 }
 
+// ---- what a row says -----------------------------------------------------
+//
+// The tags were on the row and the question was not. "DateTimeOriginal
+// 2023:06:14 08:39:21 · OffsetTimeOriginal +05:00" is the instruction, and
+// what somebody signing a file off wants is the outcome: what Google Photos
+// will show once it lands, against what it would have shown without this.
+// The tags are still here, one press away, each with where its value came
+// from and why it is being written.
+
+const WEEK = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Both shapes, because both are on this page: EXIF writes "2023:06:14
+// 08:39:21" and the ledger holds "2023-06-14T03:39:21.000Z". Feeding the
+// second to a parser that wanted the first is why every absent-tag row read
+// "not recorded" for a while.
+function exifWhen(value){
+  const m = /^(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
+              .exec(value || "");
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])) : null;
+}
+
+// Read as the wall clock it is, never through the browser's own zone: these
+// are local times in somebody else's country, and a dashboard that quietly
+// converted them would be making the exact mistake this whole tab is about.
+function readable(d){
+  if (!d) return "";
+  const h = d.getUTCHours();
+  const h12 = ((h + 11) % 12) + 1;
+  return WEEK[d.getUTCDay()] + " " + d.getUTCDate() + " "
+       + MONTH_NAMES[d.getUTCMonth()] + " " + d.getUTCFullYear() + ", "
+       + h12 + ":" + String(d.getUTCMinutes()).padStart(2, "0")
+       + " " + (h < 12 ? "AM" : "PM");
+}
+
+function writeOf(r, tag){
+  return ((r.writes || []).find(w => w.tag === tag) || {}).value || null;
+}
+
+// What Google Photos does with the file as it stands, which is the thing
+// being fixed. Both halves measured: a blank tag lands on the upload date
+// (PXL_20240101_062038690 arrived as "today"), and an absent one falls
+// through to the modification time this service stamps, which Google Photos
+// displays as UTC (Snapchat-618209934 came back labelled GMT+00:00).
+function wouldShow(r){
+  if (r.hold_kind === "blank"){
+    return "without this, it lands on the day it was uploaded";
+  }
+  const when = exifWhen(r.taken_at);
+  if (r.hold_kind === "absent" && when){
+    // No need to print the moment twice: it is the line above, and what
+    // makes it wrong is being shown as UTC rather than where it was taken.
+    const off = offsetHours(writeOf(r, "OffsetTimeOriginal"));
+    return "without this, that same moment shown as UTC"
+         + (off ? " — " + fmtNum(Math.abs(off))
+                  + (Math.abs(off) === 1 ? " hour " : " hours ")
+                  + (off > 0 ? "early" : "late") : "");
+  }
+  return "without this, nobody recorded what it would do — it was read "
+       + "before the fault was kept";
+}
+
+function offsetHours(text){
+  const m = /^([+-])(\d{2}):(\d{2})$/.exec(text || "");
+  return m ? (m[1] === "-" ? -1 : 1) * (+m[2] + (+m[3]) / 60) : 0;
+}
+
+// What it will show after. A still carries the wall clock and the offset
+// beside it; a video's QuickTime:CreateDate is UTC by specification, so the
+// instant is the value and there is no offset to show.
+function willShow(r){
+  const photo = writeOf(r, "DateTimeOriginal");
+  if (photo){
+    const off = writeOf(r, "OffsetTimeOriginal");
+    return readable(exifWhen(photo)) + (off ? " GMT" + off : "");
+  }
+  const video = writeOf(r, "QuickTime:CreateDate");
+  return video ? readable(exifWhen(video)) + " UTC" : null;
+}
+
+function whyBox(r){
+  const box = document.createElement("div");
+  box.className = "dwhy";
+  const add = (title, lines) => {
+    if (!lines.length) return;
+    const h = document.createElement("h4");
+    h.textContent = title;
+    box.appendChild(h);
+    lines.forEach(t => {
+      const p = document.createElement("div");
+      p.textContent = t;
+      box.appendChild(p);
+    });
+  };
+
+  add("What is wrong with the file", [(FAULT[r.hold_kind] || [])[1]].filter(Boolean));
+
+  const zone = ZONE[r.hold_zone] || null;
+  add("Where the zone comes from", zone ? [zone[0] + " — " + zone[1]] : []);
+
+  const told = r.name_says || {};
+  add("What the filename says",
+      told.verdict && told.verdict !== "none"
+        ? [(NAMED[told.verdict] || [])[0] + " — " + (NAMED[told.verdict] || [])[1]
+           + (told.when ? "  The name reads " + told.when + "." : "")]
+        : []);
+
+  add("What Immich holds", [
+    (r.taken_at || "").replace("T", " ").slice(0, 19) + " UTC — fileCreatedAt, "
+    + "the moment itself. Immich shows it through its own time zone, which is "
+    + "not necessarily the one this file was taken in.",
+  ]);
+
+  // The instruction, kept: it is what actually gets written, and the record
+  // of a deliberate change has to be readable by the person who made it.
+  if ((r.writes || []).length){
+    const h = document.createElement("h4");
+    h.textContent = "What gets written into the copy that goes";
+    box.appendChild(h);
+    (r.writes || []).forEach(w => {
+      const row = document.createElement("div");
+      row.className = "tag";
+      const b = document.createElement("b");
+      b.textContent = w.tag + " = " + w.value;
+      const why = document.createElement("span");
+      why.textContent = [w.from && "from " + w.from, w.why].filter(Boolean).join(". ");
+      row.append(b, why);
+      box.appendChild(row);
+    });
+    const note = document.createElement("div");
+    note.style.marginTop = "6px";
+    note.textContent = "Immich's own file is not touched. The correction is "
+                     + "written into the copy on its way to the phone.";
+    box.appendChild(note);
+  } else {
+    add("Why nothing can be written", [r.why || "No zone could be established, "
+        + "and DateTimeOriginal is local time — without a zone there is no "
+        + "honest value to write."]);
+  }
+  return box;
+}
+
 function dateRow(r){
+  const det = document.createElement("details");
+  det.className = "dfile";
+  det.open = dOpenFiles.has(r.id);
+  det.addEventListener("toggle", () => {
+    det.open ? dOpenFiles.add(r.id) : dOpenFiles.delete(r.id);
+    remember("dFiles", [...dOpenFiles]);
+  });
+
+  const sum = document.createElement("summary");
   const el = document.createElement("div");
   el.className = "drow" + (r.already_sent ? " sent" : "");
 
-  const mark = document.createElement("span");
-  mark.textContent = r.already_sent ? "!" : "";
   const name = document.createElement("span");
   name.className = "dname";
   name.appendChild(assetLink(r.id, r.filename));
-  const w = document.createElement("small");
-  w.className = "dwrites";
-  // Short. The group heading above already says why a whole group is where
-  // it is, and repeating it on every row printed one paragraph forty-seven
-  // times -- a paragraph that was, for those rows, no longer true.
-  w.textContent = (r.writes || []).length
-    ? (r.writes || []).map(x => x.tag + " " + x.value).join("  ·  ")
-    : "nothing can be written";
-  name.appendChild(w);
+  if (r.already_sent) name.appendChild(document.createTextNode("  !"));
+
+  // The two times that matter, in the two places they live: the moment
+  // Immich holds, and what Google Photos will put on screen once this
+  // lands. Neither of those is a tag, and the tags are a press away.
+  const show = document.createElement("small");
+  show.className = "dshow";
+  const held = document.createElement("span");
+  held.className = "was";
+  held.textContent = "Immich " + (readable(exifWhen(r.taken_at)) || "no date")
+                   + " UTC";
+  show.appendChild(held);
+  const will = willShow(r);
+  if (will){
+    const arr = document.createElement("span");
+    arr.className = "arrow";
+    arr.textContent = "\u2192";
+    const now = document.createElement("span");
+    now.className = "will";
+    now.textContent = "Google Photos " + will;
+    show.append(arr, now);
+  } else {
+    const none = document.createElement("span");
+    none.className = "was";
+    none.textContent = "  ·  nothing can be written";
+    show.appendChild(none);
+  }
+  name.appendChild(show);
+
+  // And what it does today, which is what the sign-off changes.
+  const today = document.createElement("small");
+  today.className = "dshow was";
+  today.textContent = wouldShow(r);
+  name.appendChild(today);
 
   // Dim, not red. None of these is a fault in the file: one is a proposal
   // that was corrected and nothing was written from the old value; another
@@ -2536,20 +2738,25 @@ function dateRow(r){
   when.textContent = (r.taken_at || "").slice(0, 10) + " · "
                    + fmtBytes(r.size || 0);
 
-  el.append(mark, name, when);
+  el.append(name, when);
 
   // Per file, for the first fifty. Bulk, on the group, for the next two
   // thousand.
   if ((r.writes || []).length){
     const b = document.createElement("button");
     b.textContent = "Sign off";
-    b.onclick = () => signOff([r.id], b);
+    // It sits inside a <summary>, which would otherwise toggle the row.
+    b.addEventListener("click", e => e.stopPropagation());
+    b.onclick = e => { e.stopPropagation(); signOff([r.id], b); };
     el.appendChild(b);
   } else {
     el.appendChild(Object.assign(document.createElement("span"),
       {className: "dwhen", textContent: "—"}));
   }
-  return el;
+
+  sum.appendChild(el);
+  det.append(sum, whyBox(r));
+  return det;
 }
 
 async function renderDates(){
@@ -3917,7 +4124,7 @@ btnRestoreAll.onclick = async () => {
 // every other view here -- which is how the relay spent an afternoon under
 // suspicion for five hours that went missing before Immich ever saw them.
 
-async function runTrace(send){
+async function runTrace(send, assetId){
   const name = traceName.value.trim();
   traceOut.innerHTML = '<p class="empty">' +
     (send ? "Sending it, then reading three copies…" : "Reading three copies…") +
@@ -3926,7 +4133,8 @@ async function runTrace(send){
   try {
     const r = await fetch("/api/diagnose", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({filename: name, send: !!send})});
+      body: JSON.stringify({filename: name, send: !!send,
+                            asset_id: assetId || null})});
     renderTrace(await r.json());
   } catch (e) {
     traceOut.innerHTML = '<p class="empty">Could not reach the server.</p>';
@@ -3956,6 +4164,24 @@ function renderTrace(d){
     if ((d.suggestions || []).length){
       traceOut.appendChild(traceLine("Did you mean: " + d.suggestions.join(" · ")));
     }
+    // Several files with one name. A camera restarts its counter, so the
+    // name is not an identity: pick the one you mean by when it was taken.
+    (d.choices || []).forEach(c => {
+      const row = document.createElement("div");
+      row.className = "drow";
+      const nm = document.createElement("span");
+      nm.className = "dname";
+      nm.appendChild(assetLink(c.id, c.filename));
+      const when = document.createElement("span");
+      when.className = "dwhen";
+      when.textContent = (c.taken_at || "").slice(0, 10) + " · " + c.state
+                       + " · " + fmtBytes(c.size || 0);
+      const pick = document.createElement("button");
+      pick.textContent = "Trace this one";
+      pick.onclick = () => runTrace(false, c.id);
+      row.append(document.createElement("span"), nm, when, pick);
+      traceOut.appendChild(row);
+    });
     return;
   }
 
@@ -3965,7 +4191,12 @@ function renderTrace(d){
     const line = document.createElement("p");
     line.className = "hint";
     line.appendChild(assetLink(d.asset.id, d.filename));
-    line.appendChild(document.createTextNode(" — open in Immich"));
+    // Which one, said out loud: six photographs in this library are called
+    // DSC_0464.JPG, and a report that does not say which it read is a
+    // report about a photo nobody asked about.
+    line.appendChild(document.createTextNode(
+      " — taken " + (d.asset.taken_at || "").slice(0, 10)
+      + " · " + (d.asset.state || "") + " · open in Immich"));
     traceOut.appendChild(line);
   }
 

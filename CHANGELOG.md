@@ -10,6 +10,49 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.20.0
+
+**A held file says what Google Photos will show, not what will be written
+into it.** The row carried the instruction — `DateTimeOriginal 2023:06:14
+08:39:21 · OffsetTimeOriginal +05:00 · CreateDate …` — which is the one
+thing a person signing it off does not have to decide. It now carries the
+two times that matter and what stands between them:
+
+    Immich Wed 14 Jun 2023, 3:39 AM UTC  →  Google Photos Wed 14 Jun 2023, 8:39 AM GMT+05:00
+    without this, it lands on the day it was uploaded
+
+Both of those endings are measured rather than assumed: a blank tag lands on
+the upload date and an absent one falls through to the modification time,
+which Google Photos displays as UTC — so an absent-tag file reads "that same
+moment shown as UTC — 5 hours early".
+
+**And the reasoning is one press away.** Opening a row gives what is wrong
+with the file, where its zone comes from, what the filename says, the moment
+Immich holds, and then every tag that will be written with where its value
+came from and why that reading rather than the other. A correction written
+into somebody's photo should be answerable for, and now it answers.
+
+Times on this page are read as the wall clocks they are, never through the
+browser's own zone — converting them would be the exact mistake this tab
+exists to find.
+
+**A name is not an identity, and the trace stopped pretending it was.** A
+camera restarts its counter, so `DSC_0464.JPG` is six different photographs
+in this library and `MOVIE.mp4` is 117 — 3,589 names in it belong to more
+than one asset. The trace took whichever the database handed back first and
+then reported on it with complete confidence, under the name of the photo
+somebody had actually asked about. It now lists the candidates with their
+dates and asks which, traces the one you pick, and says on every report
+which file it read.
+
+**And it no longer contradicts itself about the zone.** One comparison read
+the file's `DateTimeOriginal` — local time, by definition — as though it
+were UTC, so every correctly dated photo from a GMT+5 year came back "the
+file and Immich disagree", five hours apart, in the same report that had
+already found the two agreed. It uses the zone that was chosen, says which
+zone it used, and stays quiet about a file this service has deliberately
+written into.
+
 ## 2.19.1
 
 **What is moving is visible from every tab.** The panel with the progress

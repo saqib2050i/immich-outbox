@@ -182,22 +182,40 @@ def read_exif(path: str) -> dict:
     return out
 
 
-def find(filename: str) -> tuple[dict | None, list[str]]:
-    """The asset with that name, or the nearest things to it.
+def find(filename: str, asset_id: str | None = None):
+    """The asset meant, the nearest things to the name, and the namesakes.
 
     A name that matches nothing is the most likely thing to happen at this
     box, and it used to be indistinguishable from a file with no problems.
+
+    A name that matches *several* is the next most likely, and it used to be
+    indistinguishable from a name that matched one. A camera restarts its
+    counter, so DSC_0464.JPG is six different photographs in the library this
+    was built for, taken between 2015 and 2017 -- and 3,589 names there
+    belong to more than one asset, MOVIE.mp4 to 117 of them. `fetchone()`
+    picked whichever SQLite handed back first and the report then spoke with
+    perfect confidence about a photo nobody had asked about. An id settles
+    it; without one, the caller is given the list and asked.
     """
+    c = db.connect()
+    if asset_id:
+        row = c.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        return (dict(row) if row else None), [], []
+
     name = (filename or "").strip()
     if not name:
-        return None, []
-    c = db.connect()
-    row = c.execute("SELECT * FROM assets WHERE filename = ?", (name,)).fetchone()
-    if row is None:
-        row = c.execute("SELECT * FROM assets WHERE filename = ? COLLATE NOCASE",
-                        (name,)).fetchone()
-    if row is not None:
-        return dict(row), []
+        return None, [], []
+    rows = c.execute("SELECT * FROM assets WHERE filename = ?", (name,)).fetchall()
+    if not rows:
+        rows = c.execute("SELECT * FROM assets WHERE filename = ? COLLATE NOCASE",
+                         (name,)).fetchall()
+    if len(rows) == 1:
+        return dict(rows[0]), [], []
+    if len(rows) > 1:
+        return None, [], [
+            {k: r[k] for k in ("id", "filename", "taken_at", "state", "size",
+                               "kind", "outbox_name")}
+            for r in sorted(rows, key=lambda r: r["taken_at"] or "")]
 
     # Near misses, so a typo or a pasted path is obvious rather than a
     # dead end. The stem first, then anything sharing the date in the name.
@@ -211,7 +229,7 @@ def find(filename: str) -> tuple[dict | None, list[str]]:
             near = c.execute(
                 "SELECT filename FROM assets WHERE filename LIKE ? LIMIT 8",
                 (f"%{''.join(m.groups()[:3])}%",)).fetchall()
-    return None, [r["filename"] for r in near]
+    return None, [r["filename"] for r in near], []
 
 
 # A single file, downloaded deliberately. Large enough to cover any photo
@@ -1310,18 +1328,32 @@ def _findings(rep: dict) -> list[dict]:
                         "text": f"exiftool on {where}: {line}"})
 
     # 8. What the ledger believes, against what the file says.
-    if got and asset.get("exif_taken_at"):
+    #
+    # DateTimeOriginal is local time, so turning it into an instant needs a
+    # zone -- the one `zone_source` chose, not zero. Reading "no offset tag"
+    # as UTC made every correctly dated photo in a GMT+5 library disagree
+    # with Immich by exactly five hours, and said so in the same report that
+    # had already found the two agreed. Two contradictory lines, one screen.
+    #
+    # Nor does it apply to a copy this service has written into: that
+    # difference is explained, recorded, and reported above.
+    if got and asset.get("exif_taken_at") and not asset.get("stamped_at"):
         led = db.capture_time(asset["exif_taken_at"])
-        off = _offset_hours(pick(ref, "EXIF:OffsetTimeOriginal",
-                                 "EXIF:OffsetTime")[0]) or 0
-        file_instant = got.timestamp() - off * 3600 - (
-            datetime.utcfromtimestamp(0).timestamp())
-        if led is not None and abs(led - file_instant) > 120:
-            out.append({"level": "warn", "text":
-                        "Immich's recorded capture time and the file's own "
-                        "disagree. That is the shape of a date corrected in "
-                        "Immich, which is what 'Write corrected dates' exists "
-                        "to carry into the file."})
+        zkind, zone = zone_source(ref, rep.get("says") or {},
+                                  asset.get("taken_at"), name)
+        off = zone_hours(zkind, zone, asset.get("taken_at"))
+        if led is not None and off is not None:
+            file_instant = got.replace(tzinfo=timezone.utc).timestamp() \
+                - off * 3600
+            if abs(led - file_instant) > 120:
+                out.append({"level": "warn", "text":
+                            f"The date in the file is not the one Immich read "
+                            f"out of it at import — {got:%Y-%m-%d %H:%M:%S} "
+                            f"at {offset_text(off)} against "
+                            f"{str(asset['exif_taken_at'])[:19].replace('T', ' ')} "
+                            "UTC. Either the file has been rewritten since, or "
+                            "the date in Immich was corrected there and the "
+                            "file never heard about it."})
 
     if not out:
         out.append({"level": "warn", "text":
@@ -1832,15 +1864,25 @@ async def apply_correction(filename: str) -> dict:
     return out
 
 
-async def trace(filename: str, send: bool = False) -> dict:
+async def trace(filename: str, send: bool = False,
+                asset_id: str | None = None) -> dict:
     """The whole report for one file."""
     rep: dict = {"filename": (filename or "").strip(), "asked_at": db.now()}
-    if not rep["filename"]:
+    if not rep["filename"] and not asset_id:
         rep["problem"] = "Type a filename first — the name as Immich has it, " \
                          "for example PXL_20230101_025759225.jpg."
         return rep
 
-    row, near = find(rep["filename"])
+    row, near, namesakes = find(rep["filename"], asset_id)
+    if namesakes:
+        # Answering about one of six photographs with the same name, without
+        # saying which, is worse than not answering.
+        rep["problem"] = (f"{len(namesakes)} files in the ledger are called "
+                          f"{rep['filename']!r} — a camera restarts its "
+                          "counter, so a name is not an identity here. Which "
+                          "one?")
+        rep["choices"] = namesakes
+        return rep
     if row is None:
         rep["problem"] = (f"No asset in the ledger is called "
                           f"{rep['filename']!r}. Names are matched exactly as "
@@ -1851,6 +1893,7 @@ async def trace(filename: str, send: bool = False) -> dict:
             rep["problem"] += f" {len(near)} near match(es) below."
         return rep
 
+    rep["filename"] = row.get("filename") or rep["filename"]
     rep["asset"] = {k: row.get(k) for k in
                     ("id", "filename", "state", "kind", "size", "taken_at",
                      "exif_taken_at", "date_mismatch", "forced", "outbox_name",
