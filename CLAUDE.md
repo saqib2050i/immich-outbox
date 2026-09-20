@@ -682,6 +682,25 @@ Google Photos displays for a photo taken outside UTC is not settled by
 anything here. The confirmed case happens to be UTC+0, where the two
 readings are indistinguishable.
 
+**A sidecar carried five things and the file got none of them.** The dates
+are one. `diagnose.gaps()` reports the other two that can live in a file at
+all -- the location and the description -- and writes neither: a third
+exception to invariant 2a has to be earned by a measurement, and the one
+that matters (does Google Photos read a location out of an upload?) has not
+been made here. What *is* measured is that Google Photos guesses: a file
+with no coordinates came back "Pakistan -- estimated location", and that
+guess is where its GMT+05:00 label came from too.
+
+The other direction is worth as much and is easy to get wrong: make, model,
+lens, ISO, aperture and focal length are read by Immich *out of the file*,
+so a file missing one is a file Immich cannot supply it for either. Nothing
+to restore, and a test pins it so nobody goes looking.
+
+`classify()` asks Immich about every file now, not only the ones with a date
+fault -- a photo with a perfectly good date can still have gone with no
+location, so counting only what was held back would have missed nearly all
+of it. One metadata call beside a download of the whole file.
+
 **The mismatch figures cannot see this fault, by construction.**
 `needs_date_fix()` compares `fileCreatedAt` against
 `exifInfo.dateTimeOriginal`, and on a Takeout import both were filled from

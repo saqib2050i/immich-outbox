@@ -131,6 +131,11 @@ MIGRATIONS = (
     # from 2022 sat under "outside the rule in Settings" while the rule
     # covered every one of them.
     ("hold_says", "TEXT"),
+    # What Immich held about the file that the file did not carry, as a
+    # comma-separated list of "location", "description". Recorded while the
+    # bytes were here, which is the only moment they are -- the same fault
+    # as a missing date, from the same sidecar, and nothing writes it.
+    ("hold_gaps", "TEXT"),
 )
 
 # Deliberately not part of SCHEMA: an index on a migrated column has to be
@@ -1343,7 +1348,8 @@ def record_check(asset_id: str, seen: dict) -> None:
     with _lock:
         c.execute(
             "UPDATE assets SET checked_at = ?, checked_sum = ?, hold_kind = ?,"
-            "                  hold_zone = ?, hold_writes = ?, hold_says = ?"
+            "                  hold_zone = ?, hold_writes = ?, hold_says = ?,"
+            "                  hold_gaps = ?"
             # The name is reserved before the download, so a held file
             # carries one for a file that was never written. Cleared with
             # the state: a row naming a file that is not there is the shape
@@ -1354,10 +1360,29 @@ def record_check(asset_id: str, seen: dict) -> None:
             ([seen.get("checked_at") or now(), seen.get("checked_sum"),
               seen.get("kind"), seen.get("zone"),
               json.dumps(writes) if writes else None,
-              json.dumps(seen["says"]) if seen.get("says") else None]
+              json.dumps(seen["says"]) if seen.get("says") else None,
+              ",".join(seen.get("gaps") or []) or None]
              + ([state] if state else []) + [asset_id]))
         c.commit()
         _bump()
+
+
+def gap_counts() -> dict:
+    """How many files read so far are missing something Immich holds.
+
+    Across everything checked, not only what was held back: a file with a
+    perfectly good date can still have arrived in Google Photos with no
+    location, and that is the same fault from the same sidecar.
+    """
+    rows = connect().execute(
+        "SELECT hold_gaps FROM assets WHERE hold_gaps IS NOT NULL "
+        "AND hold_gaps != ''").fetchall()
+    out: dict = {}
+    for r in rows:
+        for what in str(r["hold_gaps"]).split(","):
+            if what:
+                out[what] = out.get(what, 0) + 1
+    return out
 
 
 def checked_count() -> int:

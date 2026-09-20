@@ -454,6 +454,9 @@ async def dates_held():
     # build and the settings said that day.
     held = [diagnose.rejudge(r) for r in db.held()]
     return {"held": held, "counts": db.counts(),
+            # The other thing the sidecar carried and the file did not.
+            # Counted across everything read, not only what was held back.
+            "gaps": db.gap_counts(),
             # An empty list has two causes with opposite meanings: every file
             # read was fine, or nothing was read. The page used to offer both
             # and let the reader pick.

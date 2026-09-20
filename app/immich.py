@@ -332,6 +332,13 @@ async def asset_detail(asset_id: str) -> dict:
         "longitude": exif.get("longitude"),
         "place": ", ".join(str(exif[k]) for k in ("city", "state", "country")
                            if exif.get(k)) or None,
+        # The other two things a Google Takeout sidecar carries that the
+        # file may not: where it was taken, and what was written under it.
+        # Everything else Immich reports -- lens, ISO, aperture, make,
+        # model -- it read out of the file, so a file missing one is a file
+        # Immich cannot supply it for either.
+        "description": (item.get("description")
+                        or exif.get("description") or None),
     }
 
 
