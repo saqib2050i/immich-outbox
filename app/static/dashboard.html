@@ -4124,7 +4124,7 @@ btnRestoreAll.onclick = async () => {
 // every other view here -- which is how the relay spent an afternoon under
 // suspicion for five hours that went missing before Immich ever saw them.
 
-async function runTrace(send){
+async function runTrace(send, assetId){
   const name = traceName.value.trim();
   traceOut.innerHTML = '<p class="empty">' +
     (send ? "Sending it, then reading three copies…" : "Reading three copies…") +
@@ -4133,7 +4133,8 @@ async function runTrace(send){
   try {
     const r = await fetch("/api/diagnose", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({filename: name, send: !!send})});
+      body: JSON.stringify({filename: name, send: !!send,
+                            asset_id: assetId || null})});
     renderTrace(await r.json());
   } catch (e) {
     traceOut.innerHTML = '<p class="empty">Could not reach the server.</p>';
@@ -4163,6 +4164,24 @@ function renderTrace(d){
     if ((d.suggestions || []).length){
       traceOut.appendChild(traceLine("Did you mean: " + d.suggestions.join(" · ")));
     }
+    // Several files with one name. A camera restarts its counter, so the
+    // name is not an identity: pick the one you mean by when it was taken.
+    (d.choices || []).forEach(c => {
+      const row = document.createElement("div");
+      row.className = "drow";
+      const nm = document.createElement("span");
+      nm.className = "dname";
+      nm.appendChild(assetLink(c.id, c.filename));
+      const when = document.createElement("span");
+      when.className = "dwhen";
+      when.textContent = (c.taken_at || "").slice(0, 10) + " · " + c.state
+                       + " · " + fmtBytes(c.size || 0);
+      const pick = document.createElement("button");
+      pick.textContent = "Trace this one";
+      pick.onclick = () => runTrace(false, c.id);
+      row.append(document.createElement("span"), nm, when, pick);
+      traceOut.appendChild(row);
+    });
     return;
   }
 
@@ -4172,7 +4191,12 @@ function renderTrace(d){
     const line = document.createElement("p");
     line.className = "hint";
     line.appendChild(assetLink(d.asset.id, d.filename));
-    line.appendChild(document.createTextNode(" — open in Immich"));
+    // Which one, said out loud: six photographs in this library are called
+    // DSC_0464.JPG, and a report that does not say which it read is a
+    // report about a photo nobody asked about.
+    line.appendChild(document.createTextNode(
+      " — taken " + (d.asset.taken_at || "").slice(0, 10)
+      + " · " + (d.asset.state || "") + " · open in Immich"));
     traceOut.appendChild(line);
   }
 

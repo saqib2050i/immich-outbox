@@ -376,6 +376,15 @@ offset is indistinguishable from that offset. The wall clock it then writes
 is still the one in the name, so the time on screen is right and the zone
 label beside it is half an hour out.
 
+**A filename is not an identity.** A camera restarts its counter:
+`DSC_0464.JPG` is six photographs in this library, `MOVIE.mp4` is 117, and
+3,589 names belong to more than one asset. `find()` used `fetchone()`, so
+the trace answered about whichever row came back first -- with total
+confidence, under the name of the photo that had been asked about. It
+returns the namesakes now and the caller picks by id; every report names the
+file it read, with its date and state. Anything else that resolves a name to
+a row has the same trap in it.
+
 **Never assume which clock a filename was written by.** The Pixel camera
 names files in **UTC** and records the zone separately, so `PXL_20230101_025759`
 with an offset of `+05:00` and a `DateTimeOriginal` of `07:57:59` is a

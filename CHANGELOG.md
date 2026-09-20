@@ -36,6 +36,23 @@ Times on this page are read as the wall clocks they are, never through the
 browser's own zone — converting them would be the exact mistake this tab
 exists to find.
 
+**A name is not an identity, and the trace stopped pretending it was.** A
+camera restarts its counter, so `DSC_0464.JPG` is six different photographs
+in this library and `MOVIE.mp4` is 117 — 3,589 names in it belong to more
+than one asset. The trace took whichever the database handed back first and
+then reported on it with complete confidence, under the name of the photo
+somebody had actually asked about. It now lists the candidates with their
+dates and asks which, traces the one you pick, and says on every report
+which file it read.
+
+**And it no longer contradicts itself about the zone.** One comparison read
+the file's `DateTimeOriginal` — local time, by definition — as though it
+were UTC, so every correctly dated photo from a GMT+5 year came back "the
+file and Immich disagree", five hours apart, in the same report that had
+already found the two agreed. It uses the zone that was chosen, says which
+zone it used, and stays quiet about a file this service has deliberately
+written into.
+
 ## 2.19.1
 
 **What is moving is visible from every tab.** The panel with the progress
