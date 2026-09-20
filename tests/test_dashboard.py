@@ -518,6 +518,44 @@ def test_a_filename_is_plain_text_when_immich_has_no_address():
     assert "IMMICH_URL = d.immich.url" in HTML, "and it follows the setting"
 
 
+def test_a_row_says_what_google_photos_will_show():
+    """The tags were on the row and the question was not.
+    "DateTimeOriginal 2023:06:14 08:39:21 · OffsetTimeOriginal +05:00" is
+    the instruction; what somebody signing a file off wants is the outcome,
+    and the two times it lies between."""
+    src = HTML[HTML.index("function dateRow("):HTML.index("async function renderDates(")]
+    assert "Google Photos " in src and "Immich " in src
+    assert "willShow(r)" in src and "wouldShow(r)" in src
+    assert "x.tag + \" \" + x.value" not in src, \
+        "the tag list belongs in the reasoning, not on the face of the row"
+
+
+def test_the_reasoning_is_one_press_away_and_says_where_each_value_came_from():
+    """A correction written into somebody's photo has to be answerable for:
+    which tag, what value, from what, and why that rather than the other
+    reading."""
+    src = HTML[HTML.index("function whyBox("):HTML.index("function dateRow(")]
+    for part in ("FAULT[", "ZONE[", "NAMED[", "w.tag", "w.value", "w.from", "w.why"):
+        assert part in src, part
+    assert "Immich's own file is not touched" in src
+
+
+def test_opening_a_row_does_not_sign_it_off():
+    """The button sits inside the <summary> that toggles the row."""
+    src = HTML[HTML.index("function dateRow("):HTML.index("async function renderDates(")]
+    signoff = src[src.index('textContent = "Sign off"'):]
+    assert "stopPropagation" in signoff[:400]
+
+
+def test_a_time_is_never_read_through_the_browsers_own_zone():
+    """These are local times in somebody else's country. A dashboard that
+    quietly converted them would be making the exact mistake this tab is
+    about."""
+    src = HTML[HTML.index("function readable("):HTML.index("function writeOf(")]
+    assert "getUTC" in src
+    assert "getHours()" not in src and "toLocaleString" not in src
+
+
 def test_the_whole_held_list_can_be_read_again():
     """The group control offers this only where nothing can be judged again.
     A verdict still comes from bytes read once, so a file replaced in Immich
@@ -679,7 +717,7 @@ def test_storage_is_wrapped_because_it_is_not_always_there():
 
 
 @pytest.mark.parametrize("key", ["openYears", "openMonths", "openFiles",
-                                 "dGroup", "dSort", "dOpen"])
+                                 "dGroup", "dSort", "dOpen", "dFiles"])
 def test_each_choice_is_both_kept_and_restored(key):
     """Written and never read is the same as not written at all."""
     assert f'remember("{key}"' in HTML, f"{key} is never written"

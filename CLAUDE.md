@@ -254,6 +254,20 @@ not only to one made in this session -- and the Dates one used to reapply on
 *every* render, so a group collapsed by hand reopened the moment a file was
 signed off out of it.
 
+**A row states the outcome; the instruction is one press away.** A held
+file's row carried the tags it would write, which is the one thing the
+person signing it off does not have to decide -- what they want is the two
+times it lies between, Immich's moment and what Google Photos will show.
+`wouldShow()` and `willShow()` are both measured behaviour, not inference:
+blank lands on the upload date, absent falls through to the stamped mtime
+which Google Photos displays as UTC. The tags, with `from` and `why` for
+each, live in `whyBox()` behind the disclosure -- a correction written into
+somebody's photo has to be answerable for.
+
+`readable()` reads every one of these as the wall clock it is, through
+`getUTC*` and never the browser's zone. They are local times in another
+country, and converting them would be the exact mistake this tab is for.
+
 **Work has to be visible from wherever it was started.** The transfer panel
 lives on the Queue tab, and the controls that start work do not: signing
 eight files off on Dates fetched, read, corrected and landed all eight
