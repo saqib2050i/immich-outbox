@@ -426,6 +426,22 @@ def test_a_file_with_nothing_to_write_is_not_offered_a_sign_off():
     assert "nothing can be written" in src
 
 
+def test_the_phone_gets_its_own_line_in_the_sync_panel():
+    """"N device(s) connected" answers a question nobody asked. The one
+    that matters is whether *this* device has *this* folder: a file leaves
+    the outbox only when Google Photos takes it off the phone, and it can
+    only do that if the phone has it."""
+    src = HTML[HTML.index("async function renderSyncthing("):]
+    src = src[:src.index("const agoWords")]
+    assert 'id="syncDevices"' in HTML
+    for part in ("dev.connected", "dev.completion", "dev.need_items",
+                 "dev.last_seen", "dev.paused"):
+        assert part in src, part
+    assert "device(s) connected" not in src, "that was the old, useless answer"
+    # Red only where the pipeline is stopped by it.
+    assert "!dev.paused && (!dev.connected || !!behind)" in src
+
+
 def test_what_is_moving_is_visible_from_every_tab():
     """The panel with the bars lives on Queue. A sign-off happens on Dates,
     so the work it starts had nowhere to show itself on the page that
