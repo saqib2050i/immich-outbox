@@ -10,6 +10,34 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.22.0
+
+**The dates were not the only thing the sidecar carried.** A Google Takeout
+sidecar holds five things: the dates, the location, the description, whether
+it was a favourite, and who is in it. Immich read all five at import; the
+file got none of them. Two of the five can be written into a file at all,
+and both are now reported — a trace says "Immich holds a location for this
+photo that the file does not carry", with the coordinates and the place, and
+the Dates tab counts how many of the files read so far are missing one.
+
+Nothing writes them. That would be a third deliberate exception to "the file
+goes through byte for byte", and it should be earned by a measurement the
+way the dates were — including the part nobody here has measured, which is
+whether Google Photos reads a location out of an upload at all. It does
+guess one: a file with no coordinates came back labelled "Pakistan —
+estimated location", and that guess is also where its GMT+05:00 came from.
+
+**And the other direction, which stops a search before it starts.** Make,
+model, lens, ISO, aperture and focal length are read by Immich *out of the
+file*. A file missing one is a file Immich cannot supply it for either.
+There is nothing to restore there, and a test says so.
+
+Immich is now asked about every file on its way past rather than only the
+ones with a date fault — one small metadata call beside a download of the
+whole file. Without it the count would have missed nearly everything: a
+photo with a perfectly good date can still have arrived in Google Photos
+with no location.
+
 ## 2.21.0
 
 **Whether the phone actually has the files.** The Syncthing panel said "3

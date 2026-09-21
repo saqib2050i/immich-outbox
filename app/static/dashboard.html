@@ -2849,6 +2849,24 @@ async function renderDates(){
     host.appendChild(box);
   }
 
+  // The other thing the sidecar carried. Not a date, not held back for,
+  // and nothing here writes it -- but it is the same fault from the same
+  // import, and counted while the bytes were in hand.
+  const gaps = d.gaps || {};
+  const named = Object.keys(gaps).filter(k => gaps[k]);
+  if (named.length){
+    const note = document.createElement("div");
+    note.className = "drevised";
+    note.textContent = named.map(k =>
+        fmtNum(gaps[k]) + " file(s) read so far have a " + k + " in Immich "
+        + "that the file itself does not carry").join(", and ")
+      + ". Same cause as a missing date — it came from the Takeout sidecar "
+      + "at import and never reached the file — but nothing here writes "
+      + "these, and whether Google Photos would read a location out of an "
+      + "upload has not been measured on this pipeline.";
+    host.appendChild(note);
+  }
+
   // Proposals worked out again since the file was read, and now different.
   // The row carries its old value; this says what the difference means,
   // once, because it is the same for all of them.

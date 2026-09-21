@@ -57,6 +57,14 @@ EXIF_TAGS = [
     "-QuickTime:CreationDate",
     "-Make", "-Model", "-Software", "-MIMEType",
     "-ImageWidth", "-ImageHeight", "-FileModifyDate",
+    # Not dates, and here for the same reason the dates are: a Takeout
+    # sidecar carried them, Immich read them into its database at import,
+    # and the file went on without them. Asked of the file so the two can
+    # be compared -- nothing writes these.
+    "-GPSLatitude", "-GPSLongitude", "-GPSPosition",
+    "-QuickTime:GPSCoordinates", "-UserData:GPSCoordinates",
+    "-ImageDescription", "-XMP:Description", "-IPTC:Caption-Abstract",
+    "-QuickTime:Description",
     # -G qualifies every key by group, so EXIF:DateTimeOriginal and
     # XMP:DateTimeOriginal stay apart. Without it exiftool returns both
     # under the bare name and the second silently wins -- which would
@@ -135,6 +143,58 @@ def filename_clock(name: str) -> str:
     if base.startswith(LOCAL_NAMED) or any(r.match(base) for r in LOCAL_SHAPED):
         return "local"
     return "unknown"
+
+
+# Where a file keeps a location, and what it keeps a caption in. Both
+# groups, because a still and a video do not agree on either.
+GPS_TAGS = ("EXIF:GPSLatitude", "Composite:GPSPosition", "XMP:GPSLatitude",
+            "QuickTime:GPSCoordinates", "UserData:GPSCoordinates")
+CAPTION_TAGS = ("EXIF:ImageDescription", "XMP:Description",
+                "IPTC:Caption-Abstract", "QuickTime:Description")
+
+
+def gaps(exif: dict, says: dict, kind: str | None = None) -> list[dict]:
+    """What Immich holds about this photo that the file itself does not.
+
+    The same fault as the dates and for the same reason: a Google Takeout
+    sidecar carried it, Immich read it into its database at import, and the
+    file went to Google Photos without it. A sidecar carries five things --
+    the dates, the location, the description, whether it was a favourite,
+    and who is in it -- and only the first three can be written into a file
+    at all.
+
+    Everything else Immich reports about a photo (make, model, lens, ISO,
+    aperture, focal length) it read *out of the file*, so a file missing one
+    is a file Immich cannot supply it for either. There is nothing to
+    restore there, which is worth knowing before anybody goes looking.
+
+    Reported, never written. Whether Google Photos reads a location out of
+    an upload is expected but unmeasured here, and a third exception to
+    "the file goes through byte for byte" should be earned by a measurement
+    the way the dates were.
+    """
+    if not says.get("ok"):
+        return []
+    out = []
+    if says.get("latitude") is not None and says.get("longitude") is not None:
+        if not any(pick(exif, t)[1] for t in GPS_TAGS):
+            where = says.get("place")
+            out.append({
+                "what": "location",
+                "immich": (f"{says['latitude']:.5f}, {says['longitude']:.5f}"
+                           + (f" — {where}" if where else "")),
+                "note": "Google Photos falls back to guessing a place from "
+                        "everything else it knows, and labels it "
+                        "\u201cestimated\u201d."})
+    if says.get("description"):
+        if not any(pick(exif, t)[1] for t in CAPTION_TAGS):
+            text = str(says["description"]).strip()
+            out.append({
+                "what": "description",
+                "immich": text[:120] + ("…" if len(text) > 120 else ""),
+                "note": "Written under the photo in Immich, and nowhere in "
+                        "the file."})
+    return out
 
 
 def _made_here(name: str) -> bool:
@@ -1234,6 +1294,16 @@ def _findings(rep: dict) -> list[dict]:
                     "import, or a camera whose clock was wrong. Nothing here "
                     "chooses between them."})
 
+    # 3c. What else the sidecar carried and the file never got. Not a date,
+    #     and reported rather than acted on: nothing here writes these.
+    for gap in gaps(ref or {}, rep.get("says") or {}, kind):
+        out.append({"level": "warn", "text":
+                    f"Immich holds a {gap['what']} for this photo that the "
+                    f"file does not carry — {gap['immich']}. Same cause as a "
+                    f"missing date: it came from the Takeout sidecar at "
+                    f"import and never reached the file. {gap['note']} "
+                    "Nothing here writes it."})
+
     # 4. Whether the zone is known at all. A wall clock with no zone behind
     #    it is a number, not a time, and this library spans a move.
     if ref and "error" not in ref and (rep.get("says") or {}).get("ok"):
@@ -1548,15 +1618,22 @@ async def classify(path: str, row: dict) -> dict:
         kind = row.get("kind")
         video = is_video(exif, kind)
         state, raw, _ = date_state(exif, *(VIDEO_DATE if video else PHOTO_DATE))
+
+        # Asked for every file, not only the faulty ones. A photo with a
+        # perfectly good date can still have gone to Google Photos with no
+        # location, and that is the same sidecar and the same loss -- so
+        # counting only the ones held back would miss nearly all of it. It
+        # costs one small metadata call beside a download of the whole file.
+        says = await immich.asset_detail(row["id"])
+        if says.get("ok"):
+            out["says"] = says          # kept, so a verdict can be redone
+        out["gaps"] = [g["what"] for g in gaps(exif, says, kind)]
+
         if state == VALUE:
             # It carries its own date. Nothing here second-guesses that;
             # a date that disagrees with Immich is fix_dates' business.
             out["why"] = f"carries {str(raw).strip()}"
             return out
-
-        says = await immich.asset_detail(row["id"])
-        if says.get("ok"):
-            out["says"] = says          # kept, so a verdict can be redone
         zkind, zone = zone_source(exif, says if says.get("ok") else {},
                                   row.get("taken_at"), row.get("filename"))
         out["zone"] = zkind
