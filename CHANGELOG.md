@@ -10,6 +10,45 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.23.0
+
+**Library opens on Library.** Off Overview the title shrinks to one line and
+the alerts to a single "4 things need attention — read them on Overview";
+on a phone they had filled the whole first screen of every tab, and the
+first year of the timeline sat at 1,004px. It is at 566px now, and what this
+relay buys — files that gain quality, the gain itself, the rate, how long
+until the queue clears — moved from the very bottom of the page to the top.
+
+**The years nothing has gone from fold into one row.** In a library imported
+from Takeout that is most of them: sixteen of twenty-one here, each the same
+line over an empty bar. They are one row now, "2001–2021 · 16 years ·
+nothing sent yet", that opens onto the years. A year leaves the fold the
+moment anything in it is backed up, queued or asked for.
+
+**A row only sends forward.** "Send again" was the only button on every
+finished month and year, styled like a send, and it is the riskiest thing on
+the page — a file re-dated since it went arrives as a duplicate. It is a
+quiet link now, inside the month or year you opened. Rows carry "Send N" and
+nothing else, and a finished month carries nothing at all. A month with one
+category no longer shows that category's two controls a second time.
+
+**One word per state.** Backed up, in the outbox, to send, only if you ask,
+not being sent — the same five words on the summary, the years, the months,
+the categories and the "what has not made it yet" list, with a legend
+pairing each with its colour. The same four files had been "not being sent"
+on a month and "dismissed" on its category, the summary's 40,393 came back
+as "Dismissed by hand", and one reason still named a date window that was
+removed long ago. The summary's colours were also swapped against the bars.
+
+Smaller: bars appear only on rows that are part-way; finished years go green
+like finished months; a year 4 files short no longer rounds to "100%"; the
+rate says "1 day to clear the 60.5 MB queued" rather than "1 days left"
+beside a 331.7 GB figure it was never measuring; categories are grouped into
+gains quality, same quality, and not yet measured (named by kind — there
+were two rows called "Not yet measured"); months say "18 photos · 12 videos"
+where there is room; and the tab strip fades at the edge on a phone when
+there is more of it.
+
 ## 2.22.1
 
 **The Library tab was a blue sheet with nothing to press.** The strip along
