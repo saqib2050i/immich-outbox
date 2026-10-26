@@ -18,8 +18,41 @@ both still there -- but three details changed:
 3. Validation moved to Zod and error responses changed shape. Both the old
    and new formats are parsed so failures stay readable.
 
+Two more arrived later in the v3 line, and neither announces itself:
+
+4. An asset's duration became an integer of milliseconds in v3.0, where it
+   had been a clock string ("00:01:23.456"). Nothing here is gated on it,
+   so reading only the old shape cost no files and no alarm -- it recorded
+   nothing for every video scanned afterwards, and because upsert_assets
+   coalesces on refresh the figures already in the ledger stayed put. The
+   total on Library did not drop to zero; it stopped growing. `_seconds()`
+   reads both shapes.
+
+5. v3.2 deprecated the whole flat search surface -- `page`, `takenAfter`
+   and `visibility` in the request, `nextPage` in the response -- in favour
+   of a `filter` object and a `cursor`. All four still work on 3.3.5 and
+   all four are what is sent, because they are what has been exercised
+   against a real server with a real key; the replacements go in when
+   there is one to exercise them against, and `visibility` is the one to be
+   careful with, since getting it wrong relays archived, hidden and locked
+   photos to a place nothing here can delete from.
+
+   The response half is different, and is handled: `nextPage` is followed
+   while the server sends one and `nextCursor` is read when it does not.
+   A removed request field fails loudly, with a 400 naming it. A removed
+   page token fails silently -- the scan ends after the first page and
+   reports a library of five hundred.
+
 If scans start failing after a server upgrade, this is the only file to
-look at. Compare against <IMMICH_URL>/api/docs.
+look at. The server no longer serves a reference of its own (/api/docs is
+gone and /docs is the web app), so compare against the spec for the exact
+version:
+
+    github.com/immich-app/immich/blob/v<x.y.z>/open-api/immich-openapi-specs.json
+
+Every field in it carries an `x-immich-history`, which says in which
+release it was added, deprecated or removed. That is the cheapest way to
+answer "did this upgrade break us" for a surface this small.
 """
 
 import re
@@ -126,6 +159,37 @@ def motion_part_id(item: dict) -> str | None:
     return None
 
 
+def _seconds(raw) -> float | None:
+    """An asset's duration in seconds, from either shape Immich has served.
+
+    A clock string before v3 -- "00:01:23.456" -- and an integer of
+    milliseconds since, which Immich's schema says in three separate places
+    and its mapper confirms (`z.int32()`, described as milliseconds). The
+    ledger column is seconds, and it is read as a total of seconds on
+    Library, so the unit cannot be left to whichever server answered.
+
+    Anything it cannot read is None rather than a guess: a duration is a
+    figure on a screen, and a wrong one is worse than a missing one.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) / 1000.0
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if ":" in text:
+        try:
+            h, m, sec = text.split(":")
+            return int(h) * 3600 + int(m) * 60 + float(sec)
+        except (ValueError, TypeError):
+            return None
+    try:
+        return float(text) / 1000.0
+    except ValueError:
+        return None
+
+
 def _normalise(item: dict) -> dict | None:
     """Map an Immich asset to a ledger row.
 
@@ -138,15 +202,8 @@ def _normalise(item: dict) -> dict | None:
 
     exif = item.get("exifInfo") or {}
 
-    # Immich reports duration as "00:01:23.456"; store it as seconds.
-    duration = None
-    raw = item.get("duration")
-    if isinstance(raw, str) and ":" in raw:
-        try:
-            h, m, sec = raw.split(":")
-            duration = int(h) * 3600 + int(m) * 60 + float(sec)
-        except (ValueError, TypeError):
-            duration = None
+    # Two shapes from two major versions, one unit in the ledger.
+    duration = _seconds(item.get("duration"))
 
     def _dim(*keys):
         for k in keys:
@@ -177,13 +234,19 @@ def _normalise(item: dict) -> dict | None:
 
 
 def _build_body(page: int, taken_after: str | None, major: int,
-                include_archived: bool, use_visibility: bool) -> dict:
+                include_archived: bool, use_visibility: bool,
+                cursor: str | None = None) -> dict:
     from . import config
     body: dict = {
-        "page": int(page),
         "size": int(config.IMMICH_PAGE_SIZE),
         "withExif": True,
     }
+    # v3.2 deprecated `page` and added `cursor`. They are two answers to the
+    # same question, so only ever one of them is in a body.
+    if cursor:
+        body["cursor"] = cursor
+    else:
+        body["page"] = int(page)
     if taken_after:
         body["takenAfter"] = taken_after
 
@@ -208,10 +271,13 @@ async def list_assets(taken_after: str | None = None) -> AsyncIterator[list[dict
     include_archived = config.INCLUDE_ARCHIVED
     use_visibility = True
     page = 1
+    cursor: str | None = None
+    spent: set[str] = set()
 
     async with _client() as client:
         while True:
-            body = _build_body(page, taken_after, major, include_archived, use_visibility)
+            body = _build_body(page, taken_after, major, include_archived,
+                               use_visibility, cursor)
             resp = await client.post(SEARCH, json=body)
 
             if resp.status_code == 400 and use_visibility and major >= 3:
@@ -242,10 +308,29 @@ async def list_assets(taken_after: str | None = None) -> AsyncIterator[list[dict
             if rows:
                 yield rows
 
+            # Follow the page token while the server sends one: it is what
+            # has been scanned with here. Read the cursor only when there is
+            # no token, so the release that removes the token does not end
+            # every scan after its first page -- which looks like a small
+            # library rather than a failure, and is the one way this can go
+            # wrong without saying so.
             nxt = block.get("nextPage")
-            if not nxt:
+            step = None
+            if nxt not in (None, ""):
+                try:
+                    step = int(nxt)
+                except (TypeError, ValueError):
+                    step = None  # a token, not a page number
+            if step is not None:
+                page, cursor = step, None
+                continue
+
+            cursor = block.get("nextCursor") or None
+            # A cursor that comes back twice would fetch the same page for
+            # ever, and every row in it is one the ledger already has.
+            if not cursor or cursor in spent:
                 return
-            page = int(nxt)
+            spent.add(cursor)
 
 
 class OriginalMissing(RuntimeError):

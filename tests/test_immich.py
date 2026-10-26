@@ -3,6 +3,12 @@
 Before v3, omitting visibility from a search meant "timeline only". In v3 it
 means *any* visibility, so a v1-era client silently starts relaying archived
 and hidden photos to Google Photos.
+
+The rest of this file is the record of two upgrades that changed no route
+and broke things anyway: a duration that became a different unit, and a
+page token that is on its way out. Both are the same class of fault --
+nothing fails, a figure is simply wrong or a scan is simply short -- so
+they are pinned here with the shapes a real server answered with.
 """
 
 import pytest
@@ -104,7 +110,7 @@ async def test_normalise_maps_an_asset_to_a_ledger_row(rig):
     row = immich._normalise({
         "id": "abc", "type": "image", "originalFileName": "IMG_1.jpg",
         "checksum": "sum", "fileCreatedAt": "2026-01-01T00:00:00Z",
-        "duration": "00:01:23.500",
+        "duration": 83500,   # v3: milliseconds
         "exifInfo": {"fileSizeInByte": 4096, "exifImageWidth": 6000,
                      "exifImageHeight": 4000},
     })
@@ -193,3 +199,133 @@ async def test_asset_detail_never_takes_the_trace_down_with_it(rig, monkeypatch)
     monkeypatch.setattr(immich, "_client", lambda *a, **k: Client())
     d = await immich.asset_detail("a")
     assert d["ok"] is False and "connection refused" in d["error"]
+
+
+async def test_duration_is_read_from_both_units_immich_has_served(rig):
+    """A clock string up to v2, an integer of milliseconds from v3.0. The
+    ledger column is seconds, and Library shows a sum of it, so the unit
+    cannot be left to whichever server answered. Nothing is gated on it --
+    which is exactly why reading only the old shape survived a whole major
+    version without anybody noticing."""
+    from app import immich
+    for raw, want in (("00:01:23.500", 83.5),   # v2 and earlier
+                      (83500, 83.5),            # v3.0 onwards
+                      ("83500", 83.5),          # the same, serialised
+                      (0, 0.0),
+                      (None, None),             # a still photo
+                      ("", None),
+                      ("later", None),
+                      (True, None)):
+        row = immich._normalise({"id": "a", "type": "VIDEO", "duration": raw})
+        if want is None:
+            assert row["duration"] is None, raw
+        else:
+            assert row["duration"] == pytest.approx(want), raw
+
+
+class _Answers:
+    """A client that answers each search with the next payload, keeping the
+    bodies it was asked with."""
+
+    def __init__(self, *payloads):
+        self.payloads = list(payloads)
+        self.sent: list[dict] = []
+
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+    async def post(self, path, json=None):
+        self.sent.append(json)
+        payload = (self.payloads[len(self.sent) - 1]
+                   if len(self.sent) <= len(self.payloads)
+                   else {"assets": {"items": []}})
+
+        class Resp:
+            status_code = 200
+            @staticmethod
+            def json(): return payload
+        return Resp()
+
+
+def _item(n):
+    return {"id": f"a{n}", "type": "IMAGE", "originalFileName": f"{n}.jpg",
+            "fileCreatedAt": "2026-01-01T00:00:00.000Z",
+            "exifInfo": {"fileSizeInByte": 1024}}
+
+
+async def _scan(immich, monkeypatch, answers):
+    monkeypatch.setattr(immich, "_version", (3, 3, 5))
+    monkeypatch.setattr(immich, "_client", lambda *a, **k: answers)
+    return [row["id"] for page in [p async for p in immich.list_assets()]
+            for row in page]
+
+
+async def test_the_scan_follows_the_page_token_while_there_is_one(rig, monkeypatch):
+    from app import immich
+    answers = _Answers(
+        {"assets": {"items": [_item(1)], "nextPage": "2"}},
+        {"assets": {"items": [_item(2)], "nextPage": None, "nextCursor": None}},
+    )
+    assert await _scan(immich, monkeypatch, answers) == ["a1", "a2"]
+    assert [b.get("page") for b in answers.sent] == [1, 2]
+    assert not any("cursor" in b for b in answers.sent)
+
+
+async def test_the_scan_follows_a_cursor_once_the_page_token_goes(rig, monkeypatch):
+    """v3.2 deprecated nextPage in favour of nextCursor. The release that
+    removes it would otherwise end every scan after one page, and a scan
+    that stops early reports a smaller library rather than an error."""
+    from app import immich
+    answers = _Answers(
+        {"assets": {"items": [_item(1)], "nextCursor": "c1"}},
+        {"assets": {"items": [_item(2)], "nextCursor": "c2"}},
+        {"assets": {"items": [_item(3)]}},
+    )
+    assert await _scan(immich, monkeypatch, answers) == ["a1", "a2", "a3"]
+    # The cursor replaces the page; sending both would be two answers to the
+    # same question.
+    assert "cursor" not in answers.sent[0] and answers.sent[0]["page"] == 1
+    assert [b.get("cursor") for b in answers.sent[1:]] == ["c1", "c2"]
+    assert not any("page" in b for b in answers.sent[1:])
+
+
+async def test_a_token_that_is_not_a_page_number_is_not_counted_with(rig, monkeypatch):
+    """`nextPage` is documented as a token. If it ever stops being a number,
+    int() would raise in the middle of a scan -- fall through to the cursor
+    instead."""
+    from app import immich
+    answers = _Answers(
+        {"assets": {"items": [_item(1)], "nextPage": "eyJpZCI6ICJhMSJ9",
+                    "nextCursor": "c1"}},
+        {"assets": {"items": [_item(2)]}},
+    )
+    assert await _scan(immich, monkeypatch, answers) == ["a1", "a2"]
+    assert answers.sent[1].get("cursor") == "c1"
+
+
+async def test_a_repeated_cursor_does_not_scan_for_ever(rig, monkeypatch):
+    """Every row behind a repeated cursor is one the ledger already has, so
+    the only thing a second pass can add is a loop."""
+    from app import immich
+    answers = _Answers(
+        {"assets": {"items": [_item(1)], "nextCursor": "c1"}},
+        {"assets": {"items": [_item(2)], "nextCursor": "c1"}},
+        {"assets": {"items": [_item(3)], "nextCursor": "c1"}},
+    )
+    assert await _scan(immich, monkeypatch, answers) == ["a1", "a2"]
+    assert len(answers.sent) == 2
+
+
+async def test_the_search_body_still_asks_for_the_timeline_with_a_cursor(rig):
+    """The filters are deprecated, not gone, and they are what has been
+    exercised against a real server. Dropping visibility while changing
+    pagination would relay archived, hidden and locked photos to a place
+    nothing here can delete from."""
+    from app import immich
+    body = immich._build_body(1, "2026-09-01T00:00:00Z", major=3,
+                              include_archived=False, use_visibility=True,
+                              cursor="c1")
+    assert body["cursor"] == "c1" and "page" not in body
+    assert body["visibility"] == "timeline"
+    assert body["takenAfter"] == "2026-09-01T00:00:00Z"
+    assert body["withExif"] is True
