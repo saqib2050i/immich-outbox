@@ -802,3 +802,120 @@ def test_the_strip_along_the_bottom_is_still_pinned_to_it():
     assert any(sel.strip() == "#moving" and "position:fixed" in body.replace(" ", "")
                for sel, body in css_rules()), \
         "the what-is-moving strip is no longer fixed to the bottom of the page"
+
+
+# ---- Library: what you see when you open it -----------------------------
+
+def _fn(name: str) -> str:
+    start = HTML.index(name)
+    nxt = HTML.find("\nfunction ", start + 10)
+    nxt2 = HTML.find("\nasync function ", start + 10)
+    ends = [i for i in (nxt, nxt2) if i != -1]
+    return HTML[start:min(ends) if ends else len(HTML)]
+
+
+def test_off_overview_the_alerts_shrink_to_one_line():
+    """The title, the build line and every alert filled a phone's first
+    screen on every tab; Library's months began at 797px of 812. The body
+    carries the tab name for the stylesheet -- as `data-on`, because a
+    `data-tab` on the body would make the whole page a tab panel and hide
+    it on every other tab."""
+    assert "document.body.dataset.on = name" in _fn("function setTab(")
+    assert "document.body.dataset.tab" not in HTML
+    assert any('body:not([data-on="overview"])' in sel and ".alertbox > div" in sel
+               and "display:none" in body.replace(" ", "")
+               for sel, body in css_rules()), "the full alerts still show on every tab"
+    assert 'id="alertBrief"' in HTML
+    # And drawing the alerts must not wipe the one-line form out of the box.
+    assert 'alertBox.innerHTML = ""' not in _fn("function renderAlerts(")
+
+
+def test_a_row_only_ever_sends_forward():
+    """Send-again was the only button on every finished month, styled like
+    a send, and the riskiest thing on the page -- a file re-dated since it
+    went arrives as a duplicate. Rows pass `again: false`; the link lives
+    inside what you opened."""
+    for fn in ("function monthNode(", "async function drawTimeline("):
+        calls = re.findall(r"sendControls\([^;]*?\);", _fn(fn), re.S)
+        rows = [c for c in calls if "remaining:" in c]
+        assert rows, f"no row control found in {fn}"
+        for c in rows:
+            assert "again: false" in c, f"a row still offers send-again:\n{c}"
+    src = HTML[HTML.index("function sendControls("):]
+    src = src[:src.index("\nfunction monthFigureText")]
+    assert '"linkish"' in src and '"ghost"' not in src
+
+
+def test_a_month_with_one_category_does_not_say_everything_twice():
+    """Its category row is the month. The month-level pair repeated the
+    category's two buttons in different words."""
+    body = _fn("function paintMonthBody(")
+    assert "const several = groups.length > 1;" in body
+    assert "remaining > 0 && several" in body
+    assert "confirmed > 0 && several" in body
+
+
+def test_one_word_per_state_across_the_library():
+    """The same four files were "not being sent" on a month and "dismissed"
+    on its category; the summary's 40,393 "not being sent" came back two
+    screens later as "Dismissed by hand"."""
+    library = (_fn("function monthFigureText(") + _fn("function paintMonthBody(")
+               + _fn("function paintYearFigures("))
+    for stale in ('" dismissed"', '" done"', '"% done"', '" in outbox"'):
+        assert stale not in library, f"{stale} is a second name for a state"
+    recon = HTML[HTML.index("const RECON = {"):]
+    recon = recon[:recon.index("};")]
+    recon = re.sub(r"//[^\n]*", "", recon)   # the comment quotes the old names
+    for stale in ("Dismissed by hand", "Waiting its turn", "On the way",
+                  "Outside both windows"):
+        assert stale not in recon, f"{stale!r} names a state the timeline calls something else"
+    for word in ("To send", "In the outbox", "Only if you ask", "Not being sent"):
+        assert word in recon
+
+
+def test_years_nothing_has_gone_from_fold_into_one_row():
+    """Sixteen of the twenty-one years in the real ledger were the same line
+    over an empty bar. The fold is part of the structure signature, so a
+    year that starts sending leaves it on the next draw rather than staying
+    folded until a month appears."""
+    draw = _fn("async function drawTimeline(")
+    assert "const fold = quiet.length >= 2;" in draw
+    assert '(fold ? quiet.join(",") : "")' in draw
+    assert "paintQuiet(years);" in _fn("function paintFigures(")
+
+
+def test_a_bar_shows_only_part_way():
+    assert 'classList.toggle("idle"' in _fn("function paintMonthBar(")
+    assert 'classList.toggle("idle"' in _fn("function paintYearFigures(")
+    assert any(".mb.idle" in sel and "display:none" in body.replace(" ", "")
+               for sel, body in css_rules())
+
+
+def test_a_year_short_of_finished_never_says_100():
+    """2,908 of 2,912 rounded to "100% backed up" over a bar that was
+    visibly not full."""
+    assert "Math.min(Math.round(pct), 99)" in _fn("function paintYearFigures(")
+
+
+def test_what_the_relay_buys_is_at_the_top_of_library():
+    """It was the last thing on a 7,300px page."""
+    timeline = HTML[HTML.index('<section class="timeline"'):]
+    timeline = timeline[:timeline.index("</section>")]
+    assert timeline.index('id="stTotals"') < timeline.index('id="tlBody"')
+    assert HTML.count('id="stTotals"') == 1
+
+
+def test_the_rate_says_what_it_is_measured_against():
+    """"331.7 GB ... 1 days left at that rate" read as the whole gain
+    landing tomorrow; it was the 60 MB queued."""
+    stats = _fn("async function renderStats(")
+    assert "left at that rate" not in stats
+    assert '"to clear the "' in stats
+    assert '" day"' in stats
+
+
+def test_categories_are_grouped_by_what_the_relay_does_for_them():
+    stats = _fn("async function renderStats(")
+    for g in ("Gains quality", "Same quality either way", "Not measured yet"):
+        assert g in stats
+    assert '" not yet measured"' in stats, "the two unmeasured rows share a name"

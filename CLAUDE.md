@@ -254,10 +254,26 @@ anywhere to share one from. Three things in it are load-bearing:
 - **Sending is one builder, called from three places.** Year, month and
   category each drew their own controls and drifted: the year had none, the
   month's lived inside its own expanded body, and a category could send but
-  never send again. `sendControls()` draws the pair everywhere, and the
+  never send again. `sendControls()` draws them everywhere, and the
   row-level ones carry `whenshut` so they disappear once you are looking at
   what is inside. They sit inside a `<summary>`, so the wrapper stops click
   propagation -- otherwise every press would toggle the row instead.
+- **A row only ever sends forward.** Rows pass `{again: false}`; sending
+  something again is a `.linkish` link inside the opened month (on its
+  category) or year (`yearFoot`). It was the only button on every finished
+  row and the riskiest on the page, since a re-dated file arrives as a
+  duplicate. A month with one category shows no month-level pair: that
+  category *is* the month, and the two pairs said the same thing twice.
+- **One word per state, everywhere on Library**: backed up, in the outbox,
+  to send, only if you ask, not being sent -- the summary, years, months,
+  categories and `RECON` alike. A second name for a state reads as a second
+  state, and "dismissed" beside "not being sent" over the same four files
+  did exactly that. A test holds the line.
+- **Off Overview the header and alerts shrink**, keyed on
+  `body[data-on]`, which `setTab` writes. Never `data-tab` on the body: it
+  would make the whole page a tab panel. Years with nothing backed up,
+  queued or asked for fold into one row (`quietGroup`), and the fold is in
+  the structure signature so a year leaves it on the next draw.
 - **Confirmations live in the button, not in `confirm()`.** A browser
   dialog is a different window asking about a page you can no longer see.
   `armed()` turns the first press into "Sure? ..." and disarms itself after

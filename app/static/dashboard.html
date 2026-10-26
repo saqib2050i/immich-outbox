@@ -96,6 +96,11 @@
     overflow-x:auto;scrollbar-width:none;overscroll-behavior-x:contain;
   }
   nav.jump::-webkit-scrollbar{display:none}
+  /* On a phone the strip ran off at "Date..." with nothing to say there was
+     more of it. Faded only while there is. */
+  nav.jump.more::after{content:"";position:sticky;right:-16px;flex:none;
+    align-self:stretch;width:40px;margin:-8px -16px -8px -40px;pointer-events:none;
+    background:linear-gradient(to right,transparent,var(--paper) 75%)}
   nav.jump a{
     position:relative;white-space:nowrap;flex:none;
     font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:0;
@@ -269,9 +274,19 @@
   .tlsum-part b{font-size:21px;font-weight:680;letter-spacing:-.03em;line-height:1.1}
   .tlsum-part span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;
     color:var(--dim);font-weight:600}
-  .tlsum-part.go b{color:var(--transit)}
-  .tlsum-part.moving b{color:var(--done)}
+  /* The same colours as the bars: they were swapped, so "in the outbox"
+     was green up here and cyan on every month below it. */
+  .tlsum-part.done b{color:var(--done)}
+  .tlsum-part.moving b{color:var(--transit)}
   .tlsum-part.rest b{color:var(--dim)}
+  .tllegend{display:flex;flex-wrap:wrap;gap:6px 18px;margin:-8px 0 18px;
+            font-size:12px;color:var(--dim)}
+  .tllegend span{display:inline-flex;align-items:center;gap:6px}
+  .tllegend i{width:14px;height:5px;border-radius:999px;display:inline-block}
+  .tllegend i.done{background:var(--done)}
+  .tllegend i.moving{background:var(--transit)}
+  .tllegend i.go{background:var(--rule-2)}
+  .tllegend i.rest{background:var(--panel-2);outline:1px solid var(--rule-2)}
   .tl-yr{border-bottom:1px solid var(--rule)}
   .tl-yr > summary{display:grid;grid-template-columns:auto 1fr auto auto;gap:12px;
                    align-items:center;padding:13px 4px;cursor:pointer;list-style:none;
@@ -294,12 +309,35 @@
      different window asking about a page you could no longer see. */
   .sendctl button.armed,button.armed{border-color:var(--alarm);
                                      color:var(--alarm)}
+  /* Sending something again is the rarest thing on this page and the one
+     with a cost -- a file re-dated since it went arrives as a duplicate --
+     so it is a quiet link inside what you opened, never a button on a row.
+     It was the only button on every finished month, and the loudest. The
+     doubled selectors outrank `.cat button` and the phone's `button`. */
+  button.linkish,.sendctl button.linkish,.foot button.linkish{
+    background:none;border:0;padding:3px 0;min-height:0;box-shadow:none;
+    color:var(--dim);font-size:12px;font-weight:500;white-space:nowrap;
+    text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+  button.linkish:hover,.sendctl button.linkish:hover{color:var(--ink);background:none}
+  button.linkish.armed,.sendctl button.linkish.armed,
+  .foot button.linkish.armed{color:var(--alarm)}
   /* A year or month with its contents on screen is answered beside each of
      them, not in one button above the lot. */
   details[open] > summary > .whenshut{display:none}
   .tl-yr .yb{grid-column:1/-1;height:5px;border-radius:999px;
              background:var(--panel-2);overflow:hidden}
   .tl-yr .yb i{display:block;height:100%;background:var(--done);border-radius:999px}
+  /* A bar earns its row only part-way. Finished rows already say so in
+     green and empty ones in their figures, and twenty full-width lines of
+     the same colour nearly doubled the height of the list. */
+  .tl-yr .yb.idle,.tl-mo .mb.idle{display:none}
+  .tl-yr.done > summary .yn{color:var(--done)}
+  /* The years nothing has been sent from yet, folded into one row. Sixteen
+     of this library's twenty-one were the same line over an empty bar. */
+  .tl-quiet > .tl-yr{margin-left:14px}
+  .tl-quiet > .tl-yr:last-child{border-bottom:0}
+  .tl-quiet > summary .yn{color:var(--dim)}
+  .tl-yfoot{padding:6px 0 12px 16px}
 
   .tl-mo{margin:3px 0 3px 14px;border-left:2px solid var(--rule);
          border-radius:0 var(--r-sm) var(--r-sm) 0}
@@ -318,6 +356,7 @@
   .tl-mo[open]{border-left-color:var(--transit);background:var(--panel)}
   .tl-mo .mn{font-weight:650}
   .tl-mo .mm{color:var(--dim);font-size:12.5px}
+  .tl-mo .mm .short{display:none}
   .tl-mo .mr{text-align:right;white-space:nowrap;font-size:12.5px;color:var(--dim)}
   .tl-mo .mb{grid-column:1/-1;display:flex;height:5px;border-radius:999px;
              background:var(--panel-2);overflow:hidden;margin-top:4px}
@@ -372,14 +411,16 @@
            border-radius:var(--r-sm);margin:4px 0}
   .mdetail .foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
   .mdetail .hint{font-size:12px;color:var(--dim);margin:2px 0 10px}
-  .cat{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+  /* The name keeps a floor and the figures wrap instead: spelled out, they
+     are long enough to squeeze "Photos 16 MP or less" to a word a line. */
+  .cat{display:grid;grid-template-columns:minmax(11rem,1fr) auto auto;gap:10px;align-items:center;
        padding:10px 12px;font-size:12.5px;border-left:3px solid var(--rule-2);
        border-radius:0 var(--r-sm) var(--r-sm) 0;margin:7px 0;background:var(--panel-2)}
   .cat.gain{border-left-color:var(--transit)}
   .cat .cname{font-weight:650;font-size:13.5px}
   .cat .cwhy{display:block;font-weight:400;color:var(--dim);font-size:11.5px;
              margin-top:2px}
-  .cat .cfig{color:var(--dim);white-space:nowrap;text-align:right}
+  .cat .cfig{color:var(--dim);text-align:right;line-height:1.5}
   .cat button{font-size:11px;padding:4px 10px;min-height:0}
   .st-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center;
           padding:12px 0;border-bottom:1px solid var(--rule)}
@@ -398,7 +439,11 @@
           margin-top:10px}
   .st-act button{font-size:11px;padding:4px 10px;min-height:0}
   .st-act .msg{font-size:12px;color:var(--done)}
-  .st-total{display:flex;gap:14px 30px;flex-wrap:wrap;margin:18px 0 4px;
+  .st-group{font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+            color:var(--dim);font-weight:600;margin:22px 0 2px}
+  .st-group:first-child{margin-top:4px}
+  .st-total{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));
+            gap:14px 30px;margin:18px 0 4px;
             border-top:1px solid var(--rule-2);padding-top:16px}
   .st-total div{display:flex;flex-direction:column;gap:2px}
   .st-total .n{font-size:21px;font-weight:680;letter-spacing:-.03em;line-height:1.1}
@@ -791,6 +836,27 @@
   .alertbox h3{font-size:13.5px;margin:0 0 3px;font-weight:650}
   .alertbox p{font-size:12.5px;color:var(--dim);margin:0 0 8px;line-height:1.6}
   .alertbox div:last-child p{margin-bottom:0}
+  /* Off Overview, the tab's own content comes first. The title, the build
+     line and every alert used to fill a phone's entire first screen on
+     every tab -- Library's months started at 797px of an 812px screen. The
+     status dot stays, because "is this live" is a question on every tab;
+     the alerts shrink to one line that says how many and where to read
+     them. On a body attribute rather than [data-tab], which would make the
+     body itself a tab panel and hide the page. */
+  .alertbrief{display:none;gap:10px;align-items:baseline;font-size:13px;
+              color:var(--ink);text-decoration:none}
+  .alertbrief span{color:var(--dim);font-size:12px}
+  body:not([data-on="overview"]) header .eyebrow,
+  body:not([data-on="overview"]) header .build{display:none}
+  body:not([data-on="overview"]) header{padding-bottom:10px;margin-bottom:14px}
+  body:not([data-on="overview"]) h1{font-size:15px;gap:.35em}
+  body:not([data-on="overview"]) .live{flex-basis:auto;margin-left:auto}
+  body:not([data-on="overview"]) .banner .fix{display:none}
+  body:not([data-on="overview"]) .banner{padding:9px 14px;margin-bottom:12px}
+  body:not([data-on="overview"]) .banner .what{margin:0;font-size:13px}
+  body:not([data-on="overview"]) .alertbox{padding:9px 14px;margin-bottom:12px}
+  body:not([data-on="overview"]) .alertbox > div{display:none}
+  body:not([data-on="overview"]) .alertbox .alertbrief{display:flex}
   .checks{margin-top:14px;font-size:12.5px}
   .checks div{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--rule);
               flex-wrap:wrap}
@@ -870,6 +936,10 @@
      The page is used on a phone more than it was designed for: everything
      below is about a 390px viewport, where a four-column grid is a stack
      of overlapping words and a 24px control is a missed tap. */
+  @media (max-width:980px){
+    .tl-mo .mm .full{display:none}
+    .tl-mo .mm .short{display:inline}
+  }
   @media (max-width:860px){
     .setwrap{grid-template-columns:1fr;gap:14px}
     .setnav{position:static;flex-direction:row;overflow-x:auto;gap:2px;
@@ -943,6 +1013,13 @@
     .st-total{gap:12px 22px}
     .sgroup{padding:16px 15px 18px}
     .tlsum{padding:12px 14px;gap:12px 20px}
+    .tllegend{margin-top:-6px}
+    /* The months were still most of a screen down: an intro sentence and
+       four stacked totals sat above them. Two columns, and the prose that
+       explains the page goes on a phone, where the page is already known. */
+    .tlintro,#stNote{display:none}
+    .st-total{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-top:4px}
+    .st-total .n{font-size:17px}
     /* Every control is a thumb target here, not a mouse target. */
     button,.btn-link{min-height:38px;padding:8px 14px}
     .mo button,.cat button,.frow button,.qlist button,.bllist button,
@@ -1018,7 +1095,9 @@
   <p class="fix" id="bannerFix"></p>
 </div>
 
-<div class="alertbox" id="alertBox" hidden></div>
+<div class="alertbox" id="alertBox" hidden>
+  <a class="alertbrief" id="alertBrief" href="#overview"></a>
+</div>
 
 <div id="moving" hidden role="status"
      title="What is moving right now — opens the queue">
@@ -1535,10 +1614,20 @@
 
 <section class="timeline" id="nav-timeline" data-tab="library">
   <h2>Months</h2>
-  <p class="empty">Every month that holds media, and what is left in it. This is
-     where sending happens: a whole month, one of its categories, or a single
-     file.</p>
+  <p class="empty tlintro">Every month that holds media, and what is left in it.
+     This is where sending happens: a year, a month, one of its categories, or
+     a single file.</p>
   <div class="tlsum" id="tlSummary" hidden></div>
+  <div class="tllegend" id="tlLegend" hidden>
+    <span><i class="done"></i>backed up</span>
+    <span><i class="moving"></i>in the outbox</span>
+    <span><i class="go"></i>to send</span>
+    <span><i class="rest"></i>only if you ask, or not being sent</span>
+  </div>
+  <!-- What this relay buys, up where the tab opens. It was the last thing
+       on a 7,300px page, under twenty years of rows. -->
+  <div class="st-total" id="stTotals"></div>
+  <p class="empty" id="stNote"></p>
   <div id="tlBody"><p class="empty">Loading…</p></div>
 </section>
 
@@ -1552,8 +1641,6 @@
 <section class="stats" id="nav-library" data-tab="library">
   <h2>What is in the library</h2>
   <div id="stBody"><p class="empty">Working it out…</p></div>
-  <div class="st-total" id="stTotals"></div>
-  <p class="empty" id="stNote"></p>
 
 </section>
 
@@ -1939,8 +2026,23 @@ async function renderStats(d){
   stBody.innerHTML = "";
   let gainFiles = 0, gainBytes = 0;
 
+  // Grouped by what the relay does for them, then by size. Sorted by size
+  // alone, 1440p video -- a gain -- sat under "720p and below", which is
+  // not, and the two unmeasured rows were side by side with one name.
+  const groupOf = r => r.bucket === "unknown" ? 2 : ((BUCKETS[r.bucket] || [])[2] ? 0 : 1);
+  rows.sort((a, b) => groupOf(a) - groupOf(b) || b.bytes - a.bytes);
+  const GROUPS = ["Gains quality", "Same quality either way", "Not measured yet"];
+  let lastGroup = -1;
+
   rows.forEach(r => {
-    const [name, why, gains] = BUCKETS[r.bucket] || [r.bucket, "", false];
+    if (groupOf(r) !== lastGroup){
+      lastGroup = groupOf(r);
+      stBody.appendChild(Object.assign(document.createElement("h3"),
+        {className: "st-group", textContent: GROUPS[lastGroup]}));
+    }
+    let [name, why, gains] = BUCKETS[r.bucket] || [r.bucket, "", false];
+    if (r.bucket === "unknown")
+      name = (r.kind === "VIDEO" ? "Videos" : "Photos") + " not yet measured";
     if (gains){ gainFiles += r.total; gainBytes += r.bytes; }
 
     const el = document.createElement("div");
@@ -2030,8 +2132,11 @@ async function renderStats(d){
     [fmtBytes(gainBytes), "of that is the gain"],
     [perDay > 0 ? fmtBytes(perDay * 30) + "/month" : "—",
      measured > 0 && measured <= structural ? "measured rate" : "rate the design allows"],
-    [daysLeft ? (daysLeft > 60 ? Math.round(daysLeft/30) + " months" : daysLeft + " days") : "—",
-     "left at that rate"]
+    // Measured against what is queued, not against the gain beside it --
+    // "331.7 GB ... 1 days left" read as the whole gain landing tomorrow.
+    [daysLeft ? (daysLeft > 60 ? Math.round(daysLeft/30) + " months"
+                               : daysLeft + (daysLeft === 1 ? " day" : " days")) : "—",
+     remaining > 0 ? "to clear the " + fmtBytes(remaining) + " queued" : "nothing queued"]
   ];
   totals.forEach(([n, k]) => {
     const div = document.createElement("div");
@@ -2257,19 +2362,22 @@ async function drawTimeline(){
   // What is outstanding, without expanding anything. Every year starts
   // collapsed, so the answer used to be three clicks and a scroll away.
   const sum = months.reduce((a, m) => ({
+    confirmed: a.confirmed + (m.confirmed || 0),
     sending:   a.sending   + (m.sending   || 0),
     resting:   a.resting   + (m.resting   || 0),
     dismissed: a.dismissed + (m.dismissed || 0),
     queued:    a.queued    + (m.queued    || 0),
-  }), {sending: 0, resting: 0, dismissed: 0, queued: 0});
+  }), {confirmed: 0, sending: 0, resting: 0, dismissed: 0, queued: 0});
 
   tlSummary.innerHTML = "";
   const parts = [];
+  if (sum.confirmed) parts.push([fmtNum(sum.confirmed), "backed up",       "done"]);
   if (sum.sending)   parts.push([fmtNum(sum.sending),   "to send",         "go"]);
   if (sum.queued)    parts.push([fmtNum(sum.queued),    "in the outbox",   "moving"]);
   if (sum.resting)   parts.push([fmtNum(sum.resting),   "only if you ask", "rest"]);
   if (sum.dismissed) parts.push([fmtNum(sum.dismissed), "not being sent",  "rest"]);
   tlSummary.hidden = !parts.length;
+  tlLegend.hidden = !parts.length;
   parts.forEach(([n, label, cls]) => {
     const el = document.createElement("div");
     el.className = "tlsum-part " + cls;
@@ -2289,8 +2397,18 @@ async function drawTimeline(){
   // Same months as last time, different numbers on them. Write the numbers
   // and leave the DOM exactly where it is: nothing collapses, no month body
   // is refetched, nothing you had scrolled to moves.
+  // Years nothing has gone from yet -- not one file backed up, in the
+  // outbox or asked for. Two or more fold into a single row; a library
+  // imported from Takeout is mostly these, and they were most of the page.
+  const quiet = [...years.entries()]
+    .filter(([, list]) => list.every(m =>
+      !(m.confirmed || 0) && !(m.queued || 0) && !(m.sending || 0)))
+    .map(([y]) => y);
+  const fold = quiet.length >= 2;
+
   const structure = [...years.keys()].join(",") + "|"
-                  + months.map(m => m.month).join(",");
+                  + months.map(m => m.month).join(",") + "|"
+                  + (fold ? quiet.join(",") : "");
   if (structure === tlStructure && tlMonthRows.size){
     paintFigures(months, years);
     return;
@@ -2298,6 +2416,8 @@ async function drawTimeline(){
   tlStructure = structure;
   tlMonthRows.clear();
   tlYearRows.clear();
+  tlQuietRow = null;
+  let quietHost = null;
 
   // Open the newest year holding something that is going out, the first
   // time this is drawn. Otherwise the page opens on nothing actionable and
@@ -2329,7 +2449,7 @@ async function drawTimeline(){
     yb.className = "yb";
     const yi = document.createElement("i");
     yb.appendChild(yi);
-    paintYearFigures({yf, yi}, list);
+    paintYearFigures({yd, yf, yi}, list);
 
     // `resting`, not `remaining`. Forcing a file does not change its state,
     // so a count of everything pending cannot move when you press the
@@ -2343,18 +2463,73 @@ async function drawTimeline(){
     const yc = sendControls(year, null, {
       remaining: list.reduce(
         (a, m) => a + (m.resting || 0) + (m.dismissed || 0), 0),
-      confirmed: list.reduce((a, m) => a + (m.confirmed || 0), 0),
-    });
+    }, {again: false});
     yc.classList.add("whenshut");
-    tlYearRows.set(year, {yf, yi, ctl: yc});
+    const foot = yearFoot(year, list);
+    tlYearRows.set(year, {yd, yf, yi, ctl: yc, foot});
     // No spacer: `summary::before` is itself the first grid item, and a
     // fourth span pushed the figures onto a second row.
     ys.append(yn, yf, yc, yb);
     yd.appendChild(ys);
 
     list.forEach(m => yd.appendChild(monthNode(m, openMonths)));
-    tlBody.appendChild(yd);
+    yd.appendChild(foot);
+    if (fold && quiet.includes(year)){
+      if (!quietHost){
+        quietHost = quietGroup(quiet, years, openYears);
+        tlBody.appendChild(quietHost);
+      }
+      quietHost.appendChild(yd);
+    } else tlBody.appendChild(yd);
   }
+}
+
+let tlQuietRow = null;
+
+function quietGroup(quiet, years, openYears){
+  const qd = document.createElement("details");
+  qd.className = "tl-yr tl-quiet";
+  qd.dataset.year = "quiet";
+  if (openYears.has("quiet")) qd.open = true;
+  qd.addEventListener("toggle", () => {
+    tlTouched = true;
+    qd.open ? tlOpenYears.add("quiet") : tlOpenYears.delete("quiet");
+    rememberOpen();
+  });
+  const qs = document.createElement("summary");
+  const qn = document.createElement("span"); qn.className = "yn";
+  const qf = document.createElement("span"); qf.className = "yf";
+  qs.append(qn, qf);
+  qd.appendChild(qs);
+  tlQuietRow = {qn, qf, quiet};
+  paintQuiet(years);
+  return qd;
+}
+
+// No send control on the folded row, deliberately: "send sixteen years" is
+// too large a thing to be one press on a row you have not opened.
+function paintQuiet(years){
+  if (!tlQuietRow) return;
+  const all = tlQuietRow.quiet.flatMap(y => years.get(y) || []);
+  const sumOf = k => all.reduce((a, m) => a + (m[k] || 0), 0);
+  const ys = tlQuietRow.quiet.map(Number);
+  tlQuietRow.qn.textContent = Math.min(...ys) + "–" + Math.max(...ys);
+  const gain = sumOf("gain_bytes");
+  tlQuietRow.qf.textContent = ys.length + " years · " + fmtNum(sumOf("total"))
+    + " files · " + fmtBytes(sumOf("bytes")) + " · nothing sent yet"
+    + (gain ? " · " + fmtBytes(gain) + " worth upgrading" : "");
+}
+
+// Sending a year again lives inside the open year, under its months, as a
+// link -- the year row itself only ever sends forward.
+function yearFoot(year, list){
+  const foot = document.createElement("div");
+  foot.className = "tl-yfoot";
+  const n = list.reduce((a, m) => a + (m.confirmed || 0), 0);
+  foot.dataset.n = n;
+  foot.hidden = !n;
+  if (n) foot.appendChild(sendControls(year, null, {confirmed: n}));
+  return foot;
 }
 
 // ---- the figures, written on their own -------------------------------
@@ -3132,7 +3307,10 @@ async function sendPeriod(period, group, resend){
 }
 
 // `period` is "2023" or "2023-03"; `group` narrows it to one category.
+// `opts.again`: false leaves the send-again link off -- every row passes
+// that, because a row only ever sends forward.
 function sendControls(period, group, counts, opts){
+  const again = (opts || {}).again ?? true;
   const wrap = document.createElement("span");
   wrap.className = "sendctl";
   const stop = e => e.stopPropagation();   // inside a <summary>: do not toggle
@@ -3177,26 +3355,26 @@ function sendControls(period, group, counts, opts){
 
   // The only route back for something already backed up, so it asks first.
   // Everything else in this service refuses to touch a confirmed asset.
-  if (done > 0){
-    const again = document.createElement("button");
-    again.className = "ghost";
-    again.textContent = "Send again (" + fmtNum(done) + ")";
-    again.title = "They are recorded as backed up. Google Photos skips what it "
-                + "already holds, so this is for something you deleted there "
-                + "and want back. A file whose date was rewritten since it "
-                + "went will upload as a new copy.";
-    armed(again, "Sure? Send " + fmtNum(done) + " again",
+  if (done > 0 && again){
+    const back = document.createElement("button");
+    back.className = "linkish";
+    back.textContent = "Send " + fmtNum(done) + " again…";
+    back.title = "They are recorded as backed up. Google Photos skips what it "
+               + "already holds, so this is for something you deleted there "
+               + "and want back. A file whose date was rewritten since it "
+               + "went will upload as a new copy.";
+    armed(back, "Sure? Send " + fmtNum(done) + " again",
           () => sendPeriod(period, group, true));
-    wrap.appendChild(again);
+    wrap.appendChild(back);
   }
   return wrap;
 }
 
 function monthFigureText(m){
-  const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " done"];
+  const bits = [fmtBytes(m.bytes), fmtNum(m.confirmed) + " backed up"];
   if (m.sending)   bits.push(fmtNum(m.sending) + " to send");
   if (m.resting)   bits.push(fmtNum(m.resting) + " only if you ask");
-  if (m.queued)    bits.push(m.queued + " in outbox");
+  if (m.queued)    bits.push(m.queued + " in the outbox");
   if (m.dismissed) bits.push(fmtNum(m.dismissed) + " not being sent");
   return bits.join(" · ");
 }
@@ -3226,6 +3404,8 @@ function paintMonthBar(bar, m){
   seg(m.confirmed, "done");
   seg(m.queued, "moving");
   seg(m.sending, "go");
+  const painted = (m.confirmed || 0) + (m.queued || 0) + (m.sending || 0);
+  bar.classList.toggle("idle", !painted || (m.total > 0 && m.confirmed === m.total));
 }
 
 function paintYearFigures(row, list){
@@ -3235,12 +3415,16 @@ function paintYearFigures(row, list){
   const pct = tot ? (conf / tot) * 100 : 0;
   row.yf.textContent =
       fmtNum(tot) + " files · " + fmtBytes(sumOf("bytes")) + " · "
-    + Math.round(pct) + "% done"
+    // Floored short of the end: 2,908 of 2,912 rounded to "100%" over a
+    // bar that was visibly not full, and a year that was not finished.
+    + (pct < 100 ? Math.min(Math.round(pct), 99) : 100) + "% backed up"
     + (rest ? " · " + fmtNum(rest) + " only if you ask" : "")
     + (dism ? " · " + fmtNum(dism) + " not being sent" : "")
     + (sumOf("gain_bytes") ? " · " + fmtBytes(sumOf("gain_bytes"))
                              + " worth upgrading" : "");
   row.yi.style.width = pct + "%";
+  row.yi.parentNode.classList.toggle("idle", pct <= 0 || pct >= 100);
+  row.yd.classList.toggle("done", tot > 0 && conf === tot);
 }
 
 /**
@@ -3275,8 +3459,17 @@ function paintFigures(months, years){
       if (row.ctl && row.ctl.repaint)
         row.ctl.repaint({remaining: list.reduce(
           (a, m) => a + (m.resting || 0) + (m.dismissed || 0), 0)});
+      // The send-again link carries a count too. Rebuilt only when that
+      // count moved, so an armed link is not reset under the cursor.
+      const n = list.reduce((a, m) => a + (m.confirmed || 0), 0);
+      if (row.foot && String(n) !== row.foot.dataset.n){
+        const fresh = yearFoot(year, list);
+        row.foot.replaceWith(fresh);
+        row.foot = fresh;
+      }
     }
   }
+  paintQuiet(years);
 }
 
 function monthNode(m, openMonths){
@@ -3297,7 +3490,14 @@ function monthNode(m, openMonths){
 
   const mid = document.createElement("span");
   mid.className = "mm";
-  mid.textContent = m.photos + "p" + (m.videos ? " · " + m.videos + "v" : "");
+  // In words where there is room; "18p · 12v" was a code to learn.
+  const counted = (n, w) => fmtNum(n) + " " + w + (n === 1 ? "" : "s");
+  const kinds = [[m.photos, "photo", "p"], [m.videos, "video", "v"]].filter(k => k[0]);
+  mid.append(
+    Object.assign(document.createElement("span"), {className: "full",
+      textContent: kinds.map(([n, w]) => counted(n, w)).join(" · ")}),
+    Object.assign(document.createElement("span"), {className: "short",
+      textContent: kinds.map(([n, , s]) => n + s).join(" · ")}));
 
   const right = document.createElement("span");
   right.className = "mr";
@@ -3317,8 +3517,7 @@ function monthNode(m, openMonths){
   // scrolling past everything in it.
   const mc = sendControls(m.month, null, {
     remaining: (m.resting || 0) + (m.dismissed || 0),
-    confirmed: m.confirmed || 0,
-  });
+  }, {again: false});
   mc.classList.add("whenshut");
 
   // Three states, in the order the pipeline runs: backed up, in the outbox,
@@ -3382,9 +3581,9 @@ function paintMonthBody(m, host, d){
     const fig = document.createElement("span");
     fig.className = "cfig";
     fig.textContent = fmtNum(g.total) + " · " + fmtBytes(g.bytes)
-      + " · " + fmtNum(g.confirmed) + " done"
-      + (g.queued ? " · " + g.queued + " in outbox" : "")
-      + (g.dismissed ? " · " + fmtNum(g.dismissed) + " dismissed" : "");
+      + " · " + fmtNum(g.confirmed) + " backed up"
+      + (g.queued ? " · " + g.queued + " in the outbox" : "")
+      + (g.dismissed ? " · " + fmtNum(g.dismissed) + " not being sent" : "");
     el.append(nm, fig);
 
     // Dismissed files count as sendable: dismissing is an exclusion, and
@@ -3431,7 +3630,11 @@ function paintMonthBody(m, host, d){
     } finally { btn.textContent = was; btn.disabled = false; }
   };
 
-  if (remaining > 0){
+  // With one category, that category *is* the month, and its row already
+  // carries these -- the same two buttons appeared twice, worded apart.
+  const several = groups.length > 1;
+
+  if (remaining > 0 && several){
     const all = document.createElement("button");
     all.textContent = "Send the whole month (" + fmtNum(remaining) + ")";
     all.onclick = () => post(all, {month: m.month}, "Queuing");
@@ -3464,10 +3667,10 @@ function paintMonthBody(m, host, d){
   // The only route back for a month already backed up. Everything else
   // refuses to touch a confirmed asset, so a month deleted from Google
   // Photos could not otherwise be put back.
-  if (confirmed > 0){
+  if (confirmed > 0 && several){
     const again = document.createElement("button");
-    again.className = "ghost";
-    again.textContent = "Send again (" + fmtNum(confirmed) + " already backed up)";
+    again.className = "linkish";
+    again.textContent = "Send all " + fmtNum(confirmed) + " in this month again…";
     again.title = "They are recorded as backed up. Google Photos skips what it "
                 + "already holds, so this is for a month you deleted there and "
                 + "want back. A file whose date was rewritten since it went "
@@ -4780,7 +4983,13 @@ function renderAlerts(d){
   const list = d.alerts || [];
   if (!list.length){ alertBox.hidden = true; return; }
   alertBox.hidden = false;
-  alertBox.innerHTML = "";
+  // The brief line is markup, not drawn here, so only the full entries go.
+  alertBox.querySelectorAll(":scope > div").forEach(el => el.remove());
+  const brief = document.getElementById("alertBrief");
+  brief.textContent = list.length === 1 ? list[0].title
+                                        : list.length + " things need attention";
+  brief.appendChild(Object.assign(document.createElement("span"),
+    {textContent: "read them on Overview"}));
   list.forEach(a => {
     const wrap = document.createElement("div");
     const h = document.createElement("h3"); h.textContent = a.title;
@@ -4791,15 +5000,19 @@ function renderAlerts(d){
 }
 
 const RECON = {
-  queued_soon:    ["Waiting its turn", "inside a window, will go out as space frees up"],
-  in_outbox:      ["On the way", "in the outbox or on the phone, not yet cleared"],
-  outside_window: ["Outside both windows", "no date window covers it — send it by month or category"],
+  // The same four words as the months above. These were "Waiting its turn",
+  // "On the way", "Outside both windows" -- the last naming a second window
+  // that was removed -- and "Dismissed by hand", for the very files the
+  // summary card two screens up called "not being sent".
+  queued_soon:    ["To send", "asked for, or inside the automatic window — goes out as the outbox frees up"],
+  in_outbox:      ["In the outbox", "in the outbox or on the phone, not yet cleared"],
+  outside_window: ["Only if you ask", "older than the automatic window — send it by year, month or category"],
   failed:         ["Failed to download", "retry it from Needs attention"],
   too_big:        ["Over the size limit", "raise the limit, or send it by hand"],
   video_off:      ["Videos are switched off", "turn videos on in Settings"],
   missing:        ["No longer in Immich", "not returned by a full scan — archived, hidden, or deleted since. These cannot be sent"],
   motion_part:    ["Motion-photo clips", "carried inside the still image, never sent alone"],
-  dismissed:      ["Dismissed by hand", "taken out of the running — restore them from the Queue tab"],
+  dismissed:      ["Not being sent", "you chose not to send these — Send on their month or year puts them back"],
   skipped:        ["Skipped", "not being sent"],
 };
 
@@ -5338,8 +5551,16 @@ const LEGACY = {"nav-queue":"queue","nav-attention":"problems","top":"overview",
                 "nav-tools":"tools","settings":"settings",
                 "nav-dates":"dates"};
 
+const tabStrip = document.getElementById("tabbar");
+const tabMore = () => tabStrip.classList.toggle("more",
+  tabStrip.scrollLeft + tabStrip.clientWidth < tabStrip.scrollWidth - 4);
+tabStrip.addEventListener("scroll", tabMore, {passive: true});
+window.addEventListener("resize", tabMore);
+
 function setTab(raw){
   const name = TABS.includes(raw) ? raw : (LEGACY[raw] || "overview");
+  // Read by the stylesheet: off Overview the header and alerts shrink.
+  document.body.dataset.on = name;
   document.querySelectorAll("[data-tab]").forEach(el =>
     el.classList.toggle("tab-on", el.dataset.tab === name));
   document.querySelectorAll('#tabbar a[data-for]').forEach(a => {
@@ -5347,6 +5568,9 @@ function setTab(raw){
     a.classList.toggle("active", on);
     a.setAttribute("aria-selected", on ? "true" : "false");
   });
+  const on = tabStrip.querySelector("a.active");
+  if (on) on.scrollIntoView({block: "nearest", inline: "nearest"});
+  tabMore();
   // Tools is a <details>; opening the tab should not leave it collapsed.
   if (name === "tools") document.getElementById("nav-tools").open = true;
   // Fetched when the tab is opened rather than on every tick: it is the
