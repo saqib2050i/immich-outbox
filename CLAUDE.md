@@ -176,7 +176,37 @@ filtered out by `myID` -- it is the one holding the outbox.
   and hidden photos. `immich.py` detects the version and adapts.
 - **v3 can redirect** `/assets/{id}/original`. httpx does not follow
   redirects by default and `raise_for_status()` ignores 3xx, so without
-  `follow_redirects=True` a redirect stub gets written as a photo.
+  `follow_redirects=True` a redirect stub gets written as a photo. The route
+  also takes an `edited` flag now, since v3 can edit a photo in place; it
+  defaults to false, so what is served is still the untouched original.
+- **An upgrade can change a unit without changing a route.** Immich v3.0
+  made an asset's `duration` an integer of milliseconds where it had been a
+  clock string. Nothing here is gated on it, so nothing failed and nothing
+  was logged: videos scanned afterwards recorded no length, the refresh
+  coalesced over nothing, and the total on Library stopped growing rather
+  than dropping to zero. `_seconds()` reads both shapes and guesses at
+  neither.
+- **A deprecated field and a removed one need different answers.** v3.2
+  deprecated `page`, `takenAfter` and `visibility` in a search and
+  `nextPage` in the answer, in favour of `filter` and `cursor`. All four
+  still work and all four are still sent, because they are what has been
+  exercised against this library -- and `visibility` is the one to be
+  careful with, since getting it wrong relays archived, hidden and locked
+  photos somewhere nothing here can delete from. The response half is
+  cheap to make safe and is: the page token is followed while the server
+  sends one, `nextCursor` is read when it does not. The asymmetry is the
+  point. A request field that goes fails loudly with a 400 naming it; a
+  page token that goes ends every scan after its first page and reports a
+  smaller library.
+- **The server serves no API reference of its own any more.** `/api/docs` is
+  gone, and `/docs` is the web app, which answers 200 for every path --
+  including the ones that do not exist, so probing it proves nothing. The
+  reference is the spec in the repository, pinned to the exact version:
+  `open-api/immich-openapi-specs.json` at tag `v<x.y.z>`, where every field
+  carries an `x-immich-history` naming the release that added, deprecated or
+  removed it. Unauthenticated, `/api/server/version` gives the number and
+  every route answers 401 if it exists and 404 if it does not, which settles
+  "is it still there" without a key.
 - **Unraid `/mnt/user` is a FUSE overlay.** Two folders in the same share can
   sit on different disks, so `os.replace` between them fails with EXDEV.
   Temp files must be written *inside* the outbox and renamed in place.
@@ -993,3 +1023,9 @@ device that matters.
 - Sessions are in memory; a restart signs everyone out.
 - `settings.load()` is one SELECT per key and is called on every Immich
   client construction. Harmless at this scale, but it is a single query.
+- The search filters this sends -- `page`, `takenAfter`, `visibility` -- are
+  deprecated as of Immich v3.2 in favour of a `filter` object and a
+  `cursor`. They work, and the switch is not a translation exercise: a
+  `visibility` that silently stops filtering relays archived, hidden and
+  locked photos into Google Photos, which nothing here can take back out. It
+  wants a key and a server to verify against, not a schema reading.

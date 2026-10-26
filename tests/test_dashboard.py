@@ -762,3 +762,43 @@ def test_a_grouping_this_build_no_longer_offers_is_not_restored():
     src = HTML[HTML.index('["dGroup", "dSort"].forEach'):]
     src = src[:src.index("window.addEventListener")]
     assert "o.value === kept" in src
+
+
+def painted_classes() -> set[str]:
+    """The bare class names the timeline writes onto elements: the segments
+    of a month's bar, and the parts of the summary line above it."""
+    return (set(re.findall(r'seg\(\s*m\.\w+\s*,\s*"([a-z][a-z0-9-]*)"\)', HTML))
+            | set(re.findall(r'parts\.push\(\[[^\]]*,\s*"([a-z][a-z0-9-]*)"\]\)', HTML)))
+
+
+def test_a_class_the_timeline_paints_with_is_never_a_rule_on_its_own():
+    """Those names land on an `<i>` inside a 5px bar and on a `.tlsum-part`,
+    deep inside a month row, and they are ordinary words. A rule for one of
+    them on its own is therefore a rule for every month in the timeline.
+
+    `.moving` was the strip along the bottom of every tab -- fixed, full
+    width, z-index 30 -- and a month's share of the outbox is `moving` too.
+    So each of those 5px segments became a viewport-sized cyan block over
+    the page, on top of the nav and taking the clicks with it. The Library
+    tab was a blue sheet with nothing to press, from the moment anything
+    sat in the outbox. The strip is keyed on its id now, and the names the
+    timeline uses stay reachable only through a compound selector."""
+    painted = painted_classes()
+    assert {"moving", "done", "go", "rest"} <= painted, \
+        f"the timeline's class names were not found; the regexes are stale: {painted}"
+
+    for sel, _ in css_rules():
+        for part in sel.split(","):
+            one = part.strip()
+            if re.fullmatch(r"\.[a-z][a-z0-9-]*", one) and one[1:] in painted:
+                raise AssertionError(
+                    f"`{one}` styles the timeline's month bars as well as whatever "
+                    f"it was written for -- scope it, or key it on an id")
+
+
+def test_the_strip_along_the_bottom_is_still_pinned_to_it():
+    """The other half of the fix above: the strip has to keep its own
+    styling, rather than losing it to a rename nobody noticed."""
+    assert any(sel.strip() == "#moving" and "position:fixed" in body.replace(" ", "")
+               for sel, body in css_rules()), \
+        "the what-is-moving strip is no longer fixed to the bottom of the page"

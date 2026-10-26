@@ -10,6 +10,48 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.22.1
+
+**The Library tab was a blue sheet with nothing to press.** The strip along
+the bottom that says what is moving was styled as `.moving` — and a month's
+share of the outbox, painted as a few pixels inside that month's bar, is
+`moving` too. One bare class rule, and every one of those segments became
+what the strip is: fixed, viewport-sized, cyan, at z-index 30, over the
+navigation and taking the clicks with it. It needed a month with something
+in the outbox to appear at all, which is why it waited until there was.
+The strip is keyed on its id now, and a test refuses any rule that claims
+one of the timeline's own words for itself.
+
+**Immich 3.3.5: nothing this sends or reads was removed, and one thing it
+had been reading wrong since July.** The server went from 3.1.0 to 3.3.5.
+Every route the relay uses still answers, every response field it reads is
+still there, and the three permissions it asks for — `asset.read`,
+`asset.download`, `server.about` — are all still in the list, which is now
+168 long. What changed is deprecation: v3.2 marked `page`, `takenAfter` and
+`visibility` in a search, and `nextPage` in the answer, in favour of a
+`filter` object and a `cursor`. Deprecated is not gone, and those four are
+still what is sent, because they are what has been exercised against this
+library for months — `visibility` especially, since getting it wrong relays
+archived, hidden and locked photos somewhere nothing here can delete from.
+
+**A duration stopped being a duration in v3.0, and nothing said so.** It had
+been a clock string, `00:01:23.456`; it is an integer of milliseconds now.
+The parser knew only the first, so every video scanned since that upgrade
+recorded no length at all — and because a refresh coalesces, the figures
+already in the ledger stayed exactly where they were. The total on Library
+did not fall to zero, it stopped growing, which is the hardest kind of wrong
+number to notice. Both shapes are read now, anything unreadable is left
+empty rather than guessed at, and the next full scan fills in what was
+missed.
+
+**The page token is followed while there is one, and a cursor when there is
+not.** `nextPage` is deprecated. The release that removes it would end every
+scan after its first page, and a short scan does not look like a failure —
+it looks like a smaller library, stated as a fact, with nothing in the log.
+`nextCursor` is read only when no token comes back, so what runs today is
+precisely what has been running all along. A request field that disappears
+fails loudly, with a 400 naming it; this was the half that would not.
+
 ## 2.22.0
 
 **The dates were not the only thing the sidecar carried.** A Google Takeout
