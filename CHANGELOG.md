@@ -12,6 +12,16 @@ the entry below can never disagree.
 
 ## 2.22.1
 
+**The Library tab was a blue sheet with nothing to press.** The strip along
+the bottom that says what is moving was styled as `.moving` — and a month's
+share of the outbox, painted as a few pixels inside that month's bar, is
+`moving` too. One bare class rule, and every one of those segments became
+what the strip is: fixed, viewport-sized, cyan, at z-index 30, over the
+navigation and taking the clicks with it. It needed a month with something
+in the outbox to appear at all, which is why it waited until there was.
+The strip is keyed on its id now, and a test refuses any rule that claims
+one of the timeline's own words for itself.
+
 **Immich 3.3.5: nothing this sends or reads was removed, and one thing it
 had been reading wrong since July.** The server went from 3.1.0 to 3.3.5.
 Every route the relay uses still answers, every response field it reads is

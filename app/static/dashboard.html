@@ -445,21 +445,28 @@
      Queue tab, and a sign-off happens on Dates -- so the work it starts had
      nowhere to show itself on the page that started it, and eight files
      went out behind a screen that said nothing at all. Fixed to the bottom
-     rather than sticky under the nav, whose height changes with the width. */
-  .moving{position:fixed;left:0;right:0;bottom:0;z-index:30;cursor:pointer;
+     rather than sticky under the nav, whose height changes with the width.
+
+     Keyed on the id, and it has to be. "moving" is also what the timeline
+     calls a month's share of the outbox -- <i class="moving"> inside a 5px
+     bar -- so a bare `.moving` rule here made every one of those a fixed,
+     viewport-sized cyan block at z-index 30, over the nav and taking the
+     clicks. The Library tab was a blue page with nothing to press, from the
+     moment anything sat in the outbox. */
+  #moving{position:fixed;left:0;right:0;bottom:0;z-index:30;cursor:pointer;
           display:flex;gap:10px;align-items:center;padding:9px 16px;
           font-size:12.5px;border-top:1px solid var(--rule);
           background:color-mix(in srgb,var(--paper) 93%,transparent);
           backdrop-filter:blur(12px)}
-  .moving .mvwhat{font-family:var(--mono);color:var(--transit);
+  #moving .mvwhat{font-family:var(--mono);color:var(--transit);
                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .moving .mvfig{color:var(--dim);white-space:nowrap}
-  .moving i{position:absolute;left:0;bottom:0;height:2px;
+  #moving .mvfig{color:var(--dim);white-space:nowrap}
+  #moving i{position:absolute;left:0;bottom:0;height:2px;
             background:var(--transit);transition:width .25s linear}
   /* On a narrow screen the filename gives way, not the count: "3 of 8 this
      cycle" is the answer to what somebody who just signed eight files off
      is actually asking. */
-  .moving .mvwhat{flex:0 1 auto;min-width:0}
+  #moving .mvwhat{flex:0 1 auto;min-width:0}
   .qpaused{border-left:3px solid var(--alarm);padding:10px 14px;margin:14px 0;
            color:var(--dim);font-size:13.5px;background:var(--panel);
            border-radius:0 var(--r-sm) var(--r-sm) 0}
@@ -1013,7 +1020,7 @@
 
 <div class="alertbox" id="alertBox" hidden></div>
 
-<div class="moving" id="moving" hidden role="status"
+<div id="moving" hidden role="status"
      title="What is moving right now — opens the queue">
   <span class="spin"></span>
   <span class="mvwhat" id="movingWhat"></span>
