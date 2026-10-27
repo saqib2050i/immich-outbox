@@ -45,6 +45,8 @@ def rig(tmp_path, monkeypatch):
     feeder.TRANSFERS.clear()
     feeder.BATCH = None
     feeder.LAST_FILL = None
+    from app import syncthing
+    syncthing.reset()
 
     db.connect()
 

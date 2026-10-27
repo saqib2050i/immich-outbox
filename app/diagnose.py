@@ -382,35 +382,11 @@ async def _phone_copy(outbox_name: str | None) -> dict:
 
     from . import syncthing
     try:
-        async with syncthing._client(cfg) as client:  # noqa: SLF001
-            r = await client.get("/rest/db/file",
-                                 params={"folder": folder, "file": outbox_name})
-            if r.status_code != 200:
-                return {"known": False,
-                        "note": f"Syncthing answered HTTP {r.status_code} for "
-                                "this file — check the folder id"}
-            d = r.json()
-            glob = d.get("global") or {}
-            local = d.get("local") or {}
-            names = {}
-            rc = await client.get("/rest/config")
-            if rc.status_code == 200:
-                for dev in (rc.json().get("devices") or []):
-                    names[dev.get("deviceID")] = dev.get("name") or dev.get("deviceID")
-            holders = [names.get(i, i[:7]) for i in (d.get("availability") or [])
-                       if isinstance(i, str)]
-            return {
-                "known": True,
-                "on_the_server": bool(local.get("size")) and not local.get("deleted"),
-                "deleted_globally": bool(glob.get("deleted")),
-                "size": glob.get("size"),
-                "other_devices_with_it": holders,
-            }
+        return await syncthing.file_holders(outbox_name)
     except Exception as exc:  # noqa: BLE001
         return {"known": False,
                 "note": f"could not ask Syncthing: {type(exc).__name__}: "
                         f"{str(exc)[:120]}"}
-
 
 EXIF_FMT = "%Y:%m:%d %H:%M:%S"
 

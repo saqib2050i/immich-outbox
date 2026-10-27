@@ -726,6 +726,14 @@ async def housekeeping() -> None:
     except Exception as exc:  # noqa: BLE001
         db.log("error", f"companion check failed: {exc}")
 
+    # Syncthing first, so the alerts below judge the outbox with a fresh
+    # answer about the phone even when no dashboard is open to ask for one.
+    try:
+        from . import syncthing
+        await syncthing.status(fresh=True)
+    except Exception as exc:  # noqa: BLE001
+        db.log("error", f"Syncthing check failed: {exc}")
+
     try:
         await alerts.check_and_notify()
     except Exception as exc:  # noqa: BLE001

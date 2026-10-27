@@ -168,6 +168,16 @@
     display:flex; align-items:center; gap:7px; color:var(--dim); white-space:nowrap;
     font-weight:600;
   }
+  /* The two apps this one sits between, a press away from every tab. Drawn
+     only when an address is set: a link that goes nowhere is worse than
+     none. Same tab-independent spot as the status dot. */
+  .openers{display:flex;gap:6px;margin-left:auto;align-self:center}
+  .openers a{font-size:11.5px;font-weight:600;letter-spacing:.02em;
+    color:var(--dim);text-decoration:none;border:1px solid var(--rule-2);
+    border-radius:999px;padding:3px 10px;white-space:nowrap}
+  .openers a:hover{color:var(--ink);border-color:var(--dim)}
+  .openers + .live{margin-left:12px}
+  a.opensub{font-size:12px;font-weight:500;color:var(--dim);margin-left:8px}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--alarm);flex:none}
   .dot.on{background:var(--done)}
   @media (prefers-reduced-motion:no-preference){
@@ -958,6 +968,8 @@
     header{padding-bottom:14px;margin-bottom:18px}
     h1{gap:.3em}
     .live{margin-left:0;flex-basis:100%}
+    .openers{margin-left:0;order:2}
+    .openers + .live{margin-left:0}
     .belt{height:44px}
     .legend{gap:10px 20px}
     .legend .n{font-size:20px}
@@ -1084,6 +1096,10 @@
 <header id="top">
   <p class="eyebrow">Original-quality relay</p>
   <h1>Immich <span class="arrow">→</span> Pixel <span class="arrow">→</span> Google Photos
+    <span class="openers">
+      <a id="openImmich" target="_blank" rel="noopener" hidden>Open Immich</a>
+      <a id="openSyncthing" target="_blank" rel="noopener" hidden>Open Syncthing</a>
+    </span>
     <span class="live"><span class="dot" id="dot"></span><span id="livetext">connecting</span>
       <span id="liveBadge" style="opacity:.55">polling</span></span>
   </h1>
@@ -1271,7 +1287,7 @@
   <form class="settings" id="settings" onsubmit="return false">
 
     <section class="sgroup" id="set-immich">
-      <h3>Immich</h3>
+      <h3>Immich<a class="opensub" id="openImmich2" target="_blank" rel="noopener" hidden>open</a></h3>
       <p class="blurb">Where the originals come from. Read-only — three
         permissions, and none of them write.</p>
       <div class="field">
@@ -1532,9 +1548,10 @@
     </section>
 
     <section class="sgroup" id="set-syncthing">
-      <h3>Syncthing <span style="color:var(--dim);font-weight:400">— optional</span></h3>
-      <p class="blurb">Read-only status. Shows whether files have actually reached
-        the phone, rather than only the outbox.</p>
+      <h3>Syncthing <span style="color:var(--dim);font-weight:400">— optional</span><a class="opensub" id="openSyncthing2" target="_blank" rel="noopener" hidden>open</a></h3>
+      <p class="blurb">Read-only. Says whether files have actually reached the
+        phone rather than only the outbox, and the alerts use it to tell
+        "the phone never got them" from "Google Photos will not take them".</p>
       <div class="field">
         <div class="lab"><label for="s_syncthing_url">Address</label></div>
         <input type="text" id="s_syncthing_url" placeholder="http://192.168.1.2:8384">
@@ -1864,6 +1881,17 @@ async function render(){
   // rather than the settings form, so it is right on a tab nobody has opened
   // the settings on, and follows the address being changed.
   IMMICH_URL = d.immich.url || "";
+  // Both read from the status, like the filename links, so they are right
+  // on every tab. The address is the one this server uses; on a LAN that is
+  // the one the browser uses too.
+  const opener = (ids, url) => ids.forEach(id => {
+    const a = document.getElementById(id);
+    const ok = /^https?:\/\//i.test(url || "");
+    a.hidden = !ok;
+    if (ok) a.href = url.replace(/\/+$/, "") + "/";
+  });
+  opener(["openImmich", "openImmich2"], d.immich.url);
+  opener(["openSyncthing", "openSyncthing2"], (d.syncthing || {}).url);
   iUrl.textContent   = d.immich.url.replace(/^https?:\/\//, "");
   iVer.textContent   = d.immich.version;
   iInc.textContent   = ago(d.immich.last_incremental_scan);
@@ -4653,14 +4681,20 @@ function renderTrace(d){
   // The phone is confirmed, never read: the companion declares no storage
   // permission, and Syncthing hashes every block it moves.
   const ph = d.phone || {};
-  if (ph.known){
-    const who = (ph.other_devices_with_it || []);
-    traceOut.appendChild(traceLine(
-      "On the phone: " + (who.length
-        ? "Syncthing says " + who.join(", ") + " hold this file, byte for byte."
-        : "no other device has it yet — Syncthing has not finished, or it has "
-          + "already been cleared off the phone, which is how a file is "
-          + "confirmed.")));
+  if (ph.known && ph.deleted_globally){
+    traceOut.appendChild(traceLine("On the phone: cleared off it — Google "
+      + "Photos freed it after backing it up, which is how a file is confirmed."));
+  } else if (ph.known && (ph.devices || []).length){
+    // Per device and from its own index, so a phone that is offline still
+    // gets an answer. `availability` alone only ever names connected ones.
+    ph.devices.forEach(dv => traceOut.appendChild(traceLine("On " + dv.name + ": "
+      + (dv.has === true ? "has this file, byte for byte"
+         : dv.has === false ? "does not have it yet — Syncthing still has to "
+                            + "deliver it" : "Syncthing could not say")
+      + (dv.connected ? "." : " (not connected right now)."))));
+  } else if (ph.known){
+    traceOut.appendChild(traceLine("On the phone: the outbox is not shared "
+      + "with any other device in Syncthing, so nothing carries it there."));
   } else if (ph.note){
     traceOut.appendChild(traceLine("On the phone: " + ph.note));
   }
@@ -4697,7 +4731,9 @@ async function renderSyncthing(){
         ? (d.state || "") + " · " + d.in_sync_pct + "% of this folder here" +
           (d.need_bytes ? " · " + fmtBytes(d.need_bytes) + " still to write" : "")
         : "reachable");
-  rowSync.classList.toggle("bad", !!d.error);
+  const fp = (d.folder || {}).problem;
+  if (fp) oSync.textContent = fp;
+  rowSync.classList.toggle("bad", !!d.error || !!fp);
 
   // The hop this service cannot otherwise see. A file leaves the outbox only
   // when Google Photos has taken it off the phone, and it can only do that

@@ -18,6 +18,14 @@ from . import db, settings
 
 COOLDOWN_HOURS = 24
 
+# How long a phone may be away before it is worth saying. Short absences are
+# Wi-Fi, a reboot, Doze; a quarter of a day is the phone being off the
+# network, and every file in the outbox waits on it.
+PHONE_AWAY_HOURS = 6
+# Connected and still missing files: a large video takes a while, so this
+# only fires once delivery has plainly stopped rather than merely being slow.
+UNDELIVERED_HOURS = 3
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -32,11 +40,49 @@ def _age_hours(iso: str | None) -> float | None:
         return None
 
 
+def _phones() -> list[dict] | None:
+    """The devices the outbox is shared with, as Syncthing last said -- or
+    None when there is no recent answer to go on. Paused devices are left
+    out: pausing is somebody's decision, not a fault."""
+    from . import syncthing
+    st = syncthing.cached()
+    if not st or not st.get("ok"):
+        return None
+    return [d for d in (st.get("devices") or []) if not d.get("paused")]
+
+
+def _where_it_stops(phones: list[dict] | None) -> str:
+    """One sentence on which side of the hop has stopped, from Syncthing.
+
+    "The outbox is not draining" has two causes with one appearance: the
+    phone never got the files, or it has them and Google Photos will not
+    take them. Every alert about a stuck outbox used to name both and let
+    the reader guess; this is the answer it was guessing at.
+    """
+    if not phones:
+        return ""
+    for d in phones:
+        if not d.get("connected"):
+            seen = d.get("last_seen")
+            return (f" Syncthing: {d['name']} is not connected"
+                    + (f" (last seen {seen[:16].replace('T', ' ')})" if seen else
+                       " and has never been seen")
+                    + ", so the files have not reached the phone.")
+    for d in phones:
+        if d.get("need_items"):
+            return (f" Syncthing: {d['name']} is connected but still missing "
+                    f"{d['need_items']} file(s) of the outbox.")
+    names = ", ".join(d["name"] for d in phones)
+    return (f" Syncthing confirms {names} holds every file, so they reached "
+            "the phone and the hold-up is Google Photos.")
+
+
 def evaluate() -> list[dict]:
     """Current problems worth telling someone about."""
     cfg = settings.load()
     out: list[dict] = []
     counts = db.counts()
+    phones = _phones()
 
     # 1. Immich unreachable for a while.
     conn_at = db.get_meta("immich_conn_at")
@@ -76,7 +122,7 @@ def evaluate() -> list[dict]:
                         "message": f"{counts['queued']} file(s) waiting and nothing "
                                    f"confirmed in {when}. Check Google Photos backup "
                                    f"is on and Smart Storage is set to remove backed-up "
-                                   f"photos."})
+                                   f"photos." + _where_it_stops(phones)})
 
     # 4. Outbox full and not moving -- the phone is not draining it.
     used = int(db.get_meta("outbox_used", "0"))
@@ -91,7 +137,8 @@ def evaluate() -> list[dict]:
                 out.append({"key": "outbox_full",
                             "title": "Outbox has been full for days",
                             "message": f"Full for {age/24:.0f} days. Syncthing or "
-                                       f"Google Photos is not clearing it."})
+                                       f"Google Photos is not clearing it."
+                                       + _where_it_stops(phones)})
     else:
         db.set_meta("outbox_full_since", "")
 
@@ -137,14 +184,37 @@ def evaluate() -> list[dict]:
             held = _age_hours(unbacked.get("since"))
             window = max(3.0, cfg.companion_cooldown_minutes * 3 / 60)
             if held is not None and held >= window:
-                out.append({"key": "companion_unbacked",
-                            "title": "Files the phone is holding but has not backed up",
-                            "message": (
-                                f"{unbacked['count']} file(s) have stayed in the "
-                                f"outbox for {held:.0f}h across several free-ups, "
-                                "while Google Photos reported it had finished. "
-                                "Open Photos on the phone and check backup is on "
-                                "for the folder Syncthing writes to.")})
+                # The title said "the phone is holding" without anybody
+                # having asked whether it was. Syncthing knows.
+                missing = [d for d in phones or []
+                           if not d.get("connected") or d.get("need_items")]
+                base = (f"{unbacked['count']} file(s) have stayed in the "
+                        f"outbox for {held:.0f}h across several free-ups, "
+                        "while Google Photos reported it had finished.")
+                if phones and not missing:
+                    out.append({"key": "companion_unbacked",
+                                "title": "Files the phone is holding but has not backed up",
+                                "message": base + _where_it_stops(phones) + (
+                                    " Almost always Android's media scanner "
+                                    "missed them as they arrived, and Google "
+                                    "Photos only uploads what the scanner has "
+                                    "indexed. Restarting the phone runs a full "
+                                    "scan, which is the one fix known to work.")})
+                elif missing:
+                    out.append({"key": "companion_unbacked",
+                                "title": "Files the phone never received",
+                                "message": base + _where_it_stops(phones) +
+                                    " Google Photos cannot back up what is not "
+                                    "on the phone, so this is delivery, not "
+                                    "backup."})
+                else:
+                    out.append({"key": "companion_unbacked",
+                                "title": "Files the phone is holding but has not backed up",
+                                "message": base + " Open Photos on the phone "
+                                    "and check backup is on for the folder "
+                                    "Syncthing writes to. Connecting Syncthing "
+                                    "in Settings would say whether the phone "
+                                    "has them at all."})
 
         if snap["state"] == "failed":
             out.append({"key": "companion_failed",
@@ -152,6 +222,48 @@ def evaluate() -> list[dict]:
                         "message": snap["line"] + " Google Photos may have "
                                    "renamed the button — the labels it looks "
                                    "for can be changed in Settings."})
+
+    # 5b. The hop only Syncthing can see. Each of these makes the outbox sit
+    #     full while every other figure looks like Google Photos being slow.
+    from . import syncthing
+    st = syncthing.cached()
+    problem = ((st or {}).get("folder") or {}).get("problem")
+    if problem:
+        out.append({"key": "syncthing_folder",
+                    "title": "The outbox folder ignores the phone's deletions",
+                    "message": problem})
+    behind = False
+    if phones and counts["queued"] > 0:
+        for d in phones:
+            if not d.get("connected"):
+                away = _age_hours(d.get("last_seen"))
+                if away is None or away >= PHONE_AWAY_HOURS:
+                    out.append({"key": "syncthing_away",
+                                "title": f"{d['name']} is not connected to Syncthing",
+                                "message": (
+                                    (f"Not seen for {away:.0f}h. " if away is not None
+                                     else "Syncthing has never seen it connect. ")
+                                    + f"The {counts['queued']} file(s) in the "
+                                    "outbox cannot reach the phone until it is "
+                                    "back, so nothing will be backed up. Check "
+                                    "the phone is on Wi-Fi and Syncthing is "
+                                    "running on it.")})
+            elif d.get("need_items"):
+                behind = True
+                since = db.get_meta("sync_behind_since")
+                if not since:
+                    db.set_meta("sync_behind_since", db.now())
+                elif (_age_hours(since) or 0) >= UNDELIVERED_HOURS:
+                    out.append({"key": "syncthing_behind",
+                                "title": f"{d['name']} is not receiving the outbox",
+                                "message": (
+                                    f"Connected, but still missing "
+                                    f"{d['need_items']} file(s) after "
+                                    f"{_age_hours(since):.0f}h. Open Syncthing "
+                                    "on the phone: it is usually out of space, "
+                                    "or showing a folder error.")})
+    if not behind and db.get_meta("sync_behind_since"):
+        db.set_meta("sync_behind_since", "")
 
     # 6. Failures piling up. Say what kind, because the fix is different:
     #    a 404 lives in Immich's storage, not in this service's plumbing.
