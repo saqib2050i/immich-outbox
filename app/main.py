@@ -162,6 +162,8 @@ async def status():
             "connection": json.loads(db.get_meta("immich_conn") or '{"state":"checking","ok":false,"summary":"Checking connection…","checks":[]}'),
             "checked_at": db.get_meta("immich_conn_at"),
         },
+        # The address only -- never the key. For the "open Syncthing" link.
+        "syncthing": {"url": cfg.syncthing_url},
         "settings": cfg.as_dict(),
         "stuck": [dict(r) for r in db.stuck(config.STUCK_AFTER_DAYS)],
         "problems": [dict(r) for r in db.problems()],

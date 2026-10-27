@@ -162,6 +162,22 @@ shared with, is it connected, when was it last seen, and what does
 `/rest/db/completion` say it still needs *of this folder*. A count of
 connected devices answers neither half.
 
+**And the answer is acted on, not only drawn.** `status()` keeps its last
+result in memory (`cached()`), shared by every viewer for 25 seconds --
+`/rest/db/status` is documented as expensive -- and `feeder.housekeeping()`
+refreshes it before the alerts run, so they work with no dashboard open.
+`alerts._where_it_stops()` turns it into one sentence: the phone is away,
+connected but missing N, or holds everything and the hold-up is Google
+Photos -- which, for files that never leave, is almost always the media
+scanner. `folder_problem()` names the one configuration that silently
+breaks confirmation: a Send Only folder, or Ignore Delete, never applies the
+phone's deletion, and a file disappearing is the only proof there is.
+
+`/rest/db/file`'s `availability` is a list of *objects* and names only
+connected devices. Read as strings it found nobody, in every trace.
+`file_holders()` asks `/rest/db/remoteneed` per device as well, which
+answers from that device's last index whether it is connected or not.
+
 Everything in there is best-effort and individually wrapped: Syncthing is
 optional, its config API changed shape (`/rest/config/folders/<id>` on
 anything recent, the whole of `/rest/system/config` before that), and a

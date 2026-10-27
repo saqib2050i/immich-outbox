@@ -10,6 +10,47 @@ The number in `VERSION` is the only place a release is named. It is
 Bump it in the same pull request as the change, so the published image and
 the entry below can never disagree.
 
+## 2.24.0
+
+**Syncthing's answer is used, not only drawn.** It told you, on one card on
+Overview, whether the phone was connected and how much of the outbox it
+held — and nothing else read it. The alerts written for exactly this
+question went on guessing. Now they ask:
+
+- **"Files the phone is holding but has not backed up"** says whether the
+  phone actually is. If Syncthing confirms it holds every file, the alert
+  says the hold-up is Google Photos and names the usual cause, Android's
+  media scanner missing files as they arrive — a phone restart is the one
+  fix known to work. If the phone is missing them, the alert is renamed
+  **"Files the phone never received"**, because that is delivery, not backup.
+- **"Nothing backed up recently"** and **"Outbox has been full for days"**
+  end with one sentence saying which side of the hop stopped.
+- New: **the phone has not connected to Syncthing for 6 hours** while the
+  outbox holds files; and **the phone is connected but not receiving**, after
+  3 hours of being stuck.
+- New: **the outbox folder ignores the phone's deletions.** A Send Only
+  folder, or one with Ignore Delete on, never applies the phone clearing a
+  file — and a file disappearing is the only thing that confirms one, so
+  nothing would ever be confirmed while every figure looked like Google
+  Photos being slow.
+
+**Trace now says whether the phone has the file, and it was wrong before.**
+Syncthing reports who holds a file as a list of objects; it was read as a
+list of names, found nobody, and every trace said "no other device has it
+yet" — about files sitting on the phone. It now asks per device, from that
+device's own index, so a phone that is offline still gets an answer.
+
+**One Syncthing call, shared.** `/rest/db/status` is documented by Syncthing
+as expensive, and every open dashboard tab called it every twenty seconds.
+One answer is kept for 25 seconds and shared; housekeeping refreshes it
+whether or not a dashboard is open, which is what lets the alerts above work
+at three in the morning.
+
+**Open Immich and Open Syncthing**, from the header of every tab and beside
+each one's section in Settings. Drawn only when an address is set. They use
+the address this server uses, which on a LAN is the one your browser uses
+too.
+
 ## 2.23.0
 
 **Library opens on Library.** Off Overview the title shrinks to one line and
